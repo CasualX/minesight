@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="theme-color" content="#efefec">
+	<meta name="description" content="Fast, no-guess Minesweeper tactics puzzles.">
+	<title>Minetacs — Tactics for Minesweeper</title>
+	<link rel="stylesheet" href="./index.css">
+	<script type="module" src="./index.js"></script>
+</head>
+<body>
+	<div class="app-shell" x-data="minetacs" x-cloak>
+		<header class="site-header">
+			<button class="brand" type="button" @click="setMode('practice')" aria-label="Minetacs home">
+				<span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+				<span>
+					<strong>Minetacs</strong>
+					<small>Tactics for Minesweeper</small>
+				</span>
+			</button>
+
+			<nav class="mode-switch" aria-label="Game mode">
+				<button type="button" :class="{ 'is-active': state?.mode === 'practice' }" @click="setMode('practice')">Practice</button>
+				<button type="button" :class="{ 'is-active': state?.mode === 'challenge' }" @click="setMode('challenge')">Challenge</button>
+			</nav>
+
+			<button class="help-button" type="button" @click="showHelp = !showHelp" :aria-expanded="showHelp">How to play</button>
+		</header>
+
+		<aside class="help-panel" x-show="showHelp" x-transition @click.outside="showHelp = false">
+			<div>
+				<p class="eyebrow">The short version</p>
+				<h2>Find every forced move.</h2>
+				<p>Numbers count mines in the eight touching cells. Every position has a fixed set of logical moves—no guessing required.</p>
+				<ul>
+					<li><strong>Tap or click</strong> to reveal a forced safe cell.</li>
+					<li><strong>Right-click or long-press</strong> to mark a forced mine.</li>
+					<li>Dimmed cells are outside the current frontier and are not part of the puzzle.</li>
+					<li>Practice teaches the idea. Challenge hides it and times the run.</li>
+				</ul>
+				<button class="button button--dark" type="button" @click="showHelp = false">Got it</button>
+			</div>
+		</aside>
+
+		<main>
+			<div class="loading" x-show="!state && !engineError">Preparing a position…</div>
+			<div class="error-banner" x-show="engineError" x-text="engineError" role="status"></div>
+
+			<template x-if="state?.screen === 'challenge-start'">
+				<section class="challenge-start">
+					<p class="eyebrow">Seeded run · 12 puzzles</p>
+					<h1>Climb the logic ladder.</h1>
+					<p>Four tiers, three puzzles each. Find every forced move in each position. Mistakes cost the puzzle, not the whole run.</p>
+					<button class="button button--primary button--large" type="button" @click="startChallenge()">Start new challenge</button>
+					<div class="seed-entry">
+						<label for="seed">Or play a shared seed</label>
+						<div>
+							<input id="seed" type="text" x-model="seedInput" placeholder="K4M8JQB5T" autocomplete="off" spellcheck="false" @keydown.enter="startChallenge(seedInput)">
+							<button class="button button--dark" type="button" @click="startChallenge(seedInput)" :disabled="!seedInput.trim()">Play seed</button>
+						</div>
+					</div>
+				</section>
+			</template>
+
+			<template x-if="state?.screen === 'results'">
+				<section class="results-card">
+					<p class="eyebrow">Challenge complete</p>
+					<h1 x-text="state.challenge.perfect ? 'Perfect run.' : 'Run complete.'"></h1>
+					<div class="result-time" x-text="formatTime(finalElapsed)"></div>
+					<p class="result-score"><strong x-text="state.challenge.solved"></strong> / <span x-text="state.challenge.total"></span> solved <span x-show="state.challenge.failed">· <span x-text="state.challenge.failed"></span> failed</span></p>
+					<div class="tier-results">
+						<template x-for="(difficulty, index) in state.difficulties" :key="difficulty.id">
+							<div><span x-text="difficulty.label"></span><strong x-text="`${state.challenge.tierSolved[index]} / 3`"></strong></div>
+						</template>
+					</div>
+					<div class="seed-chip"><span>Seed</span><strong x-text="state.challenge.seed"></strong><button type="button" @click="copySeed()">Copy</button></div>
+					<div class="result-actions">
+						<button class="button button--primary" type="button" @click="copyResult()">Copy result</button>
+						<button class="button button--dark" type="button" @click="replayChallenge()">Play seed again</button>
+						<button class="button button--quiet" type="button" @click="challengeHome()">New challenge</button>
+					</div>
+				</section>
+			</template>
+
+			<template x-if="state?.puzzle">
+				<div>
+					<section class="practice-toolbar" x-show="state.mode === 'practice'">
+						<div class="selector-group">
+							<label for="category">Technique</label>
+							<select id="category" x-effect="$el.value = state.selectedCategory" @change="configurePractice($event.target.value)">
+								<template x-for="option in state.categories" :key="option.id"><option :value="option.id" :selected="option.id === state.selectedCategory" x-text="option.label"></option></template>
+							</select>
+						</div>
+						<button class="button button--quiet toolbar-new" type="button" @click="newPractice()">New position</button>
+					</section>
+
+					<section class="puzzle-layout">
+						<div class="board-column">
+							<div class="puzzle-meta">
+								<div>
+									<span class="difficulty-pill" x-show="state.mode === 'challenge'" x-text="puzzle.difficultyLabel"></span>
+									<span class="technique-label" x-show="puzzle.technique" x-text="puzzle.technique"></span>
+								</div>
+								<div class="challenge-meta" x-show="state.mode === 'challenge'">
+									<strong>Puzzle <span x-text="state.challenge?.current"></span>/<span x-text="state.challenge?.total"></span></strong>
+									<time x-text="formatTime()"></time>
+								</div>
+							</div>
+
+							<div class="challenge-track" x-show="state.mode === 'challenge'" aria-label="Challenge progress">
+								<template x-for="step in (state.challenge?.total || 0)" :key="step">
+									<i :class="{ 'is-done': step < state.challenge?.current, 'is-current': step === state.challenge?.current }"></i>
+								</template>
+							</div>
+
+							<div class="board" role="grid" aria-label="8 by 8 Minesweeper tactics board">
+								<template x-for="cell in puzzle.cells" :key="cell.index">
+									<button
+										class="cell"
+										type="button"
+										role="gridcell"
+										:class="cellClasses(cell)"
+										:aria-label="cell.label"
+										:disabled="cellDisabled(cell)"
+										@click="reveal(cell)"
+										@contextmenu.prevent="mark(cell)"
+										@pointerdown="pressStart(cell)"
+										@pointerup="pressEnd()"
+										@pointercancel="pressEnd()"
+										@pointerleave="pressEnd()"
+									><span x-text="cellText(cell)"></span></button>
+								</template>
+							</div>
+							<p class="interaction-note">Tap to reveal · right-click or long-press to mark · dimmed cells are outside the frontier</p>
+						</div>
+
+						<aside class="tactics-panel">
+							<div class="panel-status" :class="`status--${puzzle.status}`" aria-live="polite">
+								<p class="eyebrow" x-text="puzzle.status === 'playing' ? 'Your move' : puzzle.status"></p>
+								<h2 x-text="state.message"></h2>
+								<p x-show="puzzle.status === 'playing' && !puzzle.hint">Find every forced safe cell and mine in the original frontier.</p>
+								<p x-show="puzzle.hint" x-text="puzzle.hint"></p>
+							</div>
+
+							<div class="explanation" x-show="puzzle.explanation" x-transition>
+								<p class="eyebrow" x-text="puzzle.technique || 'Reasoning'"></p>
+								<p x-text="puzzle.explanation"></p>
+								<div class="legend">
+									<span><i class="legend-clue"></i> relevant clue</span>
+									<span><i class="legend-forced"></i> forced result</span>
+								</div>
+							</div>
+
+							<div class="panel-actions" x-show="state.mode === 'practice'">
+								<button class="button button--dark" type="button" x-show="puzzle.status === 'playing'" @click="hint()">Hint <span x-text="`${Math.min(puzzle.hintLevel + 1, 3)}/3`"></span></button>
+								<button class="button button--quiet" type="button" x-show="puzzle.status === 'playing'" @click="reset()">Reset</button>
+								<button class="button button--quiet" type="button" x-show="puzzle.status !== 'playing' && !puzzle.explanation" @click="explain()">Show why</button>
+								<button class="button button--quiet" type="button" x-show="puzzle.status === 'mistake'" @click="reset()">Try again</button>
+								<button class="button button--primary" type="button" x-show="puzzle.status !== 'playing'" @click="nextPuzzle()">Next puzzle <span aria-hidden="true">→</span></button>
+							</div>
+
+							<div class="panel-actions" x-show="state.mode === 'challenge' && puzzle.status !== 'playing'">
+								<button class="button button--primary" type="button" @click="nextPuzzle()" x-text="state.challenge?.current === state.challenge?.total ? 'Finish run' : 'Next puzzle →'"></button>
+							</div>
+						</aside>
+					</section>
+				</div>
+			</template>
+		</main>
+
+		<footer><span>One position. Every forced move.</span><span>Built for short, sharp thinking.</span></footer>
+	</div>
+</body>
+</html>
