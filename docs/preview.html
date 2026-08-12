@@ -1,0 +1,251 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Minesight Mockup 4</title>
+<style>
+	:root {
+		--bg: #fafafa;
+		--ink: #101010;
+		--muted: #777;
+		--line: #d3d3d3;
+		--open: #fff;
+		--cell: #d8d8d8;
+		--accent: #111
+	}
+
+	* {
+		box-sizing: border-box
+	}
+
+	body {
+		margin: 0;
+		background: var(--bg);
+		color: var(--ink);
+		font: 15px/1.35 Georgia, serif
+	}
+
+	.app {
+		max-width: 500px;
+		margin: auto;
+		padding: 18px 14px 40px
+	}
+
+	.header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		border-bottom: 2px solid var(--ink);
+		padding-bottom: 8px;
+		margin-bottom: 12px
+	}
+
+	.brand {
+		font: 800 26px/1 ui-sans-serif, system-ui
+	}
+
+	.mode-switch {
+		display: flex;
+		gap: 12px
+	}
+
+	.mode-switch button {
+		border: 0;
+		background: none;
+		padding: 0;
+		color: var(--muted);
+		font: 700 13px ui-sans-serif, system-ui
+	}
+
+	.mode-switch button.active {
+		color: var(--ink);
+		text-decoration: underline;
+		text-underline-offset: 4px
+	}
+
+	.context {
+		display: flex;
+		justify-content: space-between;
+		align-items: end;
+		margin: 8px 0 10px
+	}
+
+	.context h1 {
+		font-size: 18px;
+		margin: 0
+	}
+
+	.context .small {
+		font: 12px ui-sans-serif, system-ui;
+		color: var(--muted);
+		text-align: right
+	}
+
+	.board {
+		width: min(94vw, 430px);
+		aspect-ratio: 1;
+		display: grid;
+		grid-template-columns: repeat(8, 1fr);
+		gap: 1px;
+		background: #111;
+		margin: 0 auto 12px;
+		border: 1px solid #111
+	}
+
+	.cell {
+		border: 0;
+		background: var(--cell);
+		display: grid;
+		place-items: center;
+		font: 800 clamp(15px, 5vw, 24px) ui-monospace, monospace
+	}
+
+	.cell.open {
+		background: var(--open)
+	}
+
+	.cell.inactive {
+		background: #eee;
+		color: #bbb
+	}
+
+	.n1 {
+		color: #2055a5
+	}
+
+	.n2 {
+		color: #317441
+	}
+
+	.n3 {
+		color: #a33c32
+	}
+
+	.toolbar {
+		display: flex;
+		gap: 8px
+	}
+
+	.toolbar button,
+	.toolbar select,
+	.toolbar input {
+		font: 14px ui-sans-serif, system-ui;
+		border: 1px solid var(--line);
+		background: white;
+		padding: 11px
+	}
+
+	.toolbar button {
+		flex: 1
+	}
+
+	.toolbar .primary {
+		background: #111;
+		color: white;
+		border-color: #111
+	}
+
+	.practice-settings {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		gap: 8px;
+		margin-bottom: 10px
+	}
+
+	.practice-settings select {
+		width: 100%;
+		font: 14px ui-sans-serif, system-ui;
+		border: 1px solid var(--line);
+		padding: 10px;
+		background: white
+	}
+
+	.quiet {
+		font: 12px ui-sans-serif, system-ui;
+		color: var(--muted);
+		margin-top: 10px
+	}
+
+	.challenge-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 8px;
+		margin-bottom: 10px
+	}
+
+	.challenge-row>div {
+		border-top: 1px solid var(--line);
+		padding-top: 7px
+	}
+
+	.challenge-row span {
+		display: block;
+		font: 11px ui-sans-serif, system-ui;
+		color: var(--muted)
+	}
+
+	.challenge-row strong {
+		font: 700 18px ui-sans-serif, system-ui
+	}
+
+	.stages {
+		display: flex;
+		gap: 4px;
+		margin-bottom: 10px
+	}
+
+	.stages i {
+		height: 5px;
+		flex: 1;
+		background: #ddd
+	}
+
+	.stages i.done {
+		background: #111
+	}
+
+	.stages i.now {
+		background: #777
+	}
+</style>
+<div class="app">
+	<div class="header">
+		<div class="brand">Minesight</div>
+		<div class="mode-switch"><button id="ps" class="active">Practice</button><button id="cs">Challenge</button>
+		</div>
+	</div>
+	<section id="practice">
+		<div class="context">
+			<h1>Practice</h1>
+			<div class="small">infinite · no pressure</div>
+		</div>
+		<div class="practice-settings"><select>
+				<option>Easy</option>
+				<option selected>Medium</option>
+				<option>Hard</option>
+				<option>Expert</option>
+			</select><button style="border:1px solid var(--line);background:white;padding:0 13px">↻</button></div>
+		<div class="board" id="pb"></div>
+		<div class="toolbar"><button>Hint</button><button class="primary">Next</button></div>
+		<div class="quiet">Hints can reveal one deduction at a time. Mistakes simply reset the puzzle.</div>
+	</section>
+	<section id="challenge" hidden>
+		<div class="context">
+			<h1>Challenge</h1>
+			<div class="small">Seed 7KQ9-M2</div>
+		</div>
+		<div class="challenge-row">
+			<div><span>Progress</span><strong>7 / 16</strong></div>
+			<div><span>Elapsed</span><strong>01:46.3</strong></div>
+		</div>
+		<div class="stages">${''}</div>
+		<div class="board" id="cb"></div>
+		<div class="toolbar"><button>Give up</button><button class="primary">Next</button></div>
+		<div class="quiet">Same seed = same run. Share the seed to compare times on identical puzzles.</div>
+	</section>
+</div>
+<script>
+	const vals = [0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 2, 2, 2, 1, 0, 0, 1, 2, -1, -1, 2, 1, 0, 0, 1, 2, -1, -1, 3, 2, 1, 0, 0, 1, 2, 3, -1, -1, -2, -2, 0, 0, 1, 2, -1, -2, -2, -2, 0, 0, 1, 2, -1, -2, -2, -2, 0, 0, 0, 1, -1, -2, -2, -2];
+	function draw(id) { let e = document.getElementById(id); vals.forEach(v => { let b = document.createElement('button'); b.className = 'cell ' + (v >= 0 ? 'open ' : '') + (v == -2 ? 'inactive ' : ''); if (v > 0) { b.textContent = v; b.classList.add('n' + Math.min(v, 3)) } e.appendChild(b) }) } draw('pb'); draw('cb');
+	const stages = document.querySelector('.stages'); for (let i = 0; i < 16; i++) { let e = document.createElement('i'); e.className = i < 7 ? 'done' : i === 7 ? 'now' : ''; stages.appendChild(e) }
+	function setMode(m) { practice.hidden = m !== 'p'; challenge.hidden = m !== 'c'; ps.classList.toggle('active', m === 'p'); cs.classList.toggle('active', m === 'c') } ps.onclick = () => setMode('p'); cs.onclick = () => setMode('c');
+</script>

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Minesweeper Tactics</title>
+	<link rel="stylesheet" href="./index.css" />
+</head>
+<body>
+	<main class="app" x-data="mineTacs()" x-cloak>
+		<header class="header">
+			<div class="brand">Minesight</div>
+			<nav class="mode-switch" aria-label="Game mode">
+				<button
+					type="button"
+					:class="{ active: mode === 'practice' }"
+					:aria-pressed="mode === 'practice'"
+					@click="mode = 'practice'"
+				>Practice</button>
+				<button
+					type="button"
+					:class="{ active: mode === 'challenge' }"
+					:aria-pressed="mode === 'challenge'"
+					@click="mode = 'challenge'"
+				>Challenge</button>
+			</nav>
+		</header>
+
+		<section x-show="mode === 'practice'">
+			<div class="context">
+				<h1>Practice</h1>
+				<div class="small">infinite · no pressure</div>
+			</div>
+
+			<div class="practice-settings">
+				<label class="sr-only" for="difficulty">Difficulty</label>
+				<select id="difficulty" x-model="practice.difficulty">
+					<option>Easy</option>
+					<option>Medium</option>
+					<option>Hard</option>
+					<option>Expert</option>
+				</select>
+				<button type="button" aria-label="Reset practice board" @click="newPractice()">↻</button>
+			</div>
+
+			<div class="board" aria-label="Practice minesweeper board">
+				<template x-for="cell in practice.field" :key="cell.i">
+					<button
+						type="button"
+						class="cell"
+						:class="cell.class"
+						:aria-label="cell.label"
+						:disabled="cell.mine"
+						x-text="cell.value || ''"
+					></button>
+				</template>
+			</div>
+
+			<div class="toolbar">
+				<button type="button" title="Hint reveals one known square">Hint</button>
+				<button type="button" class="primary" @click="newPractice()">Next</button>
+			</div>
+			<p class="quiet">Hints can reveal one deduction at a time. Mistakes simply reset the puzzle.</p>
+		</section>
+
+		<section x-show="mode === 'challenge'">
+			<div class="context">
+				<h1>Challenge</h1>
+				<div class="small">Seed <span x-text="challenge.seed"></span></div>
+			</div>
+
+			<div class="challenge-row">
+				<div>
+					<span>Progress</span>
+					<strong x-text="`${challenge.progress} / ${challenge.total}`"></strong>
+				</div>
+				<div>
+					<span>Elapsed</span>
+					<strong x-text="challenge.elapsed"></strong>
+				</div>
+			</div>
+
+			<div class="stages" aria-label="Challenge progress">
+				<template x-for="stage in challenge.total" :key="stage">
+					<i :class="{ done: stage <= challenge.progress, now: stage === challenge.progress + 1 }"></i>
+				</template>
+			</div>
+
+			<div class="board" aria-label="Challenge minesweeper board">
+				<template x-for="cell in challenge.field" :key="cell.i">
+					<button
+						type="button"
+						class="cell"
+						:class="cell.class"
+						:aria-label="cell.label"
+						:disabled="cell.mine"
+						x-text="cell.value || ''"
+					></button>
+				</template>
+			</div>
+
+			<div class="toolbar">
+				<button type="button">Give up</button>
+				<button type="button" class="primary">Next</button>
+			</div>
+			<p class="quiet">Same seed = same run. Share the seed to compare times on identical puzzles.</p>
+		</section>
+	</main>
+
+	<script src="./index.js"></script>
+	<script src="./alpine.min.js" defer></script>
+</body>
+</html>
