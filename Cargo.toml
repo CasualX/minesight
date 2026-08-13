@@ -1,0 +1,10 @@
+[package]
+name = "minetacs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+urandom = { version = "1.0.0-alpha.2", default-features = false }
+
+[dev-dependencies]
+urandom = "1.0.0-alpha.2"
