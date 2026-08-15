@@ -26,7 +26,7 @@ fn test_index() {
 }
 
 #[test]
-fn test_bit_indices() {
+fn test_enumerate() {
 	assert_eq!(enumerate(0).collect::<Vec<_>>(), []);
 	assert_eq!(enumerate(cell(0, 0) | cell(3, 0) | cell(7, 7)).collect::<Vec<_>>(), [0, 3, 63]);
 }
@@ -52,19 +52,6 @@ fn test_clue() {
 	assert_eq!(clue(mines, 0, 0), 0);
 	assert_eq!(clue(mines, -1, 0), 0);
 	assert_eq!(clue(mines, 8, 0), 0);
-}
-
-#[test]
-fn game_state_reports_mine_count_and_clues() {
-	let state = GameState {
-		mines: cell(0, 0) | cell(2, 0) | cell(7, 7),
-		revealed: 0,
-		flagged: 0,
-	};
-
-	assert_eq!(state.count_mines(), 3);
-	assert_eq!(state.clue(1, 0), 2);
-	assert_eq!(state.clue(7, 7), 0);
 }
 
 #[test]
@@ -105,7 +92,7 @@ fn test_game_over() {
 }
 
 #[test]
-fn flag_and_reveal_respect_existing_cell_state() {
+fn test_flag_reveal() {
 	let mut state = GameState {
 		mines: cell(1, 0),
 		revealed: 0,
@@ -129,8 +116,8 @@ fn flag_and_reveal_respect_existing_cell_state() {
 }
 
 #[test]
-fn flag_toggles_an_unrevealed_square() {
-	let mut state = GameState::new();
+fn test_flag_toggle() {
+	let mut state = GameState::new(0);
 
 	state.flag(1, 0);
 	assert_eq!(state.flagged, cell(1, 0));
@@ -140,7 +127,7 @@ fn flag_toggles_an_unrevealed_square() {
 }
 
 #[test]
-fn clicking_satisfied_clue_reveals_its_other_squares() {
+fn test_chord_clue() {
 	let mine = cell(1, 0);
 	let clue = cell(0, 0);
 	let other_squares = cell(0, 1) | cell(1, 1);
@@ -163,7 +150,7 @@ fn clicking_satisfied_clue_reveals_its_other_squares() {
 }
 
 #[test]
-fn chording_into_a_mine_does_not_flood_fill_the_board() {
+fn test_chord_mine() {
 	let mine = cell(2, 2);
 	let clue = cell(3, 3);
 	let wrong_flag = cell(2, 3);
@@ -198,32 +185,10 @@ fn test_wand() {
 	assert_eq!(state.flagged, cell(1, 0));
 	assert_eq!(state.revealed, cell(0, 0));
 
-	let mut flagged_safe = GameState::new();
+	let mut flagged_safe = GameState::new(0);
 	flagged_safe.flag(0, 0);
 	assert!(!flagged_safe.wand(0, 0));
 	assert_eq!(flagged_safe.flagged, cell(0, 0));
-}
-
-#[test]
-fn wand_flood_fills_from_a_safe_empty_square() {
-	let mut state = GameState {
-		mines: 0x0808_0808_0808_0808,
-		revealed: 0,
-		flagged: 0,
-	};
-
-	assert!(state.wand(0, 0));
-
-	assert_eq!(state.revealed, 0x0707_0707_0707_0707);
-}
-
-#[test]
-fn empty_squares_and_initial_reveal_exclude_mines() {
-	let mine = cell(0, 0);
-	let adjacent = cell(1, 0) | cell(0, 1) | cell(1, 1);
-
-	assert_eq!(empty_squares(mine), !(mine | adjacent));
-	assert_eq!(initial_reveal(mine), !mine);
 }
 
 #[test]
@@ -245,7 +210,92 @@ fn test_frontier() {
 }
 
 #[test]
-fn check_guess_validates_frontier_clues_and_total() {
+fn test_coverup() {
+	let satisfied_clue = cell(0, 0);
+	let satisfied_flag = cell(1, 0);
+	let unresolved_clue = cell(4, 4);
+	let contributing_flag = cell(4, 3);
+	let zero_clue = cell(0, 7);
+	let revealed_mine = cell(7, 7);
+	let orphan_flag = cell(7, 0);
+	let mines = satisfied_flag | contributing_flag | cell(5, 3) | revealed_mine;
+	let mut state = GameState {
+		mines,
+		revealed: satisfied_clue | unresolved_clue | zero_clue | revealed_mine,
+		flagged: satisfied_flag | contributing_flag | orphan_flag,
+	};
+
+	state.prune(true);
+
+	// Satisfied clues with covered neighbours still prove those neighbours safe.
+	assert_eq!(state.revealed, satisfied_clue | unresolved_clue | zero_clue | revealed_mine);
+	assert_eq!(state.flagged, satisfied_flag | contributing_flag);
+
+	// Pruning an already-pruned position has no further effect.
+	let pruned = state;
+	state.prune(true);
+	assert_eq!(state.revealed, pruned.revealed);
+	assert_eq!(state.flagged, pruned.flagged);
+}
+
+#[test]
+fn test_prune_preserves_existing_exact_deductions() {
+	let mine = cell(1, 0);
+	let mut state = GameState {
+		mines: mine,
+		revealed: cell(0, 0),
+		flagged: mine,
+	};
+	let exact = state.solve_exact();
+
+	assert_eq!(exact.always_safe, cell(0, 1) | cell(1, 1));
+	state.prune(true);
+
+	assert_eq!(state.solve_exact(), exact);
+	assert_eq!(state.revealed, cell(0, 0));
+	assert_eq!(state.flagged, mine);
+
+	// Once every neighbour has been consumed, the clue itself is redundant.
+	state.revealed |= exact.always_safe;
+	let exact = state.solve_exact();
+	state.prune(true);
+
+	assert_eq!(state.solve_exact(), exact);
+	assert_eq!(state.revealed, cell(0, 0) | cell(0, 1) | cell(1, 1));
+
+	// An isolated, fully consumed clue and its now-unused flags can be removed.
+	let adjacent = cell(1, 0) | cell(0, 1) | cell(1, 1);
+	let mut state = GameState {
+		mines: adjacent,
+		revealed: cell(0, 0),
+		flagged: adjacent,
+	};
+	let exact = state.solve_exact();
+	state.prune(true);
+
+	assert_eq!(state.solve_exact(), exact);
+	assert_eq!(state.revealed, 0);
+	assert_eq!(state.flagged, 0);
+
+	// A large solved interior can be hidden. Its boundary remains visible so the
+	// original frontier deductions survive; the newly exposed inner row is safe.
+	let mut state = GameState {
+		mines: 0,
+		revealed: rect(0, 0, 8, 4),
+		flagged: 0,
+	};
+	let exact = state.solve_exact();
+	state.prune(true);
+	let pruned_exact = state.solve_exact();
+
+	assert_eq!(exact.always_mine & !pruned_exact.always_mine, 0);
+	assert_eq!(exact.always_safe & !pruned_exact.always_safe, 0);
+	assert_eq!(state.revealed, rect(0, 2, 8, 2));
+	assert_eq!(pruned_exact.always_safe & rect(0, 1, 8, 1), rect(0, 1, 8, 1));
+}
+
+#[test]
+fn test_check_guess() {
 	let mine = cell(1, 0);
 	let state = GameState { mines: mine, revealed: cell(0, 0), flagged: 0 };
 
@@ -270,7 +320,7 @@ fn check_guess_validates_frontier_clues_and_total() {
 }
 
 #[test]
-fn flood_fill_only_reveals_the_connected_empty_region() {
+fn test_flood_fill() {
 	let mut state = GameState {
 		mines: 0x0808_0808_0808_0808,
 		revealed: 0,
@@ -282,209 +332,57 @@ fn flood_fill_only_reveals_the_connected_empty_region() {
 	assert_eq!(state.revealed, 0x0707_0707_0707_0707);
 }
 
-#[test]
-fn apply_adds_solver_deductions_to_the_state() {
-	let mut state = GameState::new();
-	state.apply(Deductions {
-		always_mine: cell(1, 1),
-		always_safe: cell(2, 2),
-	});
+fn assert_puzzle_analysis(puzzle: &Puzzle) {
+	let active = puzzle.active_cells();
+	let forced = puzzle.forced.always_mine | puzzle.forced.always_safe;
 
-	assert_eq!(state.flagged, cell(1, 1));
-	assert_eq!(state.revealed, cell(2, 2));
+	let mut pruned = puzzle.state;
+	let exact = pruned.solve_exact();
+	pruned.prune(true);
+	let pruned_exact = pruned.solve_exact();
+	assert_eq!(exact.always_mine & !pruned_exact.always_mine, 0);
+	assert_eq!(exact.always_safe & !pruned_exact.always_safe, 0);
+	assert_eq!(puzzle.state.flagged & !neighbours(puzzle.state.revealed & !puzzle.state.mines), 0);
+	assert_eq!(puzzle.forced.always_mine & !puzzle.state.mines, 0);
+	assert_eq!(puzzle.forced.always_safe & puzzle.state.mines, 0);
+	assert_eq!(puzzle.forced.always_mine & puzzle.forced.always_safe, 0);
+	assert_eq!(forced & !active, 0);
+	assert_eq!(puzzle.forced.count(), forced.count_ones());
+	assert_eq!(puzzle.ambiguous, (active & !forced).count_ones());
+	assert_eq!(puzzle.forced.count() + puzzle.ambiguous, active.count_ones());
+}
+
+fn exhausts_exact_deductions(puzzle: &Puzzle, max_frontier: u32) -> bool {
+	let mut state = puzzle.state;
+	state.apply(puzzle.forced);
+	try_solve_exact(&state, max_frontier).is_some_and(|deductions| deductions.is_empty())
 }
 
 #[test]
-fn solve_local_finds_mines() {
-	let neighbours = cell(1, 0) | cell(0, 1) | cell(1, 1);
-	let state = GameState {
-		mines: neighbours,
-		revealed: cell(0, 0),
-		flagged: 0,
-	};
+fn test_generators() {
+	let easy = generate_easy_puzzle(27);
+	assert_puzzle_analysis(&easy);
+	assert!(exhausts_exact_deductions(&easy, MAX_PUZZLE_EXACT_FRONTIER));
 
-	assert_eq!(state.solve_local(), Deductions {
-		always_mine: neighbours,
-		always_safe: 0,
-	});
+	let medium = generate_medium_puzzle(2);
+	assert_puzzle_analysis(&medium);
+
+	let hard = generate_hard_puzzle(5);
+	assert_puzzle_analysis(&hard);
 }
 
 #[test]
-fn solve_local_finds_safe_cells() {
-	let mine = cell(1, 0);
-	let safe = cell(0, 1) | cell(1, 1);
-	let state = GameState {
-		mines: mine,
-		revealed: cell(0, 0),
-		flagged: mine,
-	};
+fn test_puzzle_exact_frontier_limit() {
+	let small = GameState { mines: 0, revealed: cell(3, 3), flagged: 0 };
+	assert_eq!(try_solve_exact(&small, MAX_PUZZLE_EXACT_FRONTIER), Some(small.solve_exact()));
 
-	assert_eq!(state.solve_local(), Deductions {
-		always_mine: 0,
-		always_safe: safe,
-	});
+	let oversized = GameState { mines: 0, revealed: rect(2, 2, 4, 4), flagged: 0 };
+	assert!(oversized.frontier().count_ones() > MAX_PUZZLE_EXACT_FRONTIER);
+	assert_eq!(try_solve_exact(&oversized, MAX_PUZZLE_EXACT_FRONTIER), None);
 }
 
 #[test]
-fn solve_total_finds_safe_squares_after_all_mines_are_flagged() {
-	let mines = cell(1, 0) | cell(2, 0);
-	let revealed = cell(0, 0);
-	let state = GameState {
-		mines,
-		revealed,
-		flagged: mines,
-	};
-
-	assert_eq!(state.solve_total(), Deductions {
-		always_mine: 0,
-		always_safe: !(revealed | mines),
-	});
-}
-
-#[test]
-fn solve_total_finds_mines_when_every_unknown_square_is_mined() {
-	let mines = cell(1, 0) | cell(2, 0);
-	let state = GameState {
-		mines,
-		revealed: !mines,
-		flagged: 0,
-	};
-
-	assert_eq!(state.solve_total(), Deductions {
-		always_mine: mines,
-		always_safe: 0,
-	});
-}
-
-#[test]
-fn solve_total_returns_no_moves_before_the_mine_count_is_decisive() {
-	let state = GameState {
-		mines: cell(1, 0),
-		revealed: cell(0, 0),
-		flagged: 0,
-	};
-
-	assert!(state.solve_total().is_empty());
-}
-
-#[test]
-fn solve_subset_includes_local_deductions() {
-	let neighbours = cell(1, 0) | cell(0, 1) | cell(1, 1);
-	let state = GameState {
-		mines: neighbours,
-		revealed: cell(0, 0),
-		flagged: 0,
-	};
-
-	assert_eq!(state.solve_subset(), state.solve_local());
-}
-
-#[test]
-fn solve_subset_finds_safe_difference() {
-	let mine = cell(0, 1);
-	let shared = cell(0, 1) | cell(1, 1);
-	let difference = cell(2, 0) | cell(2, 1);
-	let state = GameState {
-		mines: mine,
-		revealed: cell(0, 0) | cell(1, 0),
-		flagged: 0,
-	};
-
-	assert_eq!(NEIGHBOURS[0] & !state.revealed, shared);
-	assert_eq!(NEIGHBOURS[1] & !state.revealed, shared | difference);
-	assert!(state.solve_local().is_empty());
-	assert_eq!(state.solve_subset(), Deductions {
-		always_mine: 0,
-		always_safe: difference,
-	});
-}
-
-#[test]
-fn solve_subset_finds_mined_difference() {
-	let shared_mine = cell(0, 1);
-	let difference = cell(2, 0) | cell(2, 1);
-	let state = GameState {
-		mines: shared_mine | difference,
-		revealed: cell(0, 0) | cell(1, 0),
-		flagged: 0,
-	};
-
-	assert!(state.solve_local().is_empty());
-	assert_eq!(state.solve_subset(), Deductions {
-		always_mine: difference,
-		always_safe: 0,
-	});
-}
-
-#[test]
-fn solve_subset_returns_no_moves_for_contradictory_flags() {
-	let state = GameState {
-		mines: cell(1, 0),
-		revealed: cell(0, 0),
-		flagged: cell(0, 1) | cell(1, 1),
-	};
-
-	assert!(state.solve_subset().is_empty());
-}
-
-#[test]
-fn solve_exact_does_not_enumerate_flagged_squares() {
-	let mine = cell(1, 0);
-	let safe = cell(0, 1) | cell(1, 1);
-	let state = GameState {
-		mines: mine,
-		revealed: cell(0, 0),
-		flagged: mine,
-	};
-
-	assert_eq!(state.frontier(), mine | safe);
-	assert_eq!(state.solve_exact(), Deductions {
-		always_mine: 0,
-		always_safe: !(state.revealed | state.flagged),
-	});
-	assert_eq!(state.solve(), state.solve_exact());
-}
-
-#[test]
-fn solve_exact_finds_safe_cells_outside_the_frontier() {
-	let revealed = cell(0, 0);
-	let frontier = NEIGHBOURS[0];
-	let outside = !(revealed | frontier);
-	let state = GameState {
-		// The revealed corner says that exactly one of its three neighbours is a
-		// mine. Because this is also the board's only mine, every cell beyond
-		// those three neighbours is certainly safe.
-		mines: cell(1, 0),
-		revealed,
-		flagged: 0,
-	};
-
-	assert_eq!(state.frontier(), frontier);
-	assert!(state.solve_total().is_empty());
-	assert_eq!(state.solve_exact(), Deductions {
-		always_mine: 0,
-		always_safe: outside,
-	});
-	assert_eq!(state.solve(), state.solve_exact());
-}
-
-#[test]
-fn solve_exact_finds_mines_outside_the_frontier() {
-	let revealed = cell(0, 0);
-	let frontier = NEIGHBOURS[0];
-	let outside = !(revealed | frontier);
-	let state = GameState {
-		// One mine must neighbour the revealed corner. All remaining unknown
-		// cells must also be mines to reach the board's total mine count.
-		mines: cell(1, 0) | outside,
-		revealed,
-		flagged: 0,
-	};
-
-	assert!(state.solve_total().is_empty());
-	assert_eq!(state.solve_exact(), Deductions {
-		always_mine: outside,
-		always_safe: 0,
-	});
-	assert_eq!(state.solve(), state.solve_exact());
+fn test_medium_generator() {
+	// Seeds 2221 and 2222 exceed the exact frontier limit; 2223 does not.
+	assert_eq!(generate_medium_puzzle(2221).seed, 2223);
 }

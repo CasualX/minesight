@@ -54,12 +54,7 @@ fn main() -> io::Result<()> {
 			let red = 20.0 + probability * 219.0;
 			let green = 47.0 + probability * 35.0;
 			let blue = 78.0 - probability * 6.0;
-			writeln!(
-				out,
-				"<div class=\"cell\" style=\"background:rgb({red:.0} {green:.0} {blue:.0})\" title=\"Cell ({x}, {y}): {:.2}%\"><span class=\"percent\">{:.1}%</span></div>",
-				probability * 100.0,
-				probability * 100.0,
-			)?;
+			writeln!(out, "<div class=\"cell\" style=\"background:rgb({red:.0} {green:.0} {blue:.0})\" title=\"Cell ({x}, {y}): {:.2}%\"><span class=\"percent\">{:.1}%</span></div>", probability * 100.0, probability * 100.0)?;
 		}
 	}
 	writeln!(out, "</div>")?;

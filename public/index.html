@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="color-scheme" content="light dark">
+	<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+	<meta name="theme-color" content="#171817" media="(prefers-color-scheme: dark)">
+	<title>Minesight</title>
+	<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+	<link rel="stylesheet" href="./index.css">
+	<link rel="stylesheet" href="./feedback.css">
+	<script type="module" src="./index.js"></script>
+</head>
+<body x-data="minesight" x-cloak>
+	<header class="site-header">
+		<a class="brand" href="./">Minesight</a>
+
+		<div class="header-actions">
+			<nav class="mode-switcher" aria-label="Game mode" x-show="mode !== 'tutorial'">
+				<button
+					type="button"
+					:class="{ active: mode === 'practice' }"
+					:aria-pressed="mode === 'practice'"
+					:disabled="challengeRunActive"
+					:title="practiceModeTitle"
+					@click="switchMode('practice')"
+				>Practice</button>
+				<button type="button" :class="{ active: mode === 'challenge' }" :aria-pressed="mode === 'challenge'" @click="switchMode('challenge')">Challenge</button>
+			</nav>
+			<button
+				type="button"
+				class="sound-toggle"
+				:class="soundToggleClass"
+				:aria-label="soundToggleText"
+				:title="soundToggleText"
+				:aria-pressed="soundEnabled"
+				@click="toggleSound()"
+			>
+				<svg x-show="soundEnabled" viewBox="0 0 24 24" aria-hidden="true">
+					<path d="M11 5 6.7 8.5H3.5v7h3.2L11 19V5Z"></path>
+					<path d="M15 9a4 4 0 0 1 0 6M17.8 6.5a7.4 7.4 0 0 1 0 11"></path>
+				</svg>
+				<svg x-show="!soundEnabled" viewBox="0 0 24 24" aria-hidden="true">
+					<path d="M11 5 6.7 8.5H3.5v7h3.2L11 19V5Z"></path>
+					<path d="m15.5 10 5 5m0-5-5 5"></path>
+				</svg>
+			</button>
+		</div>
+	</header>
+
+	<main class="app-shell">
+		<section class="game-heading">
+			<div class="heading-copy">
+				<h1 x-text="headingTitle"></h1>
+				<p x-show="headingSubtitle" x-text="headingSubtitle"></p>
+			</div>
+			<div class="timer" x-show="showChallengeTimer" aria-label="Elapsed time">
+				<span>Time</span>
+				<strong x-text="formattedTime"></strong>
+			</div>
+		</section>
+		<p class="engine-error" x-show="sharedPuzzleError" x-text="sharedPuzzleError" role="alert"></p>
+		<p class="engine-error" x-show="engineError" x-text="engineErrorMessage" role="alert"></p>
+
+		<section class="tutorial-guide" x-show="mode === 'tutorial'" aria-live="polite">
+			<span class="tutorial-progress" x-text="tutorialProgress"></span>
+			<h2 x-text="tutorialTitle"></h2>
+			<p x-text="tutorialMessage"></p>
+		</section>
+
+		<section class="difficulty-picker" x-show="mode === 'practice'">
+			<div class="practice-toolbar">
+				<label class="sr-only" for="difficulty">Difficulty</label>
+				<select id="difficulty" @change="selectDifficulty($event.target.value)">
+					<template x-for="difficulty in difficulties" :key="difficulty.key">
+						<option
+							:value="difficulty.key"
+							:selected="difficulty.key === difficultyKey"
+							x-text="difficulty.label"
+						></option>
+					</template>
+				</select>
+				<div class="practice-streak" role="status" :aria-label="practiceStreakLabel">
+					<span>Streak</span>
+					<strong x-text="practiceStreak"></strong>
+				</div>
+			</div>
+			<p class="difficulty-description" x-text="currentDifficulty.description"></p>
+		</section>
+
+		<section class="challenge-intro" x-show="showChallengeIntro" :aria-busy="challengePreparing">
+			<p class="challenge-summary">Solve 12 challenges without a mistake. They get harder as you go.</p>
+			<div class="challenge-route" :aria-label="challengeRouteLabel">
+				<template x-for="group in challengeGroups" :key="group.key">
+					<span><strong x-text="challengesPerDifficulty"></strong> <span x-text="group.label"></span></span>
+				</template>
+			</div>
+			<p class="challenge-rule">Mark every covered square the clues prove safe or mined. The clock starts with the first puzzle.</p>
+			<button
+				type="button"
+				class="challenge-start"
+				:disabled="challengePreparing"
+				@click="activateChallengeStart()"
+				x-text="challengeStartLabel"
+			></button>
+		</section>
+
+		<section class="challenge-finish" x-show="showChallengeFinish" x-transition.opacity role="status" aria-live="polite">
+			<div class="victory-effect" aria-hidden="true"><span>&#10003;</span></div>
+			<span class="challenge-kicker">Run complete</span>
+			<h2>Victory</h2>
+			<p x-text="challengeCompleteMessage"></p>
+			<div class="finish-time" aria-label="Final time">
+				<span>Final time</span>
+				<strong x-text="formattedTime"></strong>
+			</div>
+			<button type="button" class="challenge-start" @click="restartChallenge()">Play again</button>
+		</section>
+
+		<section class="challenge-path" x-show="showChallengePath" aria-label="Challenge progress">
+			<template x-for="group in challengeGroups" :key="group.key">
+				<div class="path-group">
+					<span class="path-label" x-text="group.label"></span>
+					<div class="path-steps">
+						<template x-for="step in group.steps" :key="step">
+							<span class="path-step" :class="challengeStepClass(step)" :aria-label="challengeStepLabel(step)"></span>
+						</template>
+					</div>
+				</div>
+			</template>
+		</section>
+		<section class="board-card" x-show="showBoard" :class="boardResultClass">
+			<div class="board-wrap">
+				<div class="minefield-shell" :aria-busy="boardPreparing">
+					<div class="minefield" role="group" :aria-label="boardAriaLabel" :style="minefieldStyle">
+						<template x-for="cell in cells" :key="cell.key">
+							<button
+								type="button"
+								class="cell"
+								:class="cell.className"
+								:aria-label="cell.label"
+								:disabled="cell.disabled"
+								@click="tapCell(cell.x, cell.y)"
+								@contextmenu.prevent="contextMenuCell(cell.x, cell.y)"
+								x-text="cell.text"
+							></button>
+						</template>
+					</div>
+					<div class="board-loading" x-show="practiceSearchingVisible" x-transition.opacity role="status" aria-live="polite">
+						<span class="board-loading-spinner" aria-hidden="true"></span>
+						<strong>Building a puzzle…</strong>
+						<span>Trying different board layouts</span>
+					</div>
+				</div>
+			</div>
+			<div class="input-help-row">
+				<p class="input-help" x-text="inputHelp"></p>
+				<button
+					x-show="mode === 'practice'"
+					type="button"
+					class="share-puzzle"
+					:disabled="sharePuzzleDisabled"
+					aria-label="Share this puzzle"
+					title="Share this puzzle"
+					@click="sharePracticePuzzle()"
+				>
+					<svg viewBox="0 0 24 24" aria-hidden="true">
+						<circle cx="18" cy="5" r="2.5"></circle>
+						<circle cx="6" cy="12" r="2.5"></circle>
+						<circle cx="18" cy="19" r="2.5"></circle>
+						<path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5"></path>
+					</svg>
+				</button>
+			</div>
+
+			<div class="practice-status" x-show="showPuzzleStatus" role="status" aria-live="polite">
+				<strong x-text="statusTitle"></strong>
+				<span x-text="statusMessage"></span>
+			</div>
+
+			<div class="result-banner" x-show="mode === 'challenge'" role="status" aria-live="polite">
+				<div>
+					<strong x-text="statusTitle"></strong>
+					<span x-text="statusMessage"></span>
+				</div>
+				<button
+					type="button"
+					:disabled="challengeResultActionDisabled"
+					@click="activateChallengeResultAction()"
+					x-text="challengeResultActionLabel"
+				></button>
+			</div>
+		</section>
+
+		<section class="game-controls" x-show="mode === 'shared' && !sharedPuzzleError" aria-label="Shared puzzle controls">
+			<div class="board-actions shared-actions">
+				<button
+					type="button"
+					class="secondary"
+					:class="hintButtonClass"
+					:disabled="hintButtonDisabled"
+					:aria-pressed="hintUsed"
+					@click="useHint()"
+				>Hint</button>
+			</div>
+		</section>
+		<section class="game-controls" x-show="mode === 'practice'" aria-label="Board controls">
+			<div class="board-actions" :class="practiceActionsClass">
+				<button
+					type="button"
+					class="secondary"
+					:class="hintButtonClass"
+					:disabled="hintButtonDisabled"
+					:aria-pressed="hintUsed"
+					@click="useHint()"
+				>Hint</button>
+				<button
+					type="button"
+					:class="practiceBoardActionClass"
+					:disabled="boardPreparing"
+					@click="activatePracticeBoardAction()"
+					x-text="practiceBoardActionLabel"
+				></button>
+			</div>
+		</section>
+		<section class="game-controls" x-show="mode === 'tutorial'" aria-label="Introduction controls">
+			<div class="board-actions tutorial-actions">
+				<button
+					x-show="!tutorialComplete"
+					type="button"
+					class="secondary"
+					@click="finishTutorial()"
+				>Skip introduction</button>
+				<button
+					x-show="tutorialComplete"
+					type="button"
+					class="primary"
+					@click="finishTutorial()"
+				>Start practicing</button>
+			</div>
+		</section>
+		<section class="game-controls" x-show="showChallengeControls" aria-label="Challenge controls">
+			<div class="board-actions challenge-actions">
+				<button
+					type="button"
+					class="secondary give-up-button"
+					:class="giveUpButtonClass"
+					:style="giveUpButtonStyle"
+					:disabled="!challengeRunActive"
+					:aria-label="giveUpButtonLabel"
+					@pointerdown="beginGiveUpGesture()"
+					@pointerup="cancelGiveUpGesture()"
+					@pointerleave="cancelGiveUpGesture()"
+					@pointercancel="cancelGiveUpGesture()"
+					@keydown.space.prevent="beginGiveUpGesture()"
+					@keyup.space.prevent="cancelGiveUpGesture()"
+					@keydown.enter.prevent="beginGiveUpGesture()"
+					@keyup.enter.prevent="cancelGiveUpGesture()"
+					title="Hold to give up"
+				>
+					<span class="give-up-progress" aria-hidden="true"></span>
+					<span class="give-up-label">Give up</span>
+				</button>
+			</div>
+		</section>
+		<p class="sr-only" aria-live="polite" x-text="incorrectFeedbackMessage"></p>
+		<p class="share-feedback" x-show="shareFeedback" x-transition.opacity role="status" aria-live="polite" x-text="shareFeedback"></p>
+	</main>
+</body>
+</html>

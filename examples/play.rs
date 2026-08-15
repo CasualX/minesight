@@ -8,10 +8,12 @@ const HELP: &str = "Commands:
   solve subset    Apply subset deductions (alias: ss)
   solve total     Apply total mine-count deductions (alias: st)
   solve local     Apply local deductions (alias: sl)
+  solve pair      Apply neighbouring two-clue deductions (alias: sp)
   check exact     Check for exact deductions without applying them (alias: ce)
   check subset    Check for subset deductions without applying them (alias: cs)
   check total     Check for total mine-count deductions without applying them (alias: ct)
   check local     Check for local deductions without applying them (alias: cl)
+  check pair      Check neighbouring two-clue deductions (alias: cp)
   help            Show this help (alias: h)
   quit            Leave the game (aliases: q, exit)
 
@@ -29,10 +31,12 @@ enum Action {
 	SolveSubset,
 	SolveTotal,
 	SolveLocal,
+	SolveTwoClue,
 	CheckExact,
 	CheckSubset,
 	CheckTotal,
 	CheckLocal,
+	CheckTwoClue,
 	Help,
 	Quit,
 }
@@ -70,10 +74,12 @@ impl FromStr for Action {
 			["ss"] | ["solve", "subset"] => Ok(Action::SolveSubset),
 			["st"] | ["solve", "total"] => Ok(Action::SolveTotal),
 			["sl"] | ["solve", "local"] => Ok(Action::SolveLocal),
+			["sp"] | ["solve", "pair"] | ["solve", "two"] => Ok(Action::SolveTwoClue),
 			["ce"] | ["check", "exact"] => Ok(Action::CheckExact),
 			["cs"] | ["check", "subset"] => Ok(Action::CheckSubset),
 			["ct"] | ["check", "total"] => Ok(Action::CheckTotal),
 			["cl"] | ["check", "local"] => Ok(Action::CheckLocal),
+			["cp"] | ["check", "pair"] | ["check", "two"] => Ok(Action::CheckTwoClue),
 			["x" | "reveal", x, y] => Ok(Action::Reveal(
 				parse_coordinate(x)?,
 				parse_coordinate(y)?,
@@ -90,8 +96,8 @@ impl FromStr for Action {
 			["x" | "reveal", ..] => Err(usage!("reveal <x> <y>")),
 			["f" | "flag", ..] => Err(usage!("flag <x> <y>")),
 			["w" | "wand", ..] => Err(usage!("wand <x> <y>")),
-			["solve", ..] => Err(ParseActionError("Invalid syntax. Usage: `solve exact`, `solve subset`, `solve total`, or `solve local`.")),
-			["check", ..] => Err(ParseActionError("Invalid syntax. Usage: `check exact`, `check subset`, `check total`, or `check local`.")),
+			["solve", ..] => Err(ParseActionError("Invalid syntax. See `help` for the available solve commands.")),
+			["check", ..] => Err(ParseActionError("Invalid syntax. See `help` for the available check commands.")),
 			_ => Err(ParseActionError("Unknown command. Type `help` to see the available commands.")),
 		}
 	}
@@ -135,14 +141,14 @@ fn read_action() -> std::io::Result<Option<Action>> {
 	}
 }
 
-fn apply_solver(state: &mut minetacs::GameState, name: &str, solver: fn(&minetacs::GameState) -> minetacs::Deductions) {
+fn apply_solver(state: &mut minetacs::GameState, name: &str, solver: impl Fn(&minetacs::GameState) -> minetacs::Deductions) {
 	let mut deductions = 0;
 	loop {
 		let result = solver(state);
 		if result.is_empty() {
 			break;
 		}
-		deductions += (result.always_mine | result.always_safe).count_ones();
+		deductions += result.count();
 		state.apply(result);
 	}
 
@@ -154,7 +160,7 @@ fn apply_solver(state: &mut minetacs::GameState, name: &str, solver: fn(&minetac
 	}
 }
 
-fn check_solver(state: &minetacs::GameState, name: &str, solver: fn(&minetacs::GameState) -> minetacs::Deductions) {
+fn check_solver(state: &minetacs::GameState, name: &str, solver: impl Fn(&minetacs::GameState) -> minetacs::Deductions) {
 	if solver(state).is_empty() {
 		println!("The {name} solver cannot make progress.");
 	}
@@ -182,7 +188,7 @@ fn generate_board() -> minetacs::GameState {
 
 	loop {
 		let gradient = minetacs::Gradient::random(&mut rng, CENTER_DENSITY, DENSITY_STEP);
-		let state = minetacs::GameState::random(rng.random(), &gradient);
+		let state = minetacs::GameState::random(&mut rng, &gradient);
 		let mut subset_state = state;
 
 		loop {
@@ -251,10 +257,12 @@ fn main() {
 			Action::SolveSubset => apply_solver(&mut state, "subset", minetacs::GameState::solve_subset),
 			Action::SolveTotal => apply_solver(&mut state, "total", minetacs::GameState::solve_total),
 			Action::SolveLocal => apply_solver(&mut state, "local", minetacs::GameState::solve_local),
+			Action::SolveTwoClue => apply_solver(&mut state, "neighbouring two-clue", minetacs::GameState::solve_two_clue),
 			Action::CheckExact => check_solver(&state, "exact", minetacs::GameState::solve_exact),
 			Action::CheckSubset => check_solver(&state, "subset", minetacs::GameState::solve_subset),
 			Action::CheckTotal => check_solver(&state, "total", minetacs::GameState::solve_total),
 			Action::CheckLocal => check_solver(&state, "local", minetacs::GameState::solve_local),
+			Action::CheckTwoClue => check_solver(&state, "neighbouring two-clue", minetacs::GameState::solve_two_clue),
 			Action::Help => println!("{HELP}"),
 			Action::Quit => break 'game None,
 		}
@@ -293,10 +301,12 @@ fn parses_non_coordinate_actions() {
 	assert_eq!("solve subset".parse(), Ok(Action::SolveSubset));
 	assert_eq!("solve total".parse(), Ok(Action::SolveTotal));
 	assert_eq!("solve local".parse(), Ok(Action::SolveLocal));
+	assert_eq!("solve pair".parse(), Ok(Action::SolveTwoClue));
 	assert_eq!("ce".parse(), Ok(Action::CheckExact));
 	assert_eq!("check subset".parse(), Ok(Action::CheckSubset));
 	assert_eq!("check total".parse(), Ok(Action::CheckTotal));
 	assert_eq!("check local".parse(), Ok(Action::CheckLocal));
+	assert_eq!("cp".parse(), Ok(Action::CheckTwoClue));
 	assert_eq!("HELP".parse(), Ok(Action::Help));
 	assert_eq!("quit".parse(), Ok(Action::Quit));
 }
