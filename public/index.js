@@ -4,12 +4,10 @@ import { MineField } from './mines.js';
 import { feedbackEffects } from './feedback.js';
 import { gameSounds } from './sounds.js';
 
-const CHALLENGES_PER_DIFFICULTY = 4;
+const CHALLENGES_PER_DIFFICULTY = 3;
 const BOARD_SIZE = 8;
-const MAX_PUZZLES_PER_SEARCH = 1000;
-const PUZZLE_SEARCH_SLICE_MS = 8;
+const PUZZLE_ATTEMPTS = 1000;
 const GIVE_UP_HOLD_MS = 900;
-const NO_MATCHING_PUZZLE_ERROR = 'no puzzle matching requirements was found';
 const MINESIGHT_STORAGE_KEY = 'minesight';
 const SHARED_PUZZLE_PARAMETER = 'p';
 const TUTORIAL_PARAMETER = 'tutorial';
@@ -52,6 +50,7 @@ function createTutorialField() {
 	let width = BOARD_SIZE;
 	let height = BOARD_SIZE;
 	let state = new Uint8Array(width * height);
+	/** @type {(x: number, y: number, flags: number) => void} */
 	let set = (x, y, flags) => { state[y * width + x] = flags; };
 
 	// The upper revealed region has a normal one-cell frontier. Its top-right 0
@@ -95,44 +94,37 @@ const EASY_DIFFICULTY = {
 	key: 'easy',
 	label: 'Easy',
 	generator: 'randomEasyPuzzle',
-	minForced: 4,
-	maxForced: BOARD_SIZE * BOARD_SIZE,
-	minAmbiguous: 2,
-	maxAmbiguous: BOARD_SIZE * BOARD_SIZE,
-	minActive: 0,
-	description: 'Start with the nearby clues. Each safe square or mine takes only a short chain of reasoning to find.',
+	description: 'Start with a wide-open board and use the nearby clues. Each safe square or mine takes only a short chain of reasoning to find.',
 };
 const MEDIUM_DIFFICULTY = {
 	key: 'medium',
 	label: 'Medium',
 	generator: 'randomMediumPuzzle',
-	minForced: 4,
-	maxForced: BOARD_SIZE * BOARD_SIZE,
-	minAmbiguous: 3,
-	maxAmbiguous: BOARD_SIZE * BOARD_SIZE,
-	minActive: 0,
 	description: 'Compare clues across more of the board. You may need to connect several deductions before a square is certain.',
 };
 const HARD_DIFFICULTY = {
 	key: 'hard',
 	label: 'Hard',
 	generator: 'randomHardPuzzle',
-	minForced: 3,
-	maxForced: BOARD_SIZE * BOARD_SIZE,
-	minAmbiguous: 0,
-	maxAmbiguous: BOARD_SIZE * BOARD_SIZE,
-	minActive: 8,
+	description: 'Use basic deductions on a denser board where the answers may be farther apart and require more scanning.',
+};
+const EXPERT_DIFFICULTY = {
+	key: 'expert',
+	label: 'Expert',
+	generator: 'randomExpertPuzzle',
 	description: 'The clues overlap across a larger, messier area. Keep track of several possible mine layouts at once.',
 };
 const PRACTICE_DIFFICULTIES = [
 	EASY_DIFFICULTY,
 	MEDIUM_DIFFICULTY,
 	HARD_DIFFICULTY,
+	EXPERT_DIFFICULTY,
 ];
 const CHALLENGE_DIFFICULTIES = [
 	EASY_DIFFICULTY,
 	MEDIUM_DIFFICULTY,
 	HARD_DIFFICULTY,
+	EXPERT_DIFFICULTY,
 ];
 
 function loadMinesightData() {
@@ -160,7 +152,7 @@ function saveMinesightData(key, value) {
 
 /** @type {WebAssembly.Exports | undefined} */
 let wasm;
-/** @type {{ cells: Uint8Array, seed: bigint } | undefined} */
+/** @type {{ cells: Uint8Array, seed: bigint, attempts: number } | undefined} */
 let generatedPuzzle;
 /** @type {Promise<void> | undefined} */
 let generatorLoadPromise;
@@ -171,16 +163,17 @@ async function loadPuzzleGenerator() {
 			/**
 			 * @param {number} seedLow
 			 * @param {number} seedHigh
+			 * @param {number} attempts
 			 * @param {number} pointer
 			 * @param {number} length
 			 */
-			resultPuzzle(seedLow, seedHigh, pointer, length) {
+			resultPuzzle(seedLow, seedHigh, attempts, pointer, length) {
 				if (!wasm || !(wasm.memory instanceof WebAssembly.Memory)) {
 					throw new Error('wasm returned a puzzle before exposing its memory');
 				}
 				let cells = new Uint8Array(wasm.memory.buffer, pointer, length).slice();
 				let seed = BigInt(seedLow >>> 0) | BigInt(seedHigh >>> 0) << 32n;
-				generatedPuzzle = { cells, seed };
+				generatedPuzzle = { cells, seed, attempts };
 			},
 		},
 	};
@@ -214,69 +207,77 @@ function takeGeneratedPuzzle() {
 }
 
 /**
- * @param {{ generator: string, minForced: number, maxForced: number, minAmbiguous: number, maxAmbiguous: number, minActive: number }} difficulty
+ * Invokes the raw WASM search ABI once for a complete jump-separated attempt series.
+ * The imported result callback must make the generated result available through
+ * `takeResult` before the exported function returns.
+ *
+ * @template T
+ * @param {(seedLow: number, seedHigh: number, attempts: number) => unknown} search
+ * @param {bigint} seed
+ * @param {number} attempts
+ * @param {() => T | undefined} takeResult
+ * @returns {T | undefined}
+ */
+export function invokePuzzleSearch(search, seed, attempts, takeResult) {
+	if (seed < 0n || seed > 0xffff_ffff_ffff_ffffn) {
+		throw new Error('puzzle seed must be an unsigned 64-bit integer');
+	}
+	if (!Number.isInteger(attempts) || attempts < 0 || attempts > 0xffff_ffff) {
+		throw new Error('attempts must be an unsigned 32-bit integer');
+	}
+
+	let found = Boolean(search(
+		Number(seed & 0xffff_ffffn),
+		Number(seed >> 32n),
+		attempts,
+	));
+	let result = takeResult();
+	if (found && !result) throw new Error('wasm reported success without returning a puzzle');
+	if (!found && result) throw new Error('wasm returned a puzzle while reporting failure');
+	return result;
+}
+
+/**
+ * @param {{ generator: string }} difficulty
  * @param {() => boolean} shouldContinue
  */
 async function generateField(difficulty, shouldContinue) {
 	await ensurePuzzleGenerator();
+	if (!shouldContinue()) return undefined;
 	let generatePuzzle = wasm?.[difficulty.generator];
 	if (typeof generatePuzzle !== 'function') {
 		throw new Error('the Rust puzzle generator is not loaded');
 	}
+	let search = /** @type {(seedLow: number, seedHigh: number, attempts: number) => unknown} */ (generatePuzzle);
 
-	let entropy = new Uint32Array(2);
-	crypto.getRandomValues(entropy);
-	let seed = BigInt(entropy[0]) | BigInt(entropy[1]) << 32n;
-	let searched = 0;
+	while (shouldContinue()) {
+		let entropy = new Uint32Array(2);
+		crypto.getRandomValues(entropy);
+		let seed = BigInt(entropy[0]) | BigInt(entropy[1]) << 32n;
 
-	// Always leave the current frame before starting CPU-heavy puzzle search.
-	await yieldToBrowser();
-	while (shouldContinue() && searched < MAX_PUZZLES_PER_SEARCH) {
-		let sliceStarted = window.performance.now();
-		do {
-			generatedPuzzle = undefined;
-			let found = Boolean(generatePuzzle(
-				difficulty.minForced,
-				difficulty.maxForced,
-				difficulty.minAmbiguous,
-				difficulty.maxAmbiguous,
-				difficulty.minActive,
-				Number(seed & 0xffff_ffffn),
-				Number(seed >> 32n),
-				1,
-			));
-			let puzzle = takeGeneratedPuzzle();
-			if (found) {
-				if (!puzzle) throw new Error('wasm reported success without returning a puzzle');
-				if (puzzle.cells.length !== BOARD_SIZE * BOARD_SIZE) {
-					throw new Error(`wasm returned ${puzzle.cells.length} cells instead of 64`);
-				}
-				return {
-					field: new MineField(BOARD_SIZE, BOARD_SIZE, puzzle.cells),
-					seed: puzzle.seed,
-				};
+		generatedPuzzle = undefined;
+		let puzzle = invokePuzzleSearch(search, seed, PUZZLE_ATTEMPTS, takeGeneratedPuzzle);
+		if (puzzle) {
+			if (puzzle.cells.length !== BOARD_SIZE * BOARD_SIZE) {
+				throw new Error(`wasm returned ${puzzle.cells.length} cells instead of 64`);
 			}
-			if (puzzle) throw new Error('wasm returned a puzzle while reporting failure');
-
-			searched += 1;
-			seed = BigInt.asUintN(64, seed + 1n);
+			if (!shouldContinue()) return undefined;
+			return {
+				field: new MineField(BOARD_SIZE, BOARD_SIZE, puzzle.cells),
+				seed: puzzle.seed,
+				attempts: puzzle.attempts,
+			};
 		}
-		while (
-			shouldContinue() &&
-			searched < MAX_PUZZLES_PER_SEARCH &&
-			window.performance.now() - sliceStarted < PUZZLE_SEARCH_SLICE_MS
-		);
-		if (searched < MAX_PUZZLES_PER_SEARCH) await yieldToBrowser();
+
+		// Give Alpine's state changes a chance to paint before trying a fresh seed.
+		await yieldToBrowser();
 	}
-	if (!shouldContinue()) return undefined;
-	throw new Error(NO_MATCHING_PUZZLE_ERROR);
+	return undefined;
 }
 
-/** Lets the browser paint before another puzzle-generation attempt. */
+/** Lets the browser paint before another synchronous puzzle-generation attempt. */
 function yieldToBrowser() {
 	return new Promise((resolve) => {
-		// Alpine's $nextTick is a microtask: it flushes reactive DOM changes, but
-		// does not give the browser a chance to paint before synchronous Wasm runs.
 		if (document.visibilityState === 'visible') {
 			window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
 		}
@@ -297,7 +298,7 @@ function challengePuzzleSquareCount(puzzle) {
 	return forced;// + ambiguous;
 }
 
-/** @param {Array<{ field: MineField, seed: bigint }>} puzzles */
+/** @param {Array<{ field: MineField, seed: bigint, attempts: number }>} puzzles */
 function sortChallengeTiers(puzzles) {
 	for (let start = 0; start < puzzles.length; start += CHALLENGES_PER_DIFFICULTY) {
 		let tier = puzzles.slice(start, start + CHALLENGES_PER_DIFFICULTY);
@@ -374,7 +375,7 @@ function createMinesight() {
 		practiceBoardReady: false,
 		/** @type {Record<string, PracticeState | undefined>} */
 		practiceStates,
-		/** @type {Array<{ field: MineField, seed: bigint }>} */
+		/** @type {Array<{ field: MineField, seed: bigint, attempts: number }>} */
 		challengePuzzles: [],
 		elapsedMs: 0,
 		practiceStreaks,
@@ -497,7 +498,7 @@ function createMinesight() {
 		},
 
 		get engineErrorMessage() {
-			return `Could not build a puzzle. Try again, or reload if the problem continues. Error: ${this.engineError}`;
+			return `Puzzle generator error: ${this.engineError}`;
 		},
 
 		get practiceStreakLabel() {
@@ -510,6 +511,10 @@ function createMinesight() {
 
 		get challengeRouteLabel() {
 			return `${this.challengesPerDifficulty} puzzles at each of ${this.challengeGroups.length} difficulty levels`;
+		},
+
+		get challengeSummary() {
+			return `Solve ${this.challengeTotal} challenges without a mistake. They get harder as you go.`;
 		},
 
 		get challengeStartLabel() {
@@ -1008,6 +1013,9 @@ function createMinesight() {
 			this.engineError = '';
 
 			try {
+				// Paint the initial 0 / total state, then give each completed puzzle its
+				// own frame so progress remains visible and mode changes stay responsive.
+				await yieldToBrowser();
 				for (let difficulty of CHALLENGE_DIFFICULTIES) {
 					for (let index = 0; index < CHALLENGES_PER_DIFFICULTY; index += 1) {
 						if (this.mode !== 'challenge' || preparationId !== this.challengePreparationId) return;
@@ -1016,6 +1024,7 @@ function createMinesight() {
 						));
 						if (!puzzle) return;
 						this.challengePuzzles.push(puzzle);
+						await yieldToBrowser();
 					}
 				}
 				sortChallengeTiers(this.challengePuzzles);

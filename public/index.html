@@ -90,7 +90,7 @@
 		</section>
 
 		<section class="challenge-intro" x-show="showChallengeIntro" :aria-busy="challengePreparing">
-			<p class="challenge-summary">Solve 12 challenges without a mistake. They get harder as you go.</p>
+			<p class="challenge-summary" x-text="challengeSummary"></p>
 			<div class="challenge-route" :aria-label="challengeRouteLabel">
 				<template x-for="group in challengeGroups" :key="group.key">
 					<span><strong x-text="challengesPerDifficulty"></strong> <span x-text="group.label"></span></span>
@@ -118,7 +118,12 @@
 			<button type="button" class="challenge-start" @click="restartChallenge()">Play again</button>
 		</section>
 
-		<section class="challenge-path" x-show="showChallengePath" aria-label="Challenge progress">
+		<section
+			class="challenge-path"
+			x-show="showChallengePath"
+			:style="{ '--challenges-per-difficulty': challengesPerDifficulty }"
+			aria-label="Challenge progress"
+		>
 			<template x-for="group in challengeGroups" :key="group.key">
 				<div class="path-group">
 					<span class="path-label" x-text="group.label"></span>

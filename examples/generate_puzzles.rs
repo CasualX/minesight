@@ -1,12 +1,14 @@
 use std::io::{self, Write};
 
 const DEFAULT_PUZZLES: usize = 100;
+const DEFAULT_ATTEMPTS: u32 = 1000;
 
 #[derive(Copy, Clone)]
 enum Difficulty {
 	Easy,
 	Medium,
 	Hard,
+	Expert,
 }
 
 fn parse_difficulty(value: &str) -> Option<Difficulty> {
@@ -14,6 +16,7 @@ fn parse_difficulty(value: &str) -> Option<Difficulty> {
 		"easy" => Some(Difficulty::Easy),
 		"medium" => Some(Difficulty::Medium),
 		"hard" => Some(Difficulty::Hard),
+		"expert" => Some(Difficulty::Expert),
 		_ => None,
 	}
 }
@@ -26,43 +29,29 @@ fn parse_count(value: &str) -> Result<usize, String> {
 	}
 }
 
-fn parse_args() -> (Difficulty, usize) {
+fn parse_args() -> (Difficulty, usize, u32) {
 	let matches = clap::Command::new("generate_puzzles")
 		.about("Generate an HTML gallery of Minesight puzzles")
-		.arg(clap::Arg::new("difficulty").required(true).value_parser(["easy", "medium", "hard"]))
+		.arg(clap::Arg::new("difficulty").required(true).value_parser(["easy", "medium", "hard", "expert"]))
 		.arg(clap::Arg::new("count").short('n').long("count").value_name("COUNT").value_parser(parse_count))
+		.arg(clap::Arg::new("attempts").long("attempts").value_name("ATTEMPTS").default_value("1000").value_parser(clap::value_parser!(u32)))
 		.arg(clap::Arg::new("positional_count").index(2).value_name("COUNT").value_parser(parse_count).conflicts_with("count"))
 		.get_matches();
 
 	let difficulty = parse_difficulty(matches.get_one::<String>("difficulty").unwrap()).unwrap();
 	let count = matches.get_one::<usize>("count").or_else(|| matches.get_one::<usize>("positional_count")).copied().unwrap_or(DEFAULT_PUZZLES);
-	(difficulty, count)
+	let attempts = matches.get_one::<u32>("attempts").copied().unwrap_or(DEFAULT_ATTEMPTS);
+	(difficulty, count, attempts)
 }
 
 impl Difficulty {
-	fn generate(self, seed: u64) -> minetacs::Puzzle {
+	fn generate(self, seed: u64, attempts: u32) -> Option<minetacs::Puzzle> {
 		match self {
-			Difficulty::Easy => minetacs::generate_easy_puzzle(seed),
-			Difficulty::Medium => minetacs::generate_medium_puzzle(seed),
-			Difficulty::Hard => minetacs::generate_hard_puzzle(seed),
+			Difficulty::Easy => minetacs::generate_easy_puzzle(seed, attempts),
+			Difficulty::Medium => minetacs::generate_medium_puzzle(seed, attempts),
+			Difficulty::Hard => minetacs::generate_hard_puzzle(seed, attempts),
+			Difficulty::Expert => minetacs::generate_expert_puzzle(seed, attempts),
 		}
-	}
-
-	fn accepts(self, puzzle: &minetacs::Puzzle) -> bool {
-		let counts_match = match self {
-			Difficulty::Easy => puzzle.forced.count() >= 3,
-			Difficulty::Medium => puzzle.forced.count() >= 2 && puzzle.ambiguous >= 2,
-			Difficulty::Hard => puzzle.forced.count() >= 3 && puzzle.active_cells().count_ones() >= 8,
-		};
-		let shape_matches = match self {
-			Difficulty::Easy => {
-				let mut state = puzzle.state;
-				state.apply(puzzle.forced);
-				state.solve_exact().is_empty()
-			}
-			Difficulty::Medium | Difficulty::Hard => !puzzle.forced.is_empty(),
-		};
-		counts_match && shape_matches
 	}
 }
 
@@ -71,14 +60,16 @@ fn title(difficulty: Difficulty) -> &'static str {
 		Difficulty::Easy => "Easy puzzles",
 		Difficulty::Medium => "Medium puzzles",
 		Difficulty::Hard => "Hard puzzles",
+		Difficulty::Expert => "Expert puzzles",
 	}
 }
 
 fn intro(difficulty: Difficulty) -> &'static str {
 	match difficulty {
-		Difficulty::Easy => "Find squares that must be safe or contain a mine using local deductions from nearby clues. Highlighted squares show the answers, while faded squares are outside the puzzle.",
+		Difficulty::Easy => "Start from a wide-open board and find squares that must be safe or contain a mine using local deductions from nearby clues. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Medium => "Find squares that must be safe or contain a mine by comparing clues across a wider part of the board. Highlighted squares show the answers, while faded squares are outside the puzzle.",
-		Difficulty::Hard => "Find squares that must be safe or contain a mine in a broader, more tangled position where several clues and possibilities must be tracked together. Highlighted squares show the answers, while faded squares are outside the puzzle.",
+		Difficulty::Hard => "Find widely separated squares using only local deductions from nearby clues. These denser boards require more scanning despite using basic rules.",
+		Difficulty::Expert => "Find squares that must be safe or contain a mine in a broader, more tangled position where several clues and possibilities must be tracked together. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 	}
 }
 
@@ -126,11 +117,11 @@ fn write_cell(out: &mut impl Write, puzzle: &minetacs::Puzzle, cell: u8, x: i8, 
 
 fn write_puzzle(out: &mut impl Write, index: usize, puzzle: &minetacs::Puzzle) -> io::Result<()> {
 	let cells = puzzle.cells();
-	let frontier = puzzle.active_cells().count_ones();
+	let frontier = puzzle.state.active().count_ones();
 	let known = puzzle.forced.count();
 
 	writeln!(out, r#"<article class="puzzle">"#)?;
-	writeln!(out, r#"<header><strong>#{index}</strong><span>seed {}</span></header>"#, puzzle.seed)?;
+	writeln!(out, r#"<header><strong>#{index}</strong><span>seed {}, attempts {}</span></header>"#, puzzle.seed, puzzle.attempts)?;
 	writeln!(out, r#"<div class="board" role="img" aria-label="Puzzle {index}">"#)?;
 	for y in 0..8 {
 		for x in 0..8 {
@@ -143,7 +134,7 @@ fn write_puzzle(out: &mut impl Write, index: usize, puzzle: &minetacs::Puzzle) -
 }
 
 fn main() -> io::Result<()> {
-	let (difficulty, count) = parse_args();
+	let (difficulty, count, attempts) = parse_args();
 
 	let stdout = io::stdout();
 	let mut out = io::BufWriter::new(stdout.lock());
@@ -208,15 +199,25 @@ h1 {{ margin: 0 0 8px; font: 700 28px/1.2 system-ui, sans-serif; }}
 
 	let mut found = 0;
 	let mut seed = 0;
+	let mut exhausted = 0u64;
+	let mut total_attempts = 0u64;
 	while found < count {
-		let puzzle = difficulty.generate(seed);
-		if difficulty.accepts(&puzzle) {
-			found += 1;
-			write_puzzle(&mut out, found, &puzzle)?;
-			eprintln!("generated {found}/{count} boards");
+		match difficulty.generate(seed, attempts) {
+			Some(puzzle) => {
+				found += 1;
+				total_attempts += puzzle.attempts as u64;
+				write_puzzle(&mut out, found, &puzzle)?;
+				eprintln!("seed {seed}: accepted as {found}/{count} after {} attempts", puzzle.attempts);
+			}
+			None => {
+				exhausted += 1;
+				total_attempts += attempts as u64;
+				eprintln!("seed {seed}: exhausted after {attempts} attempts");
+			}
 		}
 		seed = seed.checked_add(1).expect("ran out of seeds");
 	}
+	eprintln!("searched {seed} seeds: accepted {found}, exhausted {exhausted}, total attempts {total_attempts}");
 
 	writeln!(out, "</section>\n</main>\n</body>\n</html>")
 }

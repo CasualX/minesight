@@ -252,6 +252,16 @@ impl Gradient {
 			(y as i32 - self.center_y) * self.direction_y;
 		density.clamp(0, Self::DENOMINATOR)
 	}
+
+	fn generate_mines<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> u64 {
+		let mut mines = 0;
+		for (i, x, y) in grid() {
+			if (rng.random::<u16>() as i32) < self.density_at(x, y) {
+				mines |= 1u64 << i;
+			}
+		}
+		mines
+	}
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -270,6 +280,29 @@ impl Deductions {
 	#[inline]
 	pub const fn count(&self) -> u32 {
 		(self.always_mine | self.always_safe).count_ones()
+	}
+
+	/// Returns the area of the smallest axis-aligned rectangle containing all forced cells.
+	pub fn area(&self) -> u32 {
+		let forced = self.always_mine | self.always_safe;
+		if forced == 0 {
+			return 0;
+		}
+
+		let mut min_x = BOARD_SIZE;
+		let mut min_y = BOARD_SIZE;
+		let mut max_x = 0;
+		let mut max_y = 0;
+		for index in enumerate(forced) {
+			let x = index % BOARD_SIZE;
+			let y = index / BOARD_SIZE;
+			min_x = min_x.min(x);
+			min_y = min_y.min(y);
+			max_x = max_x.max(x);
+			max_y = max_y.max(y);
+		}
+
+		((max_x - min_x + 1) * (max_y - min_y + 1)) as u32
 	}
 }
 
@@ -293,13 +326,18 @@ impl ops::BitOrAssign<Deductions> for Deductions {
 	}
 }
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 struct Constraint {
 	cells: u64,
 	mines: u32,
 }
 
 impl Constraint {
+	#[inline]
+	fn is_valid(self) -> bool {
+		self.mines <= self.cells.count_ones()
+	}
+
 	/// Applies the information gained by subtracting this constraint from a constraint that contains it.
 	fn subtract_from(self, superset: Constraint, result: &mut Deductions) -> bool {
 		if self.cells & !superset.cells != 0 {
@@ -324,6 +362,122 @@ impl Constraint {
 
 		true
 	}
+
+	/// Returns exact constraints for the cells exclusive to two overlapping
+	/// constraints, when the number of mines in their shared cells is fixed.
+	fn exact_exclusives(self, other: Constraint) -> Result<Option<[Constraint; 2]>, ()> {
+		let shared = self.cells & other.cells;
+		if shared == 0 {
+			return Ok(None);
+		}
+
+		let self_only = self.cells & !other.cells;
+		let other_only = other.cells & !self.cells;
+		let min_shared = self.mines.saturating_sub(self_only.count_ones())
+			.max(other.mines.saturating_sub(other_only.count_ones()));
+		let max_shared = shared.count_ones().min(self.mines).min(other.mines);
+
+		if min_shared > max_shared {
+			return Err(());
+		}
+		if min_shared != max_shared {
+			return Ok(None);
+		}
+
+		Ok(Some([
+			Constraint { cells: self_only, mines: self.mines - min_shared },
+			Constraint { cells: other_only, mines: other.mines - min_shared },
+		]))
+	}
+}
+
+/// Medium reasoning may create two generations of temporary constraints, but
+/// never computes their algebraic closure.
+const DERIVED_CONSTRAINT_DEPTH: usize = 2;
+/// Keeps adversarial frontiers from making the quadratic pair scan unbounded.
+const MAX_DERIVED_CONSTRAINTS: usize = 256;
+
+fn add_constraint(constraints: &mut Vec<Constraint>, constraint: Constraint, max_len: usize) -> Option<()> {
+	if !constraint.is_valid() {
+		return None;
+	}
+	if constraint.cells == 0 {
+		return (constraint.mines == 0).then_some(());
+	}
+
+	if let Some(existing) = constraints.iter().find(|existing| existing.cells == constraint.cells) {
+		if existing.mines != constraint.mines {
+			return None;
+		}
+		return Some(());
+	}
+
+	if constraints.len() < max_len {
+		constraints.push(constraint);
+	}
+	Some(())
+}
+
+/// Runs simple deductions over a bounded number of derived-constraint rounds.
+fn solve_constraint_set(original: impl IntoIterator<Item = Constraint>, depth: usize) -> Option<Deductions> {
+	let mut constraints = Vec::with_capacity(64 + MAX_DERIVED_CONSTRAINTS);
+	for constraint in original {
+		add_constraint(&mut constraints, constraint, usize::MAX)?;
+	}
+	let max_len = constraints.len() + MAX_DERIVED_CONSTRAINTS;
+	let mut result = Deductions::default();
+
+	// The final pass reasons over the last generation without deriving another.
+	for round in 0..=depth {
+		let len = constraints.len();
+
+		for a_index in 0..len {
+			let a = constraints[a_index];
+			// Subtracting the empty constraint is ordinary local reasoning.
+			if !Constraint::default().subtract_from(a, &mut result) {
+				return None;
+			}
+
+			for b_index in a_index + 1..len {
+				let b = constraints[b_index];
+				if a.cells & b.cells == 0 {
+					continue;
+				}
+
+				// Subset subtraction, including forced exclusive groups.
+				if !a.subtract_from(b, &mut result) || !b.subtract_from(a, &mut result) {
+					return None;
+				}
+
+				// The two-clue extreme-difference rule works even when neither
+				// constraint is a subset of the other.
+				let a_only = a.cells & !b.cells;
+				let b_only = b.cells & !a.cells;
+				if b.mines == a.mines + b_only.count_ones() {
+					result.always_mine |= b_only;
+					result.always_safe |= a_only;
+				}
+				else if a.mines == b.mines + a_only.count_ones() {
+					result.always_mine |= a_only;
+					result.always_safe |= b_only;
+				}
+
+				let derived = a.exact_exclusives(b).ok()?;
+				if round < depth
+					&& let Some(derived) = derived
+				{
+						for constraint in derived {
+							add_constraint(&mut constraints, constraint, max_len)?;
+						}
+				}
+			}
+		}
+	}
+
+	if result.always_mine & result.always_safe != 0 {
+		return None;
+	}
+	Some(result)
 }
 
 //----------------------------------------------------------------
@@ -391,24 +545,7 @@ impl GameState {
 	}
 	/// Generates a deterministic random board using the given density gradient.
 	pub fn random(rng: &mut urandom::Random<impl urandom::Rng>, gradient: &Gradient) -> GameState {
-		let mut mines = 0u64;
-		for (i, x, y) in grid() {
-			if (rng.random::<u16>() as i32) < gradient.density_at(x, y) {
-				mines |= 1u64 << i;
-			}
-		}
-		let revealed = initial_reveal(mines);
-		let flagged = 0;
-		GameState { mines, revealed, flagged }
-	}
-	pub fn random_1_4(rng: &mut urandom::Random<impl urandom::Rng>) -> GameState {
-		let mines = rng.random::<u64>() & rng.random::<u64>();
-		let revealed = initial_reveal(mines);
-		let flagged = 0;
-		GameState { mines, revealed, flagged }
-	}
-	pub fn random_1_8(rng: &mut urandom::Random<impl urandom::Rng>) -> GameState {
-		let mines = rng.random::<u64>() & rng.random::<u64>() & rng.random::<u64>();
+		let mines = gradient.generate_mines(rng);
 		let revealed = initial_reveal(mines);
 		let flagged = 0;
 		GameState { mines, revealed, flagged }
@@ -546,6 +683,11 @@ impl GameState {
 		let frontier = self.frontier();
 		neighbours(frontier) & !self.revealed & !frontier
 	}
+	/// Returns the covered, unflagged frontier that belongs to the puzzle.
+	#[inline]
+	pub fn active(&self) -> u64 {
+		self.frontier() & !self.flagged
+	}
 	/// Checks whether a complete assignment of the frontier is possible.
 	///
 	/// Set bits in `guess` are mines; other unflagged frontier cells are safe.
@@ -553,8 +695,7 @@ impl GameState {
 	/// any mines needed to reach the board's total mine count.
 	#[inline]
 	pub fn check_guess(&self, guess: u64) -> bool {
-		let frontier = self.frontier() & !self.flagged;
-		self.check_frontier_assignment_with_total(guess, frontier, self.revealed)
+		self.check_frontier_assignment_with_total(guess, self.active(), self.revealed)
 	}
 	fn check_frontier_assignment(&self, guess: u64, frontier: u64, clues: u64) -> bool {
 		if guess & !frontier != 0 {
@@ -770,12 +911,12 @@ impl GameState {
 	/// exclusive groups is determined. Only clues touching the current unflagged
 	/// frontier are considered, and each clue has at most eight candidate partners.
 	pub fn solve_two_clue(&self) -> Deductions {
-		let frontier = self.frontier() & !self.flagged;
-		if frontier == 0 {
+		let active = self.active();
+		if active == 0 {
 			return Deductions::default();
 		}
 
-		let clues = neighbours(frontier) & self.revealed;
+		let clues = neighbours(active) & self.revealed;
 		let Some(constraints) = self.remaining_constraints(clues) else {
 			return Deductions::default();
 		};
@@ -810,28 +951,46 @@ impl GameState {
 
 		result
 	}
+	/// Computes deductions from a small, temporary set of derived frontier constraints.
+	///
+	/// Overlapping constraints may produce exact constraints on their exclusive
+	/// cells. Those constraints participate in the local, subset, and two-clue
+	/// rules for at most [`DERIVED_CONSTRAINT_DEPTH`] generations. This models a
+	/// short chain of human-scale inferences without becoming an exact solver.
+	pub fn solve_derived(&self) -> Deductions {
+		let active = self.active();
+		if active == 0 {
+			return Deductions::default();
+		}
+
+		let clues = neighbours(active) & self.revealed;
+		let Some(constraints) = self.remaining_constraints(clues) else {
+			return Deductions::default();
+		};
+
+		solve_constraint_set(
+			enumerate(clues).map(|index| constraints[index]),
+			DERIVED_CONSTRAINT_DEPTH,
+		).unwrap_or_default()
+	}
 	/// Computes deductions by exhaustively enumerating the frontier against the
 	/// revealed clues, without using the board's total mine count.
 	pub fn solve_exact(&self) -> Deductions {
-		self.solve_exact_with_clues(self.revealed)
-	}
-	fn solve_exact_with_clues(&self, clues: u64) -> Deductions {
-		let clues = clues & self.revealed;
 		// Flags are fixed mines, not variables to enumerate.
-		let frontier = neighbours(clues) & !self.revealed & !self.flagged;
-		let n = frontier.count_ones();
+		let active = self.active();
+		let n = active.count_ones();
 
-		let mut always_mine = frontier;
-		let mut always_safe = frontier;
+		let mut always_mine = active;
+		let mut always_safe = active;
 		let mut valid = 0;
 
 		for i in 0..(1u64 << n) {
-			let guess = deposit(i, frontier);
+			let guess = deposit(i, active);
 
-			if self.check_frontier_assignment(guess, frontier, clues) {
+			if self.check_frontier_assignment(guess, active, self.revealed) {
 				valid += 1;
 				always_mine &= guess;
-				always_safe &= frontier & !guess;
+				always_safe &= active & !guess;
 			}
 		}
 
@@ -847,8 +1006,7 @@ impl GameState {
 	}
 	/// Computes exact deductions from revealed clues and the board's total mine count.
 	pub fn solve_exact_with_total(&self) -> Deductions {
-		let clues = self.revealed;
-		let frontier = neighbours(clues) & !self.revealed & !self.flagged;
+		let frontier = self.active();
 		let outside = !(self.revealed | self.flagged | frontier);
 		let outside_count = outside.count_ones();
 		let n = frontier.count_ones();
@@ -860,7 +1018,7 @@ impl GameState {
 		for i in 0..(1u64 << n) {
 			let guess = deposit(i, frontier);
 
-			if self.check_frontier_assignment_with_total(guess, frontier, clues) {
+			if self.check_frontier_assignment_with_total(guess, frontier, self.revealed) {
 				valid += 1;
 
 				let placed = (guess | self.flagged).count_ones();
@@ -887,72 +1045,17 @@ impl GameState {
 	}
 }
 
-/// Builds a deterministic position with up to 16 random safe frontier reveals.
-///
-/// The supplied deductions are exhausted after every move. Of the resulting
-/// states, the one with the most exact-forced frontier cells is returned,
-/// preferring more ambiguous frontier cells when the forced counts are equal.
-fn random_walk_state(seed: u64, solve: fn(&GameState) -> Deductions, max_exact_frontier: u32) -> GameState {
-	let mut rng = urandom::seeded(seed);
-	let mut field = GameState::new(rng.random::<u64>());
-
-	// Start from a safe, non-zero clue when possible. A non-zero clue grows the
-	// frontier one move at a time instead of immediately flood-filling an empty
-	// region. The fallback handles the extremely unlikely all-safe board.
-	let non_zero_clues = !field.mines & expand(field.mines);
-	let safe_starts = if non_zero_clues == 0 { !field.mines } else { non_zero_clues };
-	if safe_starts == 0 {
-		return field;
-	}
-	let start = deposit(1u64 << rng.uniform(0..safe_starts.count_ones()), safe_starts);
-	let start_index = start.trailing_zeros();
-	field.reveal((start_index & 7) as i8, (start_index >> 3) as i8);
-
-	let mut best = None;
-	let mut best_forced = 0;
-	let mut best_ambiguous = 0;
-
-	for _ in 0..16 {
-		let safe_frontier = field.frontier() & !field.mines;
-		if safe_frontier == 0 {
-			break;
-		}
-
-		let square = rng.uniform(0..safe_frontier.count_ones());
-		let square_mask = deposit(1u64 << square, safe_frontier);
-		let square_index = square_mask.trailing_zeros();
-		field.reveal((square_index & 7) as i8, (square_index >> 3) as i8);
-
-		apply_until_stuck(&mut field, solve);
-
-		let active = field.frontier() & !field.flagged;
-		if active.count_ones() > max_exact_frontier {
-			continue;
-		}
-		let exact = field.solve_exact();
-		let forced = (active & (exact.always_mine | exact.always_safe)).count_ones();
-		let ambiguous = active.count_ones() - forced;
-		if best.is_none() || (forced, ambiguous) > (best_forced, best_ambiguous) {
-			best = Some(field);
-			best_forced = forced;
-			best_ambiguous = ambiguous;
-		}
-	}
-
-	let mut best = best.unwrap_or(field);
-	apply_until_stuck(&mut best, solve);
-	best
-}
+const MAX_PUZZLE_EXACT_FRONTIER: u32 = 18;
 
 //----------------------------------------------------------------
-
-const MAX_PUZZLE_EXACT_FRONTIER: u32 = 18;
 
 /// A generated tactics position.
 #[derive(Copy, Clone)]
 pub struct Puzzle {
-	/// Seed used to construct this candidate.
+	/// Seed used to construct this deterministic attempt series.
 	pub seed: u64,
+	/// Attempts consumed to find this puzzle; one means first-attempt success.
+	pub attempts: u32,
 	/// Visible starting position with hidden mine data.
 	pub state: GameState,
 	/// Logically forced mines and safe cells on the active frontier.
@@ -962,15 +1065,9 @@ pub struct Puzzle {
 }
 
 impl Puzzle {
-	/// Returns the covered, unflagged frontier that belongs to the puzzle.
-	#[inline]
-	pub fn active_cells(&self) -> u64 {
-		self.state.frontier() & !self.state.flagged
-	}
-
 	/// Encodes this puzzle in the byte layout consumed by JavaScript's `MineField` constructor.
 	pub fn cells(&self) -> [u8; BOARD_CELLS] {
-		let active = self.active_cells();
+		let active = self.state.active();
 		let mut cells = [0; BOARD_CELLS];
 
 		for (i, _, _) in grid() {
@@ -1001,29 +1098,11 @@ impl Puzzle {
 	}
 }
 
-fn apply_until_stuck(state: &mut GameState, solve: fn(&GameState) -> Deductions) {
-	loop {
-		let deductions = solve(state);
-		if deductions.is_empty() {
-			return;
-		}
-		state.apply(deductions);
-	}
-}
-
-fn random_puzzle_state(seed: u64, center_density: i32, density_step: i32) -> GameState {
-	let mut rng = urandom::seeded(seed);
-	let gradient = Gradient::random(&mut rng, center_density, density_step);
-	let mut board_rng = urandom::seeded(rng.random());
-	GameState::random(&mut board_rng, &gradient)
-}
-
 fn ambiguous_count(state: &GameState, forced: Deductions) -> u32 {
-	let active = state.frontier() & !state.flagged;
-	(active & !(forced.always_mine | forced.always_safe)).count_ones()
+	(state.active() & !(forced.always_mine | forced.always_safe)).count_ones()
 }
 
-fn make_puzzle(seed: u64, state: GameState, deductions: Deductions) -> Puzzle {
+fn make_puzzle(seed: u64, attempts: u32, state: GameState, deductions: Deductions) -> Puzzle {
 	let active = state.frontier() & !state.flagged;
 	let forced = Deductions {
 		always_mine: deductions.always_mine & active,
@@ -1033,6 +1112,7 @@ fn make_puzzle(seed: u64, state: GameState, deductions: Deductions) -> Puzzle {
 
 	Puzzle {
 		seed,
+		attempts,
 		state,
 		forced,
 		ambiguous,
@@ -1041,48 +1121,452 @@ fn make_puzzle(seed: u64, state: GameState, deductions: Deductions) -> Puzzle {
 
 /// Keeps exhaustive puzzle analysis within a predictable amount of work.
 #[inline]
-fn try_solve_exact(state: &GameState, max_frontier: u32) -> Option<Deductions> {
+fn try_solve_exact(state: &GameState) -> Option<Deductions> {
 	let frontier = state.frontier() & !state.flagged;
-	if frontier.count_ones() > max_frontier {
+	if frontier.count_ones() > MAX_PUZZLE_EXACT_FRONTIER {
 		return None;
 	}
 	Some(state.solve_exact())
 }
 
-/// Generates an easy puzzle.
-pub fn generate_easy_puzzle(seed: u64) -> Puzzle {
-	const EASY_PUZZLE_CENTER_DENSITY: i32 = Gradient::DENOMINATOR * 25 / 100;
-	const EASY_PUZZLE_DENSITY_STEP: i32 = Gradient::DENOMINATOR / 12;
-
-	let mut state = random_puzzle_state(seed, EASY_PUZZLE_CENTER_DENSITY, EASY_PUZZLE_DENSITY_STEP);
-	apply_until_stuck(&mut state, GameState::solve_local);
-	make_puzzle(seed, state, state.solve_two_clue())
+/// Constructs a mine layout for one puzzle-generation attempt.
+pub trait BoardGenerator {
+	/// Returns a mine mask, or `None` when board construction fails.
+	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64>;
 }
 
-/// Generates a medium puzzle.
-pub fn generate_medium_puzzle(mut seed: u64) -> Puzzle {
-	const MEDIUM_PUZZLE_CENTER_DENSITY: i32 = Gradient::DENOMINATOR * 35 / 100;
-	const MEDIUM_PUZZLE_DENSITY_STEP: i32 = Gradient::DENOMINATOR / 16;
-
-	loop {
-		let mut state = random_puzzle_state(seed, MEDIUM_PUZZLE_CENTER_DENSITY, MEDIUM_PUZZLE_DENSITY_STEP);
-		apply_until_stuck(&mut state, |state| state.solve_subset() | state.solve_two_clue());
-		if let Some(deductions) = try_solve_exact(&state, MAX_PUZZLE_EXACT_FRONTIER) {
-			return make_puzzle(seed, state, deductions);
-		}
-		seed = seed.wrapping_add(1);
+impl BoardGenerator for Gradient {
+	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64> {
+		Some(self.generate_mines(rng))
 	}
 }
 
-/// Generates a hard puzzle.
-pub fn generate_hard_puzzle(mut seed: u64) -> Puzzle {
-	loop {
-		let state = random_walk_state(seed, |state| state.solve_subset() | state.solve_two_clue(), MAX_PUZZLE_EXACT_FRONTIER);
-		if let Some(deductions) = try_solve_exact(&state, MAX_PUZZLE_EXACT_FRONTIER) {
-			return make_puzzle(seed, state, deductions);
+/// Intersects uniformly random bit masks to produce a flat mine probability.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RandomBitsBoard {
+	/// One word gives one-half density, two give one quarter, and three give one eighth.
+	pub random_words: u8,
+}
+
+impl BoardGenerator for RandomBitsBoard {
+	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64> {
+		if self.random_words == 0 {
+			return None;
 		}
-		seed = seed.wrapping_add(1);
+		let mut mines = !0u64;
+		for _ in 0..self.random_words {
+			mines &= rng.random::<u64>();
+		}
+		Some(mines)
 	}
+}
+
+/// Produces naturally open boards with varied gradient directions.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct EasyBoard;
+
+impl BoardGenerator for EasyBoard {
+	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64> {
+		Gradient::random(
+			rng,
+			Gradient::DENOMINATOR * 25 / 100,
+			Gradient::DENOMINATOR / 16,
+		).generate(rng)
+	}
+}
+
+/// Produces mostly cheap diagonal-gradient candidates, interspersed with dense
+/// uniform boards to keep the hard search tail short.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct HardBoard;
+
+impl BoardGenerator for HardBoard {
+	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64> {
+		// Uniform half-density boards pass relatively often, while steep gradients
+		// are much cheaper to reject. The blend performs better than either alone.
+		if rng.uniform(0..8) == 0 {
+			return RandomBitsBoard { random_words: 1 }.generate(rng);
+		}
+
+		let center_x = rng.uniform(2..=5);
+		let center_y = rng.uniform(2..=5);
+		let density_step = Gradient::DENOMINATOR / 4;
+		let direction_x = if rng.uniform(0..2) == 0 { -density_step } else { density_step };
+		let direction_y = if rng.uniform(0..2) == 0 { -density_step } else { density_step };
+		Gradient::new(
+			center_x,
+			center_y,
+			Gradient::DENOMINATOR * 80 / 100,
+			direction_x,
+			direction_y,
+		).generate(rng)
+	}
+}
+
+/// Turns a hidden mine layout into a visible candidate state.
+pub trait Explorer {
+	/// Explores one board, applying the configured cleanup solver as needed.
+	///
+	/// `candidate_score` returns a score only for states accepted by the complete
+	/// puzzle pipeline. Explorers may use it to retain the strongest acceptable
+	/// intermediate state.
+	fn explore<R: urandom::Rng>(
+		&self,
+		mines: u64,
+		rng: &mut urandom::Random<R>,
+		cleanup: Solver,
+		candidate_score: &mut dyn FnMut(&GameState) -> Option<(u32, u32)>,
+	) -> Option<GameState>;
+}
+
+/// Reveals every zero-clue region and its bordering clues, then optionally
+/// enriches a sparse position with a random walk outside the original frontier.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct InitialRevealExplorer {
+	/// Maximum number of enriched states to inspect after the initial reveal.
+	pub max_steps: u32,
+	/// Minimum number of cells beyond the initial frontier required to start a walk.
+	pub walk_threshold: u32,
+}
+
+impl Explorer for InitialRevealExplorer {
+	fn explore<R: urandom::Rng>(
+		&self,
+		mines: u64,
+		rng: &mut urandom::Random<R>,
+		cleanup: Solver,
+		candidate_score: &mut dyn FnMut(&GameState) -> Option<(u32, u32)>,
+	) -> Option<GameState> {
+		let mut state = GameState { mines, revealed: initial_reveal(mines), flagged: 0 };
+		apply_cleanup(&mut state, cleanup)?;
+
+		let initial = state;
+		let original_frontier = state.frontier();
+		let beyond_frontier = !(state.revealed | original_frontier);
+		if self.max_steps == 0 || beyond_frontier.count_ones() <= self.walk_threshold {
+			return Some(state);
+		}
+		let mut best = candidate_score(&state).map(|score| (state, score));
+
+		let safe_starts = beyond_frontier & !mines & !state.flagged;
+		if safe_starts == 0 {
+			return Some(state);
+		}
+
+		let start = deposit(1u64 << rng.uniform(0..safe_starts.count_ones()), safe_starts);
+		let start_index = start.trailing_zeros();
+		state.reveal((start_index & 7) as i8, (start_index >> 3) as i8);
+		apply_cleanup(&mut state, cleanup)?;
+		let mut walk_revealed = state.revealed & !initial.revealed;
+
+		for step in 0..self.max_steps {
+			if let Some(score) = candidate_score(&state)
+				&& best.is_none_or(|(_, best_score)| score > best_score)
+			{
+				best = Some((state, score));
+			}
+
+			if step + 1 == self.max_steps {
+				break;
+			}
+
+			// Stay on the newly exposed component instead of consuming the
+			// original puzzle frontier merely because it is also safe.
+			let safe_frontier = neighbours(walk_revealed) & state.frontier() & !mines;
+			let safe_squares = if safe_frontier == 0 {
+				// Restart somewhere else beyond the original frontier when this
+				// component has no remaining safe frontier cells.
+				safe_starts & !state.revealed & !state.flagged
+			}
+			else {
+				safe_frontier
+			};
+			if safe_squares == 0 {
+				break;
+			}
+
+			let square = deposit(1u64 << rng.uniform(0..safe_squares.count_ones()), safe_squares);
+			let square_index = square.trailing_zeros();
+			state.reveal((square_index & 7) as i8, (square_index >> 3) as i8);
+			apply_cleanup(&mut state, cleanup)?;
+			walk_revealed |= state.revealed & !initial.revealed;
+		}
+
+		Some(best.map_or(initial, |(state, _)| state))
+	}
+}
+
+/// Walks through random safe frontier cells and retains the strongest state.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RandomWalkExplorer {
+	pub max_steps: u32,
+}
+
+impl Explorer for RandomWalkExplorer {
+	fn explore<R: urandom::Rng>(
+		&self,
+		mines: u64,
+		rng: &mut urandom::Random<R>,
+		cleanup: Solver,
+		candidate_score: &mut dyn FnMut(&GameState) -> Option<(u32, u32)>,
+	) -> Option<GameState> {
+		let mut state = GameState::new(mines);
+		let non_zero_clues = !mines & expand(mines);
+		let safe_starts = if non_zero_clues == 0 { !mines } else { non_zero_clues };
+		if safe_starts == 0 {
+			return None;
+		}
+
+		let start = deposit(1u64 << rng.uniform(0..safe_starts.count_ones()), safe_starts);
+		let start_index = start.trailing_zeros();
+		state.reveal((start_index & 7) as i8, (start_index >> 3) as i8);
+
+		let mut best = None;
+		let mut best_score = (0, 0);
+		for _ in 0..self.max_steps {
+			let safe_frontier = state.frontier() & !mines;
+			let safe_squares = if safe_frontier == 0 {
+				// Restart with the same safe-start filter when this component
+				// has no remaining safe frontier cells.
+				safe_starts & !state.revealed & !state.flagged
+			}
+			else {
+				safe_frontier
+			};
+			if safe_squares == 0 {
+				break;
+			}
+
+			let square = deposit(1u64 << rng.uniform(0..safe_squares.count_ones()), safe_squares);
+			let square_index = square.trailing_zeros();
+			state.reveal((square_index & 7) as i8, (square_index >> 3) as i8);
+			apply_cleanup(&mut state, cleanup)?;
+
+			let Some(score) = candidate_score(&state) else {
+				continue;
+			};
+			if best.is_none() || score > best_score {
+				best = Some(state);
+				best_score = score;
+			}
+		}
+
+		best
+	}
+}
+
+/// Solver function used by cleanup, test, and reject roles.
+pub type Solver = fn(&GameState) -> Deductions;
+
+fn same_solver(left: Solver, right: Solver) -> bool {
+	std::ptr::fn_addr_eq(left, right)
+}
+
+/// Applies the fixed frontier limit when the configured function is the exact solver.
+fn run_solver(solver: Solver, state: &GameState) -> Option<Deductions> {
+	if same_solver(solver, GameState::solve_exact) {
+		try_solve_exact(state)
+	}
+	else {
+		Some(solver(state))
+	}
+}
+
+/// Cleanup, advertised-answer, and hidden-deduction solver roles.
+#[derive(Copy, Clone, Debug)]
+pub struct SolverConfig {
+	pub cleanup: Solver,
+	pub test: Solver,
+	pub reject: Solver,
+}
+
+/// Inclusive high-level constraints applied to fully analyzed candidates.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PuzzleCriteria {
+	pub min_forced: u32,
+	/// Minimum inclusive bounding-box area occupied by the forced cells.
+	pub min_forced_area: u32,
+	pub min_ambiguous: u32,
+	pub min_active: u32,
+	/// Minimum number of clues already visible in the starting position.
+	pub min_revealed: u32,
+	pub allow_empty: bool,
+}
+
+fn has_empty_revealed(state: &GameState) -> bool {
+	empty_squares(state.mines) & state.revealed != 0
+}
+
+impl PuzzleCriteria {
+	/// Returns whether a fully analyzed puzzle meets these constraints.
+	pub fn accepts(&self, puzzle: &Puzzle) -> bool {
+		let forced = puzzle.forced.count();
+		forced != 0 && forced >= self.min_forced &&
+			puzzle.forced.area() >= self.min_forced_area &&
+			puzzle.ambiguous >= self.min_ambiguous &&
+			puzzle.ambiguous + forced >= self.min_active &&
+			puzzle.state.revealed.count_ones() >= self.min_revealed &&
+			puzzle.forced.always_mine.count_ones() > 0 &&
+			puzzle.forced.always_safe.count_ones() > 0 &&
+			(self.allow_empty || !has_empty_revealed(&puzzle.state))
+	}
+}
+
+/// Configurable first-match puzzle generation pipeline.
+#[derive(Copy, Clone, Debug)]
+pub struct PuzzleGenerator<B, E> {
+	pub board: B,
+	pub explorer: E,
+	pub solvers: SolverConfig,
+	pub criteria: PuzzleCriteria,
+}
+
+impl<B: BoardGenerator, E: Explorer> PuzzleGenerator<B, E> {
+	/// Searches up to `attempts` candidates in one deterministic, jump-separated series.
+	pub fn search(&self, seed: u64, attempts: u32) -> Option<Puzzle> {
+		let mut master_rng = urandom::seeded(seed);
+		for attempt in 0..attempts {
+			let mut attempt_rng = master_rng.split();
+			if let Some(puzzle) = self.try_attempt(seed, attempt + 1, &mut attempt_rng) {
+				return Some(puzzle);
+			}
+		}
+		None
+	}
+
+	fn try_attempt<R: urandom::Rng>(&self, seed: u64, attempts: u32, rng: &mut urandom::Random<R>) -> Option<Puzzle> {
+		let mines = self.board.generate(rng)?;
+		let solvers = self.solvers;
+		let criteria = self.criteria;
+		let mut candidate_score = |state: &GameState| {
+			analyze_candidate(seed, attempts, *state, solvers, criteria)
+				.map(|puzzle| (puzzle.forced.count(), puzzle.ambiguous))
+		};
+		let state = self.explorer.explore(mines, rng, solvers.cleanup, &mut candidate_score)?;
+		analyze_candidate(seed, attempts, state, solvers, criteria)
+	}
+}
+
+fn analyze_candidate(
+	seed: u64,
+	attempts: u32,
+	state: GameState,
+	solvers: SolverConfig,
+	criteria: PuzzleCriteria,
+) -> Option<Puzzle> {
+	let deductions = run_solver(solvers.test, &state)?;
+	let puzzle = make_puzzle(seed, attempts, state, deductions);
+
+	// Count checks are cheap and can avoid a stronger reject solver.
+	if !criteria.accepts(&puzzle) {
+		return None;
+	}
+
+	if !same_solver(solvers.test, solvers.reject) {
+		let mut remainder = state;
+		remainder.apply(puzzle.forced);
+		if !run_solver(solvers.reject, &remainder)?.is_empty() {
+			return None;
+		}
+	}
+
+	Some(puzzle)
+}
+
+fn apply_cleanup(state: &mut GameState, solver: Solver) -> Option<()> {
+	loop {
+		let deductions = run_solver(solver, state)?;
+		if deductions.is_empty() {
+			return Some(());
+		}
+		state.apply(deductions);
+	}
+}
+
+/// Easy puzzles start with most of the board open, use local cleanup, and
+/// advertise two-clue deductions only when exhaustive solving finds nothing
+/// left after those answers are applied.
+pub fn generate_easy_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
+	PuzzleGenerator {
+		board: EasyBoard,
+		explorer: InitialRevealExplorer { max_steps: 0, walk_threshold: 0 },
+		solvers: SolverConfig {
+			cleanup: GameState::solve_local,
+			test: |state| state.solve_subset() | state.solve_two_clue(),
+			reject: GameState::solve_exact,
+		},
+		criteria: PuzzleCriteria {
+			min_forced: 4,
+			min_forced_area: 9,
+			min_ambiguous: 2,
+			min_active: 0,
+			min_revealed: 24,
+			allow_empty: true,
+		},
+	}.search(seed, attempts)
+}
+
+/// Medium puzzles advertise short chains of derived-constraint deductions.
+pub fn generate_medium_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
+	PuzzleGenerator {
+		board: Gradient::new(4, 4, Gradient::DENOMINATOR * 35 / 100, Gradient::DENOMINATOR / 16, 0),
+		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
+		solvers: SolverConfig {
+			cleanup: |state| state.solve_local(),
+			test: GameState::solve_derived,
+			reject: GameState::solve_exact,
+		},
+		criteria: PuzzleCriteria {
+			min_forced: 4,
+			min_forced_area: 16,
+			min_ambiguous: 3,
+			min_active: 0,
+			min_revealed: 0,
+			allow_empty: true,
+		},
+	}.search(seed, attempts)
+}
+
+/// Hard puzzles use basic deductions on dense boards with widely separated answers.
+pub fn generate_hard_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
+	PuzzleGenerator {
+		board: HardBoard,
+		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
+		solvers: SolverConfig {
+			cleanup: GameState::solve_local,
+			test: |state| state.solve_subset() | state.solve_two_clue(),
+			reject: GameState::solve_exact,
+		},
+		criteria: PuzzleCriteria {
+			min_forced: 4,
+			min_forced_area: 16,
+			min_ambiguous: 2,
+			min_active: 0,
+			min_revealed: 0,
+			allow_empty: false,
+		},
+	}.search(seed, attempts)
+}
+
+/// Expert puzzles use the random-walk explorer and advertise exact deductions.
+pub fn generate_expert_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
+	PuzzleGenerator {
+		board: RandomBitsBoard { random_words: 1 },
+		explorer: RandomWalkExplorer { max_steps: 16 },
+		solvers: SolverConfig {
+			cleanup: |state| state.solve_subset() | state.solve_two_clue(),
+			test: GameState::solve_exact,
+			reject: GameState::solve_exact,
+		},
+		criteria: PuzzleCriteria {
+			min_forced: 4,
+			min_forced_area: 16,
+			min_ambiguous: 3,
+			min_active: 0,
+			min_revealed: 0,
+			allow_empty: false,
+		},
+	}.search(seed, attempts)
 }
 
 #[cfg(test)]

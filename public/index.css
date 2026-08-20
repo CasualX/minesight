@@ -338,7 +338,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 
 .challenge-route {
 	display: grid;
-	grid-template-columns: repeat(3, 1fr);
+	grid-template-columns: repeat(4, 1fr);
 	align-items: center;
 	gap: 8px;
 	margin: 10px 0;
@@ -447,7 +447,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 
 .challenge-path {
 	display: grid;
-	grid-template-columns: repeat(3, 1fr);
+	grid-template-columns: repeat(4, 1fr);
 	gap: 7px;
 	margin: 1px 0 10px;
 }
@@ -459,7 +459,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	font: 10px ui-sans-serif, system-ui, sans-serif;
 }
 
-.path-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
+.path-steps { display: grid; grid-template-columns: repeat(var(--challenges-per-difficulty), 1fr); gap: 3px; }
 .path-step { height: 5px; background: var(--path-pending); }
 .path-step.current { background: var(--path-current); }
 .path-step.complete { background: var(--ink); }

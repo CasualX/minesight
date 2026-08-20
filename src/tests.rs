@@ -320,6 +320,57 @@ fn test_check_guess() {
 }
 
 #[test]
+fn test_derived_constraint_subtraction() {
+	let a = cell(0, 0);
+	let b = cell(1, 0);
+	let c = cell(2, 0);
+	let deductions = solve_constraint_set([
+		Constraint { cells: a | b | c, mines: 2 },
+		Constraint { cells: a | b, mines: 1 },
+	], DERIVED_CONSTRAINT_DEPTH).expect("constraints are consistent");
+
+	assert_eq!(deductions.always_mine, c);
+	assert_eq!(deductions.always_safe, 0);
+}
+
+#[test]
+fn test_derived_constraint_depth_is_bounded() {
+	let a = cell(0, 0);
+	let b = cell(1, 0);
+	let c = cell(2, 0);
+	let d = cell(3, 0);
+	let e = cell(4, 0);
+	let f = cell(5, 0);
+	let g = cell(6, 0);
+	let constraints = [
+		Constraint { cells: a | b | c | d, mines: 2 },
+		Constraint { cells: a | b, mines: 1 },
+		Constraint { cells: c | d | e | f, mines: 2 },
+		Constraint { cells: e | f | g, mines: 1 },
+	];
+
+	// First derive {c,d}=1, then derive {e,f}=1. Only the second
+	// derivation round lets the final subset rule prove that g is safe.
+	assert_eq!(solve_constraint_set(constraints, 1), Some(Deductions::default()));
+	assert_eq!(
+		solve_constraint_set(constraints, 2),
+		Some(Deductions { always_mine: 0, always_safe: g }),
+	);
+}
+
+#[test]
+fn test_derived_constraints_reject_conflicts() {
+	let cells = cell(0, 0) | cell(1, 0);
+	assert_eq!(
+		solve_constraint_set([
+			Constraint { cells, mines: 0 },
+			Constraint { cells, mines: 1 },
+		], DERIVED_CONSTRAINT_DEPTH),
+		None,
+	);
+}
+
+#[test]
 fn test_flood_fill() {
 	let mut state = GameState {
 		mines: 0x0808_0808_0808_0808,
@@ -333,7 +384,7 @@ fn test_flood_fill() {
 }
 
 fn assert_puzzle_analysis(puzzle: &Puzzle) {
-	let active = puzzle.active_cells();
+	let active = puzzle.state.active();
 	let forced = puzzle.forced.always_mine | puzzle.forced.always_safe;
 
 	let mut pruned = puzzle.state;
@@ -352,37 +403,40 @@ fn assert_puzzle_analysis(puzzle: &Puzzle) {
 	assert_eq!(puzzle.forced.count() + puzzle.ambiguous, active.count_ones());
 }
 
-fn exhausts_exact_deductions(puzzle: &Puzzle, max_frontier: u32) -> bool {
+fn exhausts_exact_deductions(puzzle: &Puzzle) -> bool {
 	let mut state = puzzle.state;
 	state.apply(puzzle.forced);
-	try_solve_exact(&state, max_frontier).is_some_and(|deductions| deductions.is_empty())
+	try_solve_exact(&state).is_some_and(|deductions| deductions.is_empty())
 }
 
 #[test]
 fn test_generators() {
-	let easy = generate_easy_puzzle(27);
+	assert!(generate_expert_puzzle(56, 0).is_none());
+
+	let easy = generate_easy_puzzle(32, 1000).expect("easy search should succeed");
 	assert_puzzle_analysis(&easy);
-	assert!(exhausts_exact_deductions(&easy, MAX_PUZZLE_EXACT_FRONTIER));
+	assert!(exhausts_exact_deductions(&easy));
+	assert!(easy.forced.count() >= 4);
+	assert!(easy.forced.area() >= 9);
+	assert!(easy.ambiguous >= 2);
+	assert!(easy.state.revealed.count_ones() >= 32);
 
-	let medium = generate_medium_puzzle(2);
+	let medium = generate_medium_puzzle(2, 1000).expect("medium search should succeed");
 	assert_puzzle_analysis(&medium);
+	assert!(medium.forced.count() >= 4);
+	assert!(medium.ambiguous >= 3);
 
-	let hard = generate_hard_puzzle(5);
+	let hard = generate_hard_puzzle(32, 1000).expect("hard search should succeed");
 	assert_puzzle_analysis(&hard);
-}
+	assert!(exhausts_exact_deductions(&hard));
+	assert!(hard.forced.count() >= 4);
+	assert!(hard.forced.area() >= 16);
+	assert!(hard.ambiguous >= 2);
 
-#[test]
-fn test_puzzle_exact_frontier_limit() {
-	let small = GameState { mines: 0, revealed: cell(3, 3), flagged: 0 };
-	assert_eq!(try_solve_exact(&small, MAX_PUZZLE_EXACT_FRONTIER), Some(small.solve_exact()));
-
-	let oversized = GameState { mines: 0, revealed: rect(2, 2, 4, 4), flagged: 0 };
-	assert!(oversized.frontier().count_ones() > MAX_PUZZLE_EXACT_FRONTIER);
-	assert_eq!(try_solve_exact(&oversized, MAX_PUZZLE_EXACT_FRONTIER), None);
-}
-
-#[test]
-fn test_medium_generator() {
-	// Seeds 2221 and 2222 exceed the exact frontier limit; 2223 does not.
-	assert_eq!(generate_medium_puzzle(2221).seed, 2223);
+	let expert = generate_expert_puzzle(56, 1000).expect("expert search should succeed");
+	assert_puzzle_analysis(&expert);
+	assert!(expert.forced.count() >= 3);
+	assert!(expert.forced.area() >= 16);
+	assert!(expert.state.active().count_ones() >= 8);
+	assert_eq!(expert.attempts, 1);
 }
