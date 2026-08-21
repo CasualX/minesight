@@ -15,6 +15,7 @@ const SHARED_PUZZLE_PARAMETER = 'p';
 const TUTORIAL_PARAMETER = 'tutorial';
 const CHALLENGE_MODE_PARAMETER = 'challenge';
 const CHALLENGE_SEED_PARAMETER = 'seed';
+const CHALLENGE_TIME_PARAMETER = 'time';
 const MAX_CHALLENGE_SEED = 0xffff_ffff_ffff_ffffn;
 /** @type {Record<string, [number, number]>} */
 const CELL_FOCUS_DIRECTIONS = {
@@ -134,22 +135,22 @@ const PRACTICE_DIFFICULTIES = [
 ];
 const CHALLENGE_MODES = [
 	{
+		key: 'hard',
+		label: 'Hard Challenge',
+		route: [
+			{ difficulty: EASY_DIFFICULTY, puzzleCount: 4 },
+			{ difficulty: MEDIUM_DIFFICULTY, puzzleCount: 4 },
+			{ difficulty: HARD_DIFFICULTY, puzzleCount: 4 },
+		],
+	},
+	{
 		key: 'expert',
-		label: 'Easy to Expert',
+		label: 'Expert Challenge',
 		route: [
 			{ difficulty: EASY_DIFFICULTY, puzzleCount: 3 },
 			{ difficulty: MEDIUM_DIFFICULTY, puzzleCount: 3 },
 			{ difficulty: HARD_DIFFICULTY, puzzleCount: 3 },
 			{ difficulty: EXPERT_DIFFICULTY, puzzleCount: 3 },
-		],
-	},
-	{
-		key: 'hard',
-		label: 'Easy to Hard',
-		route: [
-			{ difficulty: EASY_DIFFICULTY, puzzleCount: 4 },
-			{ difficulty: MEDIUM_DIFFICULTY, puzzleCount: 4 },
-			{ difficulty: HARD_DIFFICULTY, puzzleCount: 4 },
 		],
 	},
 ];
@@ -166,6 +167,13 @@ function parseChallengeSeed(value) {
 	}
 }
 
+/** @param {unknown} value */
+function parseChallengeTime(value) {
+	if (typeof value !== 'string' || !/^\d+$/.test(value)) return undefined;
+	let elapsedMs = Number(value);
+	return Number.isSafeInteger(elapsedMs) ? elapsedMs : undefined;
+}
+
 /** @param {URL} url */
 function resolveUrlGame(url) {
 	if (url.searchParams.has(SHARED_PUZZLE_PARAMETER)) return { mode: 'shared' };
@@ -173,10 +181,12 @@ function resolveUrlGame(url) {
 	let modeKey = url.searchParams.get(CHALLENGE_MODE_PARAMETER);
 	if (modeKey !== null && CHALLENGE_MODES.some(({ key }) => key === modeKey)) {
 		let seedText = url.searchParams.get(CHALLENGE_SEED_PARAMETER);
+		let timeText = url.searchParams.get(CHALLENGE_TIME_PARAMETER);
 		return {
 			mode: 'challenge',
 			modeKey,
 			seed: seedText === null ? undefined : parseChallengeSeed(seedText),
+			time: timeText === null ? undefined : parseChallengeTime(timeText),
 		};
 	}
 
@@ -188,13 +198,16 @@ function resolveUrlGame(url) {
  * @param {string | URL} source
  * @param {string} modeKey
  * @param {bigint} seed
+ * @param {number | undefined} elapsedMs
  */
-function createChallengeShareUrl(source, modeKey, seed) {
+function createChallengeShareUrl(source, modeKey, seed, elapsedMs) {
 	let url = new URL(source);
 	url.searchParams.delete(SHARED_PUZZLE_PARAMETER);
 	url.searchParams.delete(TUTORIAL_PARAMETER);
 	url.searchParams.set(CHALLENGE_MODE_PARAMETER, modeKey);
 	url.searchParams.set(CHALLENGE_SEED_PARAMETER, seed.toString(16));
+	if (elapsedMs === undefined) url.searchParams.delete(CHALLENGE_TIME_PARAMETER);
+	else url.searchParams.set(CHALLENGE_TIME_PARAMETER, String(elapsedMs));
 	return url;
 }
 
@@ -499,6 +512,8 @@ function createMinesight() {
 		challengeModes: CHALLENGE_MODES,
 		challengeModeKey,
 		challengeSeed,
+		challengeReceived: urlGame.mode === 'challenge',
+		challengeTargetMs: urlGame.mode === 'challenge' ? urlGame.time : undefined,
 		challengeIndex: 0,
 		challengeStarted: false,
 		challengePreparing: false,
@@ -673,6 +688,14 @@ function createMinesight() {
 			return this.challengeReady ? 'Start challenge' : 'Try again';
 		},
 
+		get challengeInvitationDifficulties() {
+			return this.challengeMode.route.map(({ difficulty, puzzleCount }) => ({
+				key: difficulty.key,
+				label: difficulty.label,
+				puzzleCount,
+			}));
+		},
+
 		get challengeShareDisabled() {
 			return false;
 		},
@@ -692,6 +715,35 @@ function createMinesight() {
 
 		get challengeFinishTitle() {
 			return this.challengeFailedCount === 0 ? 'Perfect run' : 'Run complete';
+		},
+
+		get challengeTargetTime() {
+			return this.challengeTargetMs === undefined ? '' : formatElapsedTime(this.challengeTargetMs);
+		},
+
+		get challengeTimeDifference() {
+			if (this.challengeTargetMs === undefined) return undefined;
+			return Math.floor(this.elapsedMs / 10) * 10 - this.challengeTargetMs;
+		},
+
+		get challengeTimeBeaten() {
+			return this.challengeTimeDifference !== undefined && this.challengeTimeDifference < 0;
+		},
+
+		get challengeTimeResultMessage() {
+			let difference = this.challengeTimeDifference;
+			if (difference === undefined) return '';
+			if (difference === 0) return 'A perfect tie!';
+			let ratio = Math.abs(difference) / this.challengeTargetMs;
+			if (difference < 0) {
+				if (ratio >= .15) return 'Left them in the dust!';
+				if (ratio >= .05) return 'A commanding win!';
+				return 'You beat their time!';
+			}
+			if (ratio <= .01) return 'So close!';
+			if (ratio <= .05) return 'Right on their heels!';
+			if (ratio <= .15) return 'A spirited chase.';
+			return 'Better luck next time!';
 		},
 
 		get showChallengePath() {
@@ -851,6 +903,7 @@ function createMinesight() {
 			);
 			this.result = 'complete';
 			this.playChallengeFanfare();
+			if (this.challengeTimeBeaten) feedbackEffects.fireworks();
 			this.revision += 1;
 			return true;
 		},
@@ -1227,6 +1280,7 @@ function createMinesight() {
 		selectChallengeMode(modeKey) {
 			if (this.challengeStarted || modeKey === this.challengeModeKey) return;
 			if (!CHALLENGE_MODES.some(({ key }) => key === modeKey)) return;
+			this.challengeTargetMs = undefined;
 			this.challengeModeKey = modeKey;
 			this.challengeSeed = randomChallengeSeed();
 			saveMinesightData('challengeModeKey', modeKey);
@@ -1271,10 +1325,16 @@ function createMinesight() {
 		},
 
 		removeChallengeFromUrl() {
+			this.challengeReceived = false;
 			let url = new URL(window.location.href);
-			if (!url.searchParams.has(CHALLENGE_MODE_PARAMETER) && !url.searchParams.has(CHALLENGE_SEED_PARAMETER)) return;
+			if (
+				!url.searchParams.has(CHALLENGE_MODE_PARAMETER) &&
+				!url.searchParams.has(CHALLENGE_SEED_PARAMETER) &&
+				!url.searchParams.has(CHALLENGE_TIME_PARAMETER)
+			) return;
 			url.searchParams.delete(CHALLENGE_MODE_PARAMETER);
 			url.searchParams.delete(CHALLENGE_SEED_PARAMETER);
+			url.searchParams.delete(CHALLENGE_TIME_PARAMETER);
 			window.history.replaceState(null, '', url);
 		},
 
@@ -1293,6 +1353,7 @@ function createMinesight() {
 				this.boardPreparing = false;
 				this.clearPracticeSearchingDelay();
 				this.mode = nextMode;
+				this.challengeTargetMs = undefined;
 				this.challengeSeed = randomChallengeSeed();
 				saveMinesightData('mode', nextMode);
 				void this.prepareChallenge();
@@ -1330,6 +1391,7 @@ function createMinesight() {
 			url.searchParams.delete(TUTORIAL_PARAMETER);
 			url.searchParams.delete(CHALLENGE_MODE_PARAMETER);
 			url.searchParams.delete(CHALLENGE_SEED_PARAMETER);
+			url.searchParams.delete(CHALLENGE_TIME_PARAMETER);
 			url.searchParams.set(SHARED_PUZZLE_PARAMETER, this.field.encode());
 			let shareData = {
 				title: 'Minesight puzzle',
@@ -1359,10 +1421,15 @@ function createMinesight() {
 
 		async shareChallenge() {
 			if (this.challengeShareDisabled) return;
-			let url = createChallengeShareUrl(window.location.href, this.challengeModeKey, this.challengeSeed);
+			let completedTime = Math.floor(this.elapsedMs / 10) * 10;
+			let targetTime = this.result === 'complete' ? completedTime : this.challengeTargetMs;
+			let url = createChallengeShareUrl(window.location.href, this.challengeModeKey, this.challengeSeed, targetTime);
+			let text = this.result === 'complete'
+				? `I completed Minesight ${this.challengeMode.label} in ${this.formattedTime}. Can you beat my time?`
+				: `You have been challenged to Minesight ${this.challengeMode.label}!`;
 			let shareData = {
-				title: 'Minesight challenge',
-				text: `Try my ${this.challengeMode.label} Minesight challenge.`,
+				title: 'Minesight Challenge',
+				text: text,
 				url: url.href,
 			};
 
@@ -1549,6 +1616,7 @@ function createMinesight() {
 
 		startChallenge() {
 			if (!this.challengeReady) return;
+			this.removeChallengeFromUrl();
 			this.stopTimer();
 			this.challengeStarted = true;
 			this.challengeIndex = 0;
@@ -1562,6 +1630,7 @@ function createMinesight() {
 		},
 
 		async restartChallenge() {
+			this.challengeTargetMs = undefined;
 			this.challengeSeed = randomChallengeSeed();
 			await this.prepareChallenge();
 		},
@@ -1934,6 +2003,7 @@ function createMinesight() {
 				if (challengeComplete) {
 					this.result = 'complete';
 					this.playChallengeFanfare();
+					if (this.challengeTimeBeaten) feedbackEffects.fireworks();
 				}
 				else {
 					this.result = 'cleared';

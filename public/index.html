@@ -106,7 +106,25 @@
 		</section>
 
 		<section class="challenge-intro" x-show="showChallengeIntro" :aria-busy="challengePreparing">
-			<div class="challenge-mode-picker" role="group" aria-label="Challenge mode">
+			<div class="challenge-invitation" x-show="challengeReceived">
+				<h2 x-text="challengeMode.label"></h2>
+				<p class="challenge-target" x-show="challengeTargetMs !== undefined">
+					Time to beat: <strong x-text="challengeTargetTime"></strong>
+				</p>
+				<div
+					class="challenge-difficulty-grid"
+					:style="{ '--challenge-invitation-difficulty-count': challengeInvitationDifficulties.length }"
+					aria-label="Challenge difficulties"
+				>
+					<template x-for="difficulty in challengeInvitationDifficulties" :key="difficulty.key">
+						<div class="challenge-difficulty">
+							<strong x-text="difficulty.label"></strong>
+							<span x-text="`${difficulty.puzzleCount} puzzles`"></span>
+						</div>
+					</template>
+				</div>
+			</div>
+			<div class="challenge-mode-picker" x-show="!challengeReceived" role="group" aria-label="Challenge mode">
 				<template x-for="challengeMode in challengeModes" :key="challengeMode.key">
 					<button
 						type="button"
@@ -122,8 +140,7 @@
 					</button>
 				</template>
 			</div>
-			<p class="challenge-summary">Work through the challenges. Each mistake marks that puzzle failed, but you can keep solving it.</p>
-			<p class="challenge-rule">Mark every covered square the clues prove safe or mined. The clock starts with the first puzzle.</p>
+			<p>Solve the puzzles. Each mistake marks that puzzle failed, but you can keep solving it. Mark every covered square the clues prove safe or mined. The clock starts when you press Start.</p>
 			<button
 				type="button"
 				class="challenge-start"
@@ -140,9 +157,18 @@
 			<span class="challenge-kicker">Challenge complete</span>
 			<h2 x-text="challengeFinishTitle"></h2>
 			<p x-text="challengeCompleteMessage"></p>
-			<div class="finish-time" aria-label="Final time">
-				<span>Final time</span>
-				<strong x-text="formattedTime"></strong>
+			<div class="finish-scorecard" :class="{ beaten: challengeTimeBeaten }">
+				<div class="finish-time" aria-label="Final time">
+					<span>Final time</span>
+					<strong x-text="formattedTime"></strong>
+				</div>
+				<div class="finish-comparison" x-show="challengeTargetMs !== undefined">
+					<strong class="challenge-time-result" x-text="challengeTimeResultMessage"></strong>
+					<div class="their-time" aria-label="Their time">
+						<span>Their time</span>
+						<strong x-text="challengeTargetTime"></strong>
+					</div>
+				</div>
 			</div>
 			<button type="button" class="challenge-start" @click="restartChallenge()">Play again</button>
 		</section>
@@ -221,7 +247,7 @@
 							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.7-10.7a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"></path><path d="m14.8 6.5 3 3M8.2 19l-3-3"></path></svg>
 							<span x-text="scratchActive ? 'Done' : 'Notes'"></span>
 						</button>
-						<div class="scratch-options" x-show="scratchActive" x-transition.opacity>
+						<div class="scratch-options" x-show="scratchActive">
 							<template x-for="color in scratchColors" :key="color.key">
 								<button
 									type="button"
@@ -248,6 +274,7 @@
 					<button
 						type="button"
 						class="share-puzzle"
+						x-show="!scratchActive"
 						:disabled="sharePuzzleDisabled"
 						:aria-label="shareButtonLabel"
 						:title="shareButtonLabel"

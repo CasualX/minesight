@@ -2,6 +2,7 @@
 
 const SUCCESS_COLORS = ['#55713d', '#88a867', '#dfd39f', '#f7f2d4', '#111111'];
 const FAILURE_COLORS = ['#8f302b', '#c77e78', '#e2aaa5', '#4c2522', '#111111'];
+const FIREWORK_COLORS = ['#e6b84a', '#df6b57', '#70a6d8', '#88a867', '#d78ab3', '#f7f2d4'];
 
 /** @returns {{ x: number, y: number }} */
 function elementCenter(element) {
@@ -91,6 +92,55 @@ class FeedbackEffects {
 		addElement(sequence, 'feedback-ring feedback-ring-two');
 		addElement(sequence, 'feedback-core');
 		this.addParticles(sequence, grand ? 72 : 48, SUCCESS_COLORS, false);
+	}
+
+	fireworks() {
+		if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+		let sequence = this.createSequence('fireworks', { x: 0, y: 0 }, 4300);
+		let positions = [
+			{ x: .17, y: .28, delay: 560 },
+			{ x: .78, y: .22, delay: 900 },
+			{ x: .48, y: .14, delay: 1260 },
+			{ x: .28, y: .48, delay: 1660 },
+			{ x: .72, y: .46, delay: 2020 },
+		];
+		let sparkDistance = Math.min(150, Math.max(90, Math.min(window.innerWidth, window.innerHeight) * .16));
+
+		for (let [burstIndex, position] of positions.entries()) {
+			let x = window.innerWidth * position.x;
+			let y = window.innerHeight * position.y;
+			let primaryColor = FIREWORK_COLORS[burstIndex % FIREWORK_COLORS.length];
+			let secondaryColor = FIREWORK_COLORS[(burstIndex + 2) % FIREWORK_COLORS.length];
+			let launch = addElement(sequence, 'feedback-firework-launch');
+			launch.style.left = `${x}px`;
+			launch.style.top = `${y}px`;
+			launch.style.setProperty('--launch-distance', `${window.innerHeight - y + 20}px`);
+			launch.style.setProperty('--launch-delay', `${Math.max(0, position.delay - 520)}ms`);
+			launch.style.setProperty('--firework-color', primaryColor);
+
+			let burst = addElement(sequence, 'feedback-firework-burst');
+			burst.style.left = `${x}px`;
+			burst.style.top = `${y}px`;
+			burst.style.setProperty('--burst-delay', `${position.delay}ms`);
+			burst.style.setProperty('--firework-color', primaryColor);
+			addElement(burst, 'feedback-firework-flash');
+			addElement(burst, 'feedback-firework-ring');
+
+			let sparkCount = 28;
+			for (let index = 0; index < sparkCount; index += 1) {
+				let spark = addElement(burst, 'feedback-firework-spark');
+				let angle = index / sparkCount * Math.PI * 2 + (Math.random() - .5) * .09;
+				let distance = sparkDistance * (.68 + Math.random() * .36);
+				let color = index % 3 === 0 ? secondaryColor : primaryColor;
+				spark.style.setProperty('--spark-x', `${Math.cos(angle) * distance}px`);
+				spark.style.setProperty('--spark-y', `${Math.sin(angle) * distance + distance * .2}px`);
+				spark.style.setProperty('--spark-angle', `${angle}rad`);
+				spark.style.setProperty('--spark-delay', `${position.delay + Math.random() * 75}ms`);
+				spark.style.setProperty('--spark-duration', `${920 + Math.random() * 420}ms`);
+				spark.style.setProperty('--firework-color', color);
+				if (index % 4 === 0) spark.classList.add('is-glitter');
+			}
+		}
 	}
 
 	/** @param {{ cellIndex: number, mine: boolean }} options */
