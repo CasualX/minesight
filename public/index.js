@@ -8,6 +8,7 @@ const BOARD_SIZE = 8;
 const PUZZLE_ATTEMPTS = 1000;
 const GIVE_UP_HOLD_MS = 900;
 const SCRATCH_TAP_DISTANCE = .01;
+const SCRATCH_ERASER_RADIUS = .025;
 const SCRATCH_MARK_SIZE = .04125;
 const SCRATCH_MARK_ANIMATION_MS = 220;
 const MINESIGHT_STORAGE_KEY = 'minesight';
@@ -39,6 +40,45 @@ function formatElapsedTime(elapsedMs) {
 	if (hours > 0) time = `${String(hours).padStart(2, '0')}:${time}`;
 	if (days > 0) time = `${days}d ${time}`;
 	return time;
+}
+
+/**
+ * @param {{ x: number, y: number }} point
+ * @param {{ x: number, y: number }} start
+ * @param {{ x: number, y: number }} end
+ */
+function pointSegmentDistance(point, start, end) {
+	let dx = end.x - start.x;
+	let dy = end.y - start.y;
+	let lengthSquared = dx * dx + dy * dy;
+	if (lengthSquared === 0) return Math.hypot(point.x - start.x, point.y - start.y);
+	let progress = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+	return Math.hypot(point.x - (start.x + dx * progress), point.y - (start.y + dy * progress));
+}
+
+/**
+ * @param {{ x: number, y: number }} firstStart
+ * @param {{ x: number, y: number }} firstEnd
+ * @param {{ x: number, y: number }} secondStart
+ * @param {{ x: number, y: number }} secondEnd
+ */
+function segmentDistance(firstStart, firstEnd, secondStart, secondEnd) {
+	let cross = (start, end, point) =>
+		(end.x - start.x) * (point.y - start.y) - (end.y - start.y) * (point.x - start.x);
+	let boundsOverlap = Math.max(firstStart.x, firstEnd.x) >= Math.min(secondStart.x, secondEnd.x)
+		&& Math.max(secondStart.x, secondEnd.x) >= Math.min(firstStart.x, firstEnd.x)
+		&& Math.max(firstStart.y, firstEnd.y) >= Math.min(secondStart.y, secondEnd.y)
+		&& Math.max(secondStart.y, secondEnd.y) >= Math.min(firstStart.y, firstEnd.y);
+	let intersects = boundsOverlap
+		&& cross(firstStart, firstEnd, secondStart) * cross(firstStart, firstEnd, secondEnd) <= 0
+		&& cross(secondStart, secondEnd, firstStart) * cross(secondStart, secondEnd, firstEnd) <= 0;
+	if (intersects) return 0;
+	return Math.min(
+		pointSegmentDistance(firstStart, secondStart, secondEnd),
+		pointSegmentDistance(firstEnd, secondStart, secondEnd),
+		pointSegmentDistance(secondStart, firstStart, firstEnd),
+		pointSegmentDistance(secondEnd, firstStart, firstEnd),
+	);
 }
 
 const TUTORIAL_STEPS = [
@@ -559,17 +599,19 @@ function createMinesight() {
 		giveUpHolding: false,
 		giveUpHoldDuration: GIVE_UP_HOLD_MS,
 		scratchActive: false,
+		scratchTool: 'pencil',
 		scratchColor: 'graphite',
 		scratchColors: [
 			{ key: 'graphite', label: 'Graphite' },
 			{ key: 'blue', label: 'Blue' },
 			{ key: 'red', label: 'Red' },
 		],
-		scratchHasMarks: false,
 		/** @type {Array<{ color: string, points: Array<{ x: number, y: number }> }>} */
 		scratchStrokes: [],
 		/** @type {{ color: string, points: Array<{ x: number, y: number }> } | undefined} */
 		scratchStroke: undefined,
+		/** @type {{ x: number, y: number } | undefined} */
+		scratchEraserPoint: undefined,
 		init() {
 			if (isLocalDevelopment()) {
 				Object.assign(window, {
@@ -883,6 +925,7 @@ function createMinesight() {
 		},
 
 		get inputHelp() {
+			if (this.scratchActive && this.scratchTool === 'eraser') return 'Swipe over a line to erase that whole stroke. Select a color to draw again.';
 			if (this.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
 			return `Tap or left-click to mark ${this.tapActionLabel}. Long-press or right-click to mark ${this.holdActionLabel}.`;
 		},
@@ -916,6 +959,7 @@ function createMinesight() {
 		toggleScratchPad() {
 			this.scratchActive = !this.scratchActive;
 			this.scratchStroke = undefined;
+			this.scratchEraserPoint = undefined;
 		},
 
 		setupScratchPad() {
@@ -1027,7 +1071,6 @@ function createMinesight() {
 					drawProgress: 0,
 				}));
 			this.scratchStrokes.push(...strokes);
-			this.scratchHasMarks = true;
 			this.animateScratchMark(strokes);
 		},
 
@@ -1060,38 +1103,71 @@ function createMinesight() {
 			if (index >= 0) this.scratchStrokes.splice(index, 1);
 		},
 
+		/**
+		 * @param {{ x: number, y: number }} start
+		 * @param {{ x: number, y: number }} end
+		 */
+		eraseScratchStrokes(start, end) {
+			this.scratchStrokes = this.scratchStrokes.filter((stroke) => {
+				if (stroke === this.scratchStroke || stroke.points.length === 0) return true;
+				if (stroke.points.length === 1) {
+					return pointSegmentDistance(stroke.points[0], start, end) > SCRATCH_ERASER_RADIUS;
+				}
+				return !stroke.points.slice(1).some((point, index) =>
+					segmentDistance(stroke.points[index], point, start, end) <= SCRATCH_ERASER_RADIUS,
+				);
+			});
+		},
+
 		/** @param {PointerEvent} event */
 		startScratchStroke(event) {
 			if (!this.scratchActive || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
 			event.preventDefault();
 			event.currentTarget.setPointerCapture(event.pointerId);
-			let stroke = { color: this.scratchColor, points: [this.scratchPoint(event)] };
+			let point = this.scratchPoint(event);
+			if (this.scratchTool === 'eraser') {
+				this.scratchEraserPoint = point;
+				this.eraseScratchStrokes(point, point);
+				this.renderScratchPad();
+				return;
+			}
+			let stroke = { color: this.scratchColor, points: [point] };
 			this.scratchStroke = stroke;
 			this.scratchStrokes.push(stroke);
-			this.scratchHasMarks = true;
 			this.renderScratchPad();
 		},
 
 		/** @param {PointerEvent} event */
 		continueScratchStroke(event) {
-			if (!this.scratchStroke || !event.isPrimary || event.buttons === 0) return;
+			let stroke = this.scratchStroke;
+			if ((!stroke && !this.scratchEraserPoint) || !event.isPrimary || event.buttons === 0) return;
 			event.preventDefault();
 			let point = this.scratchPoint(event);
-			let previous = this.scratchStroke.points.at(-1);
+			if (this.scratchEraserPoint) {
+				this.eraseScratchStrokes(this.scratchEraserPoint, point);
+				this.scratchEraserPoint = point;
+				this.renderScratchPad();
+				return;
+			}
+			if (!stroke) return;
+			let previous = stroke.points.at(-1);
 			if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < .0015) return;
-			this.scratchStroke.points.push(point);
+			stroke.points.push(point);
 			this.renderScratchPad();
 		},
 
 		/** @param {PointerEvent} event */
 		endScratchStroke(event) {
 			if (!event.isPrimary) return;
+			if (this.scratchEraserPoint) {
+				this.scratchEraserPoint = undefined;
+				return;
+			}
 			let stroke = this.scratchStroke;
 			this.scratchStroke = undefined;
 			if (!stroke) return;
 			if (event.type === 'pointercancel') {
 				if (this.isScratchTap(stroke)) this.removeScratchStroke(stroke);
-				this.scratchHasMarks = this.scratchStrokes.length > 0;
 				this.renderScratchPad();
 				return;
 			}
@@ -1099,7 +1175,6 @@ function createMinesight() {
 			if (!this.isScratchTap(stroke, point)) return;
 			this.removeScratchStroke(stroke);
 			this.drawScratchMark(point, false);
-			this.scratchHasMarks = this.scratchStrokes.length > 0;
 			this.renderScratchPad();
 		},
 
@@ -1107,6 +1182,11 @@ function createMinesight() {
 		contextMenuScratch(event) {
 			if (!this.scratchActive) return;
 			let point = this.scratchPoint(event);
+			if (this.scratchTool === 'eraser') {
+				this.eraseScratchStrokes(point, point);
+				this.renderScratchPad();
+				return;
+			}
 			if (this.scratchStroke && this.isScratchTap(this.scratchStroke, point)) {
 				this.removeScratchStroke(this.scratchStroke);
 				this.scratchStroke = undefined;
@@ -1127,12 +1207,13 @@ function createMinesight() {
 		clearScratchPad() {
 			this.scratchStrokes = [];
 			this.scratchStroke = undefined;
-			this.scratchHasMarks = false;
+			this.scratchEraserPoint = undefined;
 			this.renderScratchPad();
 		},
 
 		resetScratchPad() {
 			this.scratchActive = false;
+			this.scratchTool = 'pencil';
 			this.clearScratchPad();
 			this.$nextTick(() => this.resizeScratchPad());
 		},

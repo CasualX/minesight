@@ -708,6 +708,9 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 .minefield-shell {
 	position: relative;
 }
+.minefield-shell.scratch-mode {
+	box-shadow: 0 0 0 2px var(--focus);
+}
 
 .minefield {
 	display: grid;
@@ -738,7 +741,9 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	pointer-events: auto;
 	touch-action: none;
 }
-
+.scratch-canvas.erasing {
+	cursor: cell;
+}
 .board-loading {
 	position: absolute;
 	z-index: 3;
@@ -1154,6 +1159,11 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 .scratch-toggle.active {
 	color: var(--ink);
 }
+.scratch-eraser.active {
+	background: var(--covered);
+	color: var(--ink);
+	box-shadow: inset 0 0 0 1px var(--line);
+}
 .scratch-tools svg {
 	width: 16px;
 	height: 16px;
@@ -1163,17 +1173,26 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	stroke-linejoin: round;
 	stroke-width: 1.7;
 }
+.scratch-eraser svg {
+	transition: width 120ms ease, height 120ms ease;
+}
+.scratch-eraser.active svg {
+	width: 20px;
+	height: 20px;
+}
 .scratch-tools button.scratch-color {
 	position: relative;
-	min-width: 24px;
-	width: 24px;
+	min-width: 28px;
+	width: 28px;
+	border-radius: 4px;
 }
 .scratch-color::before {
-	width: 10px;
-	height: 10px;
+	width: 14px;
+	height: 14px;
 	border-radius: 50%;
 	background: var(--scratch-color);
 	content: '';
+	transition: width 120ms ease, height 120ms ease;
 }
 .scratch-color.graphite {
 	--scratch-color: var(--scratch-graphite);
@@ -1184,12 +1203,13 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 .scratch-color.red {
 	--scratch-color: var(--scratch-red);
 }
-.scratch-color.selected::after {
-	position: absolute;
-	inset: 4px;
-	border: 1px solid var(--scratch-color);
-	border-radius: 50%;
-	content: '';
+.scratch-tools button.scratch-color[aria-pressed="true"] {
+	background: var(--covered);
+	box-shadow: inset 0 0 0 1px var(--line), 0 1px 2px rgb(0 0 0 / 12%);
+}
+.scratch-color[aria-pressed="true"]::before {
+	width: 20px;
+	height: 20px;
 }
 .scratch-tools button:disabled {
 	opacity: .3;
