@@ -14,7 +14,7 @@ Use the revealed numbers to mark every covered square that must be safe or mined
 
 - Tap or left-click to mark a square as safe.
 - Long-press or right-click to mark a mine.
-- Choose **Practice** to play at your own pace. You can change the difficulty or ask for a hint.
+- Choose **Study** to play at your own pace. You can change the difficulty or ask for a hint.
 - Choose **Challenge** to race through a set of puzzles that gets harder as you go. One mistake ends the run.
 
 You never need to guess. Every answer follows from the clues on the board.

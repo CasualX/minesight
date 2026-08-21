@@ -169,10 +169,10 @@ function testPuzzleRejectsUnforcedAndInactiveMoves() {
 	assertEqual(field.isIncorrect(0, 0), true, 'marking an ambiguous cell should be an incorrect tactics move');
 	assertEqual(field.isMarkedSafe(0, 0), false, 'an incorrect safe annotation should not be stored');
 	assertEqual(field.gameOverReason(), MineField.GAME_OVER_DETONATION, 'an unforced move should fail the puzzle even when it happens to be safe');
-	assertEqual(field.consumeIncorrect(), 0, 'practice mode should be able to consume the incorrect cell for feedback');
-	assertEqual(field.gameOverReason(), MineField.GAME_OVER_FALSE, 'consuming practice feedback should let the puzzle continue');
+	assertEqual(field.consumeIncorrect(), 0, 'study mode should be able to consume the incorrect cell for feedback');
+	assertEqual(field.gameOverReason(), MineField.GAME_OVER_FALSE, 'consuming study feedback should let the puzzle continue');
 	field.actionMarkSafe(1, 0);
-	assertEqual(field.gameOverReason(), MineField.GAME_OVER_CLEARED, 'the puzzle should remain solvable after an incorrect practice guess');
+	assertEqual(field.gameOverReason(), MineField.GAME_OVER_CLEARED, 'the puzzle should remain solvable after an incorrect study guess');
 }
 
 function testPuzzleAnnotationsAreDistinctFromNormalBoardActions() {

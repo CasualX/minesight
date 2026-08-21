@@ -321,7 +321,7 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 .difficulty-picker {
 	margin-bottom: 10px;
 }
-.practice-toolbar {
+.study-toolbar {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) 104px;
 	gap: 8px;
@@ -341,7 +341,7 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	font: 11px/1.4 ui-sans-serif, system-ui, sans-serif;
 }
 
-.practice-streak {
+.study-streak {
 	display: grid;
 	align-content: center;
 	justify-items: center;
@@ -353,7 +353,7 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	font-family: ui-sans-serif, system-ui, sans-serif;
 }
 
-.practice-streak > span {
+.study-streak > span {
 	color: var(--muted);
 	font-size: 9px;
 	font-weight: 700;
@@ -362,7 +362,7 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	text-transform: uppercase;
 }
 
-.practice-streak > strong {
+.study-streak > strong {
 	width: 6ch;
 	font-size: 18px;
 	font-variant-numeric: tabular-nums;
@@ -896,7 +896,7 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	to { filter: brightness(1.12); }
 }
 
-.practice-status,
+.study-status,
 .result-banner {
 	min-height: 52px;
 	margin-top: 10px;
@@ -911,15 +911,15 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	gap: 12px;
 }
 
-.practice-status strong, .practice-status span,
+.study-status strong, .study-status span,
 .result-banner strong, .result-banner span {
 	display: block;
 }
-.practice-status strong,
+.study-status strong,
 .result-banner strong {
 	font: 700 14px ui-sans-serif, system-ui, sans-serif;
 }
-.practice-status span,
+.study-status span,
 .result-banner span {
 	margin-top: 2px;
 	color: var(--muted);

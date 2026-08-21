@@ -21,12 +21,12 @@
 			<nav class="mode-switcher" aria-label="Game mode" x-show="mode !== 'tutorial'">
 				<button
 					type="button"
-					:class="{ active: mode === 'practice' }"
-					:aria-pressed="mode === 'practice'"
+					:class="{ active: mode === 'study' }"
+					:aria-pressed="mode === 'study'"
 					:disabled="challengeRunActive"
-					:title="practiceModeTitle"
-					@click="switchMode('practice')"
-				>Practice</button>
+					:title="studyModeTitle"
+					@click="switchMode('study')"
+				>Study</button>
 				<button type="button" :class="{ active: mode === 'challenge' }" :aria-pressed="mode === 'challenge'" @click="switchMode('challenge')">Challenge</button>
 			</nav>
 			<button
@@ -85,8 +85,8 @@
 			<p x-text="tutorialMessage"></p>
 		</section>
 
-		<section class="difficulty-picker" x-show="mode === 'practice'">
-			<div class="practice-toolbar">
+		<section class="difficulty-picker" x-show="mode === 'study'">
+			<div class="study-toolbar">
 				<label class="sr-only" for="difficulty">Difficulty</label>
 				<select id="difficulty" @change="selectDifficulty($event.target.value)">
 					<template x-for="difficulty in difficulties" :key="difficulty.key">
@@ -97,9 +97,9 @@
 						></option>
 					</template>
 				</select>
-				<div class="practice-streak" role="status" :aria-label="practiceStreakLabel">
+				<div class="study-streak" role="status" :aria-label="studyStreakLabel">
 					<span>Streak</span>
-					<strong x-text="practiceStreak"></strong>
+					<strong x-text="studyStreak"></strong>
 				</div>
 			</div>
 			<p class="difficulty-description" x-text="currentDifficulty.description"></p>
@@ -224,7 +224,7 @@
 						@pointercancel="endScratchStroke($event)"
 						@contextmenu.prevent="contextMenuScratch($event)"
 					></canvas>
-					<div class="board-loading" x-show="practiceSearchingVisible" x-transition.opacity role="status" aria-live="polite">
+					<div class="board-loading" x-show="studySearchingVisible" x-transition.opacity role="status" aria-live="polite">
 						<span class="board-loading-spinner" aria-hidden="true"></span>
 						<strong>Building a puzzle…</strong>
 						<span>Trying different board layouts</span>
@@ -291,7 +291,7 @@
 				</div>
 			</div>
 
-			<div class="practice-status" x-show="showPuzzleStatus" role="status" aria-live="polite">
+			<div class="study-status" x-show="showPuzzleStatus" role="status" aria-live="polite">
 				<strong x-text="statusTitle"></strong>
 				<span x-text="statusMessage"></span>
 			</div>
@@ -322,8 +322,8 @@
 				>Hint</button>
 			</div>
 		</section>
-		<section class="game-controls" x-show="mode === 'practice'" aria-label="Board controls">
-			<div class="board-actions" :class="practiceActionsClass">
+		<section class="game-controls" x-show="mode === 'study'" aria-label="Board controls">
+			<div class="board-actions" :class="studyActionsClass">
 				<button
 					type="button"
 					class="secondary"
@@ -334,10 +334,10 @@
 				>Hint</button>
 				<button
 					type="button"
-					:class="practiceBoardActionClass"
+					:class="studyBoardActionClass"
 					:disabled="boardPreparing"
-					@click="activatePracticeBoardAction()"
-					x-text="practiceBoardActionLabel"
+					@click="activateStudyBoardAction()"
+					x-text="studyBoardActionLabel"
 				></button>
 			</div>
 		</section>

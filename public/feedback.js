@@ -51,7 +51,7 @@ class FeedbackEffects {
 
 	/** @param {number} streak */
 	streakLost(streak) {
-		let counter = document.querySelector('.practice-streak > strong');
+		let counter = document.querySelector('.study-streak > strong');
 		if (!(counter instanceof HTMLElement)) return;
 
 		let bounds = counter.getBoundingClientRect();

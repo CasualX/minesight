@@ -167,7 +167,7 @@ const EXPERT_DIFFICULTY = {
 	generator: 'randomExpertPuzzle',
 	description: 'The clues overlap across a larger, messier area. Keep track of several possible mine layouts at once.',
 };
-const PRACTICE_DIFFICULTIES = [
+const STUDY_DIFFICULTIES = [
 	EASY_DIFFICULTY,
 	MEDIUM_DIFFICULTY,
 	HARD_DIFFICULTY,
@@ -484,10 +484,10 @@ function sortChallengeTiers(puzzles, route) {
 	}
 }
 
-/** @typedef {'tutorial' | 'practice' | 'challenge' | 'shared'} GameMode */
+/** @typedef {'tutorial' | 'study' | 'challenge' | 'shared'} GameMode */
 /** @typedef {'playing' | 'cleared' | 'failed' | 'gave-up' | 'complete'} GameResult */
 /** @typedef {'cleared' | 'failed'} ChallengeResult */
-/** @typedef {{ field: MineField, seed: bigint, result: GameResult, hintUsed: boolean, streak: number, ready: boolean }} PracticeState */
+/** @typedef {{ field: MineField, seed: bigint, result: GameResult, hintUsed: boolean, streak: number, ready: boolean }} StudyState */
 
 function createMinesight() {
 	let stored = loadMinesightData();
@@ -508,20 +508,20 @@ function createMinesight() {
 		}
 	}
 	gameSounds.setEnabled(stored.soundEnabled !== false);
-	let storedPractice = stored?.practice ?? {};
-	let difficultyKey = PRACTICE_DIFFICULTIES.some(({ key }) => key === storedPractice.difficultyKey) ? storedPractice.difficultyKey : 'easy';
-	let practiceStreaks = Object.fromEntries(PRACTICE_DIFFICULTIES.map(({ key }) => {
-		let streak = storedPractice.difficulties?.[key]?.streak;
+	let storedStudy = stored?.study ?? {};
+	let difficultyKey = STUDY_DIFFICULTIES.some(({ key }) => key === storedStudy.difficultyKey) ? storedStudy.difficultyKey : 'easy';
+	let studyStreaks = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
+		let streak = storedStudy.difficulties?.[key]?.streak;
 		return [key, Math.max(0, Number.parseInt(streak) || 0)];
 	}));
-	let storedMode = ['practice', 'challenge'].includes(stored.mode) ? stored.mode : 'tutorial';
+	let storedMode = ['study', 'challenge'].includes(stored.mode) ? stored.mode : 'tutorial';
 	let savedChallengeModeKey = stored.challengeModeKey ?? 'expert';
 	let challengeModeKey = CHALLENGE_MODES.some(({ key }) => key === savedChallengeModeKey) ? savedChallengeModeKey : CHALLENGE_MODES[0].key;
 	if (urlGame.mode === 'challenge') challengeModeKey = urlGame.modeKey;
 	let challengeSeed = urlGame.mode === 'challenge' && urlGame.seed !== undefined ? urlGame.seed : randomChallengeSeed();
-	/** @type {Record<string, PracticeState | undefined>} */
-	let practiceStates = Object.fromEntries(PRACTICE_DIFFICULTIES.map(({ key }) => {
-		let saved = storedPractice.difficulties?.[key];
+	/** @type {Record<string, StudyState | undefined>} */
+	let studyStates = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
+		let saved = storedStudy.difficulties?.[key];
 		if (!Array.isArray(saved?.board?.cells)) return [key, undefined];
 		if (saved.board.difficultyKey !== key) return [key, undefined];
 		try {
@@ -530,7 +530,7 @@ function createMinesight() {
 				seed: BigInt(saved.board.seed),
 				result: saved.board.result === 'cleared' ? 'cleared' : 'playing',
 				hintUsed: Boolean(saved.board.hintUsed),
-				streak: practiceStreaks[key],
+				streak: studyStreaks[key],
 				ready: true,
 			}];
 		}
@@ -548,7 +548,7 @@ function createMinesight() {
 		/** @type {GameResult} */
 		result: 'playing',
 		difficultyKey,
-		difficulties: PRACTICE_DIFFICULTIES,
+		difficulties: STUDY_DIFFICULTIES,
 		challengeModes: CHALLENGE_MODES,
 		challengeModeKey,
 		challengeSeed,
@@ -558,19 +558,19 @@ function createMinesight() {
 		challengeStarted: false,
 		challengePreparing: false,
 		challengePreparationId: 0,
-		practicePreparationId: 0,
+		studyPreparationId: 0,
 		boardPreparing: false,
-		practiceSearchingVisible: false,
-		practiceBoardReady: false,
-		/** @type {Record<string, PracticeState | undefined>} */
-		practiceStates,
+		studySearchingVisible: false,
+		studyBoardReady: false,
+		/** @type {Record<string, StudyState | undefined>} */
+		studyStates,
 		/** @type {Array<{ field: MineField, seed: bigint, attempts: number }>} */
 		challengePuzzles: [],
 		/** @type {ChallengeResult[]} */
 		challengeResults: [],
 		elapsedMs: 0,
-		practiceStreaks,
-		practiceStreak: practiceStreaks[difficultyKey],
+		studyStreaks,
+		studyStreak: studyStreaks[difficultyKey],
 		hintUsed: false,
 		tutorialStep: 0,
 		keyboardFocusIndex: -1,
@@ -591,7 +591,7 @@ function createMinesight() {
 		/** @type {number | undefined} */
 		incorrectFeedbackTimerId: undefined,
 		/** @type {number | undefined} */
-		practiceSearchingTimerId: undefined,
+		studySearchingTimerId: undefined,
 		/** @type {number | undefined} */
 		shareFeedbackTimerId: undefined,
 		/** @type {number | undefined} */
@@ -636,16 +636,16 @@ function createMinesight() {
 				void this.prepareChallenge();
 				return;
 			}
-			if (!this.restorePracticeState() && !this.engineError) this.newPracticeBoard();
+			if (!this.restoreStudyState() && !this.engineError) this.newStudyBoard();
 		},
 
 		destroy() {
 			this.challengePreparationId += 1;
-			this.practicePreparationId += 1;
+			this.studyPreparationId += 1;
 			this.boardPreparing = false;
 			this.stopTimer();
 			this.clearIncorrectFeedback();
-			this.clearPracticeSearchingDelay();
+			this.clearStudySearchingDelay();
 			if (this.shareFeedbackTimerId !== undefined) window.clearTimeout(this.shareFeedbackTimerId);
 			this.cancelGiveUpGesture();
 			scratchResizeObserver?.disconnect();
@@ -657,11 +657,11 @@ function createMinesight() {
 					this.challengeIndex >= start && this.challengeIndex < start + puzzleCount
 				))?.difficulty ?? this.challengeGroups[0].difficulty;
 			}
-			return PRACTICE_DIFFICULTIES.find((difficulty) => difficulty.key === this.difficultyKey) ?? PRACTICE_DIFFICULTIES[0];
+			return STUDY_DIFFICULTIES.find((difficulty) => difficulty.key === this.difficultyKey) ?? STUDY_DIFFICULTIES[0];
 		},
 
-		get practiceModeTitle() {
-			return this.challengeRunActive ? 'End your challenge before switching to Practice' : '';
+		get studyModeTitle() {
+			return this.challengeRunActive ? 'End your challenge before switching to Study' : '';
 		},
 
 		get soundToggleClass() {
@@ -674,7 +674,7 @@ function createMinesight() {
 
 		get headingTitle() {
 			if (this.mode === 'tutorial') return 'Introduction';
-			if (this.mode === 'practice') return 'Practice';
+			if (this.mode === 'study') return 'Study';
 			if (this.mode === 'challenge') return 'Challenge';
 			return 'Shared puzzle';
 		},
@@ -717,8 +717,8 @@ function createMinesight() {
 			return `Puzzle generator error: ${this.engineError}`;
 		},
 
-		get practiceStreakLabel() {
-			return `${this.currentDifficulty.label} practice streak: ${this.practiceStreak}`;
+		get studyStreakLabel() {
+			return `${this.currentDifficulty.label} study streak: ${this.studyStreak}`;
 		},
 
 		get showChallengeIntro() {
@@ -794,7 +794,7 @@ function createMinesight() {
 
 		get showBoard() {
 			if (this.mode === 'shared' && this.sharedPuzzleError) return false;
-			if (this.mode === 'practice') return this.practiceBoardReady || this.boardPreparing;
+			if (this.mode === 'study') return this.studyBoardReady || this.boardPreparing;
 			return this.mode !== 'challenge' || (this.challengeStarted && this.result !== 'complete');
 		},
 
@@ -813,11 +813,11 @@ function createMinesight() {
 
 		get sharePuzzleDisabled() {
 			if (this.mode === 'challenge') return this.challengeShareDisabled;
-			return this.boardPreparing || (this.mode === 'practice' && !this.practiceBoardReady);
+			return this.boardPreparing || (this.mode === 'study' && !this.studyBoardReady);
 		},
 
 		get showPuzzleStatus() {
-			return this.mode === 'practice' || this.mode === 'shared';
+			return this.mode === 'study' || this.mode === 'shared';
 		},
 
 		get statusTitle() {
@@ -845,22 +845,22 @@ function createMinesight() {
 
 		get hintButtonDisabled() {
 			return this.boardPreparing || this.result !== 'playing' || (
-				this.mode === 'practice' && !this.practiceBoardReady
+				this.mode === 'study' && !this.studyBoardReady
 			);
 		},
 
-		get practiceActionsClass() {
-			return this.practiceSearchingVisible ? 'is-searching' : '';
+		get studyActionsClass() {
+			return this.studySearchingVisible ? 'is-searching' : '';
 		},
 
-		get practiceBoardActionClass() {
-			return this.result === 'playing' && this.practiceBoardReady ? 'skip' : 'primary';
+		get studyBoardActionClass() {
+			return this.result === 'playing' && this.studyBoardReady ? 'skip' : 'primary';
 		},
 
-		get practiceBoardActionLabel() {
-			if (this.practiceSearchingVisible) return 'Searching…';
+		get studyBoardActionLabel() {
+			if (this.studySearchingVisible) return 'Searching…';
 			if (this.boardPreparing) return 'Building…';
-			if (!this.practiceBoardReady) return 'Try again';
+			if (!this.studyBoardReady) return 'Try again';
 			return this.result === 'playing' ? 'Skip' : 'Next';
 		},
 
@@ -1245,7 +1245,7 @@ function createMinesight() {
 		get cells() {
 			this.revision;
 			let cells = [];
-			let showHints = ['practice', 'shared'].includes(this.mode) && this.hintUsed && this.result === 'playing';
+			let showHints = ['study', 'shared'].includes(this.mode) && this.hintUsed && this.result === 'playing';
 			let showSolution = this.mode === 'challenge' && this.result === 'gave-up';
 			for (let y = 0; y < this.field.height; y += 1) {
 				for (let x = 0; x < this.field.width; x += 1) {
@@ -1306,9 +1306,9 @@ function createMinesight() {
 					else label += ', outside this puzzle';
 					if (tutorialTarget) label += ', current tutorial target';
 
-					let practiceBoardUnavailable = this.mode === 'practice' && !this.practiceBoardReady;
+					let studyBoardUnavailable = this.mode === 'study' && !this.studyBoardReady;
 					let chordable = this.mode !== 'tutorial' && revealed && !mine;
-					let disabled = this.boardPreparing || practiceBoardUnavailable ||
+					let disabled = this.boardPreparing || studyBoardUnavailable ||
 						this.result !== 'playing' || (!active && !chordable) ||
 						(this.mode === 'tutorial' && this.tutorialComplete);
 					let key = `${this.boardNumber}-${index}`;
@@ -1373,10 +1373,10 @@ function createMinesight() {
 			else if (this.result === 'gave-up') void this.restartChallenge();
 		},
 
-		activatePracticeBoardAction() {
+		activateStudyBoardAction() {
 			if (this.boardPreparing) return;
-			if (this.result === 'playing' && this.practiceBoardReady) this.skipPracticeBoard();
-			else void this.newPracticeBoard();
+			if (this.result === 'playing' && this.studyBoardReady) this.skipStudyBoard();
+			else void this.newStudyBoard();
 		},
 
 		startTutorial() {
@@ -1393,9 +1393,9 @@ function createMinesight() {
 		finishTutorial() {
 			if (this.mode !== 'tutorial') return;
 			this.removeTutorialFromUrl();
-			saveMinesightData('mode', 'practice');
-			this.mode = 'practice';
-			if (!this.restorePracticeState()) void this.newPracticeBoard();
+			saveMinesightData('mode', 'study');
+			this.mode = 'study';
+			if (!this.restoreStudyState()) void this.newStudyBoard();
 		},
 
 		removeTutorialFromUrl() {
@@ -1422,17 +1422,17 @@ function createMinesight() {
 		/** @param {GameMode} nextMode */
 		switchMode(nextMode) {
 			if (this.mode === nextMode) return;
-			if (nextMode === 'practice' && this.challengeRunActive) return;
+			if (nextMode === 'study' && this.challengeRunActive) return;
 			this.removeTutorialFromUrl();
 			if (nextMode === 'challenge') {
-				if (this.mode === 'practice') {
-					this.snapshotPracticeState();
-					this.savePracticeData();
+				if (this.mode === 'study') {
+					this.snapshotStudyState();
+					this.saveStudyData();
 				}
 				this.removeSharedPuzzleFromUrl();
-				this.practicePreparationId += 1;
+				this.studyPreparationId += 1;
 				this.boardPreparing = false;
-				this.clearPracticeSearchingDelay();
+				this.clearStudySearchingDelay();
 				this.mode = nextMode;
 				this.challengeTargetMs = undefined;
 				this.challengeSeed = randomChallengeSeed();
@@ -1450,7 +1450,7 @@ function createMinesight() {
 				this.stopTimer();
 				this.mode = nextMode;
 				saveMinesightData('mode', nextMode);
-				if (!this.restorePracticeState()) void this.newPracticeBoard();
+				if (!this.restoreStudyState()) void this.newStudyBoard();
 			}
 		},
 
@@ -1565,38 +1565,38 @@ function createMinesight() {
 		/** @param {string} key */
 		selectDifficulty(key) {
 			if (this.difficultyKey === key) return;
-			if (!PRACTICE_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
-			this.snapshotPracticeState();
-			this.practicePreparationId += 1;
+			if (!STUDY_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
+			this.snapshotStudyState();
+			this.studyPreparationId += 1;
 			this.boardPreparing = false;
-			this.clearPracticeSearchingDelay();
+			this.clearStudySearchingDelay();
 			this.difficultyKey = key;
-			let restored = this.restorePracticeState();
-			this.savePracticeData();
-			if (!restored) void this.newPracticeBoard();
+			let restored = this.restoreStudyState();
+			this.saveStudyData();
+			if (!restored) void this.newStudyBoard();
 		},
 
-		snapshotPracticeState() {
-			this.practiceStates[this.difficultyKey] = {
+		snapshotStudyState() {
+			this.studyStates[this.difficultyKey] = {
 				field: this.field,
 				seed: this.boardSeed,
 				result: this.result,
 				hintUsed: this.hintUsed,
-				streak: this.practiceStreak,
-				ready: this.practiceBoardReady,
+				streak: this.studyStreak,
+				ready: this.studyBoardReady,
 			};
 		},
 
-		restorePracticeState() {
-			let state = this.practiceStates[this.difficultyKey];
+		restoreStudyState() {
+			let state = this.studyStates[this.difficultyKey];
 			if (!state) {
-				this.practiceStreak = this.practiceStreaks[this.difficultyKey];
-				this.practiceBoardReady = false;
+				this.studyStreak = this.studyStreaks[this.difficultyKey];
+				this.studyBoardReady = false;
 				return false;
 			}
-			this.practiceStreak = state.streak;
+			this.studyStreak = state.streak;
 			if (!state.ready) {
-				this.practiceBoardReady = false;
+				this.studyBoardReady = false;
 				return false;
 			}
 			this.clearIncorrectFeedback();
@@ -1604,7 +1604,7 @@ function createMinesight() {
 			this.boardSeed = state.seed;
 			this.result = state.result;
 			this.hintUsed = state.hintUsed;
-			this.practiceBoardReady = true;
+			this.studyBoardReady = true;
 			this.engineError = '';
 			this.boardNumber += 1;
 			this.revision += 1;
@@ -1612,16 +1612,16 @@ function createMinesight() {
 		},
 
 		/** @param {number} streak */
-		setPracticeStreak(streak) {
-			this.practiceStreak = streak;
-			this.practiceStreaks[this.difficultyKey] = streak;
+		setStudyStreak(streak) {
+			this.studyStreak = streak;
+			this.studyStreaks[this.difficultyKey] = streak;
 		},
 
-		savePracticeData() {
-			let difficulties = Object.fromEntries(PRACTICE_DIFFICULTIES.map(({ key }) => {
-				let state = this.practiceStates[key];
+		saveStudyData() {
+			let difficulties = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
+				let state = this.studyStates[key];
 				/** @type {{ streak: number, board?: { difficultyKey: string, cells: number[], seed: string, result: GameResult, hintUsed: boolean } }} */
-				let saved = { streak: this.practiceStreaks[key] };
+				let saved = { streak: this.studyStreaks[key] };
 				if (state?.ready) saved.board = {
 					difficultyKey: key,
 					cells: Array.from(state.field.state),
@@ -1631,24 +1631,24 @@ function createMinesight() {
 				};
 				return [key, saved];
 			}));
-			saveMinesightData('practice', {
+			saveMinesightData('study', {
 				difficultyKey: this.difficultyKey,
 				difficulties,
 			});
 		},
 
-		async newPracticeBoard() {
+		async newStudyBoard() {
 			this.result = 'playing';
 			this.hintUsed = false;
-			this.practiceBoardReady = false;
-			this.snapshotPracticeState();
-			this.savePracticeData();
+			this.studyBoardReady = false;
+			this.snapshotStudyState();
+			this.saveStudyData();
 			await this.replaceField();
 		},
 
-		skipPracticeBoard() {
-			if (this.mode !== 'practice' || this.result !== 'playing') return;
-			void this.newPracticeBoard();
+		skipStudyBoard() {
+			if (this.mode !== 'study' || this.result !== 'playing') return;
+			void this.newStudyBoard();
 		},
 
 		async prepareChallenge() {
@@ -1778,59 +1778,59 @@ function createMinesight() {
 
 		async replaceField() {
 			this.clearIncorrectFeedback();
-			let preparationId = this.practicePreparationId + 1;
-			this.practicePreparationId = preparationId;
+			let preparationId = this.studyPreparationId + 1;
+			this.studyPreparationId = preparationId;
 			this.boardPreparing = true;
-			this.clearPracticeSearchingDelay();
-			this.practiceSearchingTimerId = window.setTimeout(() => {
+			this.clearStudySearchingDelay();
+			this.studySearchingTimerId = window.setTimeout(() => {
 				if (
-					this.mode === 'practice' &&
+					this.mode === 'study' &&
 					this.boardPreparing &&
-					preparationId === this.practicePreparationId
-				) this.practiceSearchingVisible = true;
+					preparationId === this.studyPreparationId
+				) this.studySearchingVisible = true;
 			}, 200);
 			this.engineError = '';
 			try {
 				let difficulty = this.currentDifficulty;
 				let difficultyKey = this.difficultyKey;
 				let puzzle = await generateField(difficulty, () => (
-					this.mode === 'practice' &&
+					this.mode === 'study' &&
 					difficultyKey === this.difficultyKey &&
-					preparationId === this.practicePreparationId
+					preparationId === this.studyPreparationId
 				));
 				if (
 					!puzzle ||
-					this.mode !== 'practice' ||
+					this.mode !== 'study' ||
 					difficultyKey !== this.difficultyKey ||
-					preparationId !== this.practicePreparationId
+					preparationId !== this.studyPreparationId
 				) return;
 				this.field = puzzle.field;
 				this.boardSeed = puzzle.seed;
-				this.practiceBoardReady = true;
+				this.studyBoardReady = true;
 				this.engineError = '';
 				this.boardNumber += 1;
 				this.revision += 1;
-				this.snapshotPracticeState();
-				this.savePracticeData();
+				this.snapshotStudyState();
+				this.saveStudyData();
 			}
 			catch (error) {
-				if (preparationId !== this.practicePreparationId) return;
+				if (preparationId !== this.studyPreparationId) return;
 				this.engineError = error instanceof Error ? error.message : String(error);
 			}
 			finally {
-				if (preparationId === this.practicePreparationId) {
+				if (preparationId === this.studyPreparationId) {
 					this.boardPreparing = false;
-					this.clearPracticeSearchingDelay();
+					this.clearStudySearchingDelay();
 				}
 			}
 		},
 
-		clearPracticeSearchingDelay() {
-			if (this.practiceSearchingTimerId !== undefined) {
-				window.clearTimeout(this.practiceSearchingTimerId);
+		clearStudySearchingDelay() {
+			if (this.studySearchingTimerId !== undefined) {
+				window.clearTimeout(this.studySearchingTimerId);
 			}
-			this.practiceSearchingTimerId = undefined;
-			this.practiceSearchingVisible = false;
+			this.studySearchingTimerId = undefined;
+			this.studySearchingVisible = false;
 		},
 
 		stopTimer() {
@@ -1879,13 +1879,13 @@ function createMinesight() {
 		},
 
 		useHint() {
-			if (!['practice', 'shared'].includes(this.mode) || this.result !== 'playing') return;
-			if (this.mode === 'practice' && !this.practiceBoardReady) return;
+			if (!['study', 'shared'].includes(this.mode) || this.result !== 'playing') return;
+			if (this.mode === 'study' && !this.studyBoardReady) return;
 			this.hintUsed = !this.hintUsed;
 			this.revision += 1;
-			if (this.mode === 'practice') {
-				this.snapshotPracticeState();
-				this.savePracticeData();
+			if (this.mode === 'study') {
+				this.snapshotStudyState();
+				this.saveStudyData();
 			}
 		},
 
@@ -2059,9 +2059,9 @@ function createMinesight() {
 					this.markChallengeFailed(feedbackCellIndex);
 					return;
 				}
-				if (this.mode === 'practice') {
-					feedbackEffects.streakLost(this.practiceStreak);
-					this.setPracticeStreak(0);
+				if (this.mode === 'study') {
+					feedbackEffects.streakLost(this.studyStreak);
+					this.setStudyStreak(0);
 				}
 				let incorrectIndex = this.field.consumeIncorrect();
 				if (incorrectIndex >= 0) this.showIncorrectFeedback(incorrectIndex);
@@ -2088,7 +2088,7 @@ function createMinesight() {
 				}
 				else {
 					this.result = 'cleared';
-					if (this.mode === 'practice') this.setPracticeStreak(this.practiceStreak + 1);
+					if (this.mode === 'study') this.setStudyStreak(this.studyStreak + 1);
 					gameSounds.play('success');
 				}
 				feedbackEffects.success({ grand: challengeComplete });
@@ -2102,9 +2102,9 @@ function createMinesight() {
 				showMarkEffects();
 			}
 			this.revision += 1;
-			if (this.mode === 'practice') {
-				this.snapshotPracticeState();
-				this.savePracticeData();
+			if (this.mode === 'study') {
+				this.snapshotStudyState();
+				this.saveStudyData();
 			}
 		},
 
