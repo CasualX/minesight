@@ -461,33 +461,11 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	font-size: 10px;
 }
 
-.tutorial-guide {
-	min-height: 150px;
-	margin-bottom: 12px;
-	padding: 12px 13px;
-	border: 1px solid var(--line);
-	background: var(--paper);
-}
-
 .tutorial-progress {
 	color: var(--muted);
 	font: 700 10px ui-sans-serif, system-ui, sans-serif;
 	letter-spacing: .08em;
 	text-transform: uppercase;
-}
-
-.tutorial-guide h2 {
-	margin: 5px 0 4px;
-	font-size: 19px;
-}
-.tutorial-guide p {
-	margin: 0;
-	color: var(--muted);
-	font: 12px/1.45 ui-sans-serif, system-ui, sans-serif;
-}
-
-@media (max-width: 360px) {
-	.tutorial-guide { min-height: 170px; }
 }
 
 .challenge-kicker {
@@ -723,6 +701,76 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	touch-action: manipulation;
 	user-select: none;
 	-webkit-user-select: none;
+}
+
+.tutorial-bubble {
+	position: absolute;
+	z-index: 3;
+	padding: 11px 12px 12px;
+	border: 2px solid var(--tutorial);
+	border-radius: 9px;
+	background: var(--paper);
+	box-shadow: 3px 4px 0 color-mix(in srgb, var(--tutorial-ring) 85%, transparent);
+	user-select: none;
+}
+
+.tutorial-bubble::before {
+	position: absolute;
+	top: var(--tutorial-pointer-y);
+	width: 0;
+	height: 0;
+	border-block: 9px solid transparent;
+	content: '';
+}
+
+.tutorial-bubble-right {
+	top: calc(var(--tutorial-top) + 4px);
+	right: 8px;
+	left: calc(var(--tutorial-right-edge) + 12px);
+	--tutorial-pointer-y: 12px;
+}
+
+.tutorial-bubble-right::before {
+	right: 100%;
+	border-right: 12px solid var(--tutorial);
+}
+
+.tutorial-bubble-left {
+	right: calc(var(--tutorial-space-right) + 12px);
+	bottom: calc(var(--tutorial-space-below) + 4px);
+	left: 8px;
+	--tutorial-pointer-y: calc(100% - 30px);
+}
+
+.tutorial-bubble-left::before {
+	left: 100%;
+	border-left: 12px solid var(--tutorial);
+}
+
+.tutorial-bubble-below {
+	top: calc(var(--tutorial-bottom-edge) + 12px);
+	right: 8px;
+	left: 8px;
+}
+
+.tutorial-bubble-below::before {
+	bottom: 100%;
+	left: calc(var(--tutorial-target-center) - 17px);
+	border: 0;
+	border-right: 9px solid transparent;
+	border-bottom: 12px solid var(--tutorial);
+	border-left: 9px solid transparent;
+}
+
+.tutorial-bubble h2 {
+	margin: 4px 0 3px;
+	font-size: clamp(14px, 4.5vw, 18px);
+}
+
+.tutorial-bubble p {
+	margin: 0;
+	color: var(--muted);
+	font: 11px/1.4 ui-sans-serif, system-ui, sans-serif;
 }
 
 .scratch-canvas {

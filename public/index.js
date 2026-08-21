@@ -84,18 +84,21 @@ function segmentDistance(firstStart, firstEnd, secondStart, secondEnd) {
 const TUTORIAL_STEPS = [
 	{
 		x: 1, y: 0, action: 'mine',
+		bubble: 'right',
 		title: 'Mark a mine',
-		message: 'The right-hand 1 touches only one covered square. Long-press or right-click that square to mark the mine.',
+		message: 'The 1 on the right touches only one covered square. Long-press or right-click that square to mark it as a mine.',
 	},
 	{
 		x: 0, y: 0, action: 'safe',
+		bubble: 'below',
 		title: 'Mark a square safe',
-		message: 'That mine accounts for the 1 below the left square, so its other covered neighbour must be safe. Tap it.',
+		message: 'The mine you marked already satisfies the 1 below it. That proves the other covered square is safe. Tap it.',
 	},
 	{
 		x: 6, y: 5, action: 'ambiguous',
-		title: 'Do not guess',
-		message: 'At the bottom, the two 1s share several covered squares. More than one mine placement fits the clues. Tap the highlighted square to try a guess.',
+		bubble: 'left',
+		title: 'Leave uncertain squares alone',
+		message: 'The mine could be in several places around these two 1s, so the highlighted square could be safe or mined. Tap it to try a guess.',
 	},
 ];
 
@@ -681,7 +684,8 @@ function createMinesight() {
 
 		get headingSubtitle() {
 			if (this.mode === 'tutorial') {
-				return 'Welcome to Minesight, a Minesweeper tactics game where you identify which covered squares must be safe and which must contain mines. Follow the instructions below to get started.';
+				return 'Welcome to Minesight, a Minesweeper tactics game where you identify which covered squares must be safe and which must contain mines. ' +
+					'Minesight uses Minesweeper clues, but you are not trying to clear the board. Find every covered square that must be safe or must contain a mine. Leave any square that could be either alone.';
 			}
 			if (this.mode === 'shared') return 'A puzzle sent to you';
 			if (this.mode === 'challenge' && this.challengeStarted) {
@@ -711,6 +715,23 @@ function createMinesight() {
 				return 'Mark only squares the clues prove safe or mined. If a square is ambiguous, leave it alone.';
 			}
 			return TUTORIAL_STEPS[this.tutorialStep].message;
+		},
+
+		get tutorialBubbleClass() {
+			if (this.tutorialComplete) return '';
+			return `tutorial-bubble-${TUTORIAL_STEPS[this.tutorialStep].bubble}`;
+		},
+
+		get tutorialBubbleStyle() {
+			if (this.tutorialComplete) return '';
+			let { x, y } = TUTORIAL_STEPS[this.tutorialStep];
+			let rightEdge = (x + 1) / this.field.width * 100;
+			let top = y / this.field.height * 100;
+			let spaceRight = (this.field.width - x) / this.field.width * 100;
+			let spaceBelow = (this.field.height - y - 1) / this.field.height * 100;
+			let bottomEdge = (y + 1) / this.field.height * 100;
+			let targetCenter = (x + .5) / this.field.width * 100;
+			return `--tutorial-right-edge: ${rightEdge}%; --tutorial-top: ${top}%; --tutorial-space-right: ${spaceRight}%; --tutorial-space-below: ${spaceBelow}%; --tutorial-bottom-edge: ${bottomEdge}%; --tutorial-target-center: ${targetCenter}%`;
 		},
 
 		get engineErrorMessage() {

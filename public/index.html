@@ -79,12 +79,6 @@
 		<p class="engine-error" x-show="sharedPuzzleError" x-text="sharedPuzzleError" role="alert"></p>
 		<p class="engine-error" x-show="engineError" x-text="engineErrorMessage" role="alert"></p>
 
-		<section class="tutorial-guide" x-show="mode === 'tutorial'" aria-live="polite">
-			<span class="tutorial-progress" x-text="tutorialProgress"></span>
-			<h2 x-text="tutorialTitle"></h2>
-			<p x-text="tutorialMessage"></p>
-		</section>
-
 		<section class="difficulty-picker" x-show="mode === 'study'">
 			<div class="study-toolbar">
 				<label class="sr-only" for="difficulty">Difficulty</label>
@@ -212,6 +206,18 @@
 							></button>
 						</template>
 					</div>
+					<template x-if="mode === 'tutorial' && !tutorialComplete">
+						<aside
+							class="tutorial-bubble"
+							:class="tutorialBubbleClass"
+							:style="tutorialBubbleStyle"
+							aria-live="polite"
+						>
+							<span class="tutorial-progress" x-text="tutorialProgress"></span>
+							<h2 x-text="tutorialTitle"></h2>
+							<p x-text="tutorialMessage"></p>
+						</aside>
+					</template>
 					<canvas
 						x-ref="scratchCanvas"
 						id="scratch-pad"
@@ -233,7 +239,7 @@
 			</div>
 			<div class="input-help-row">
 				<p class="input-help" x-text="inputHelp"></p>
-				<div class="board-utilities">
+				<div class="board-utilities" x-show="mode !== 'tutorial'">
 					<div class="scratch-tools" :class="{ active: scratchActive }" role="toolbar" aria-label="Scratch pad">
 						<button
 							type="button"
@@ -354,7 +360,7 @@
 					type="button"
 					class="primary"
 					@click="finishTutorial()"
-				>Start practicing</button>
+				>Start playing</button>
 			</div>
 		</section>
 		<section class="game-controls" x-show="showChallengeControls" aria-label="Challenge controls">
