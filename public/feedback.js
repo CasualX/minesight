@@ -91,7 +91,6 @@ class FeedbackEffects {
 		addElement(sequence, 'feedback-ring feedback-ring-two');
 		addElement(sequence, 'feedback-core');
 		this.addParticles(sequence, grand ? 72 : 48, SUCCESS_COLORS, false);
-		this.animateBoard('success', grand ? 900 : 680);
 	}
 
 	/** @param {{ cellIndex: number, mine: boolean }} options */

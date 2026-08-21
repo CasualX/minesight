@@ -17,6 +17,18 @@ const GAME_OVER_DETONATION = 2;
 
 const BASE64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
+// This is only meant to make shared puzzles less visually recognizable, not to
+// provide encryption. Keep it stable so links using format version 2 remain valid.
+const SHARED_PUZZLE_MASK = (() => {
+	let state = 0x6d2b79f5;
+	return Uint8Array.from({ length: 64 }, () => {
+		state ^= state << 13;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		return state & 0x3f;
+	});
+})();
+
 /**
  * @param {number} value
  * @param {number} size
@@ -78,13 +90,16 @@ export class MineField {
 	 */
 	static decode(payload) {
 		let [version, encoded, extra] = payload.split('.');
-		if (version !== '1' || extra !== undefined || encoded?.length !== 64) {
+		if (!['1', '2'].includes(version) || extra !== undefined || encoded?.length !== 64) {
 			throw new Error('unsupported shared puzzle format');
 		}
 
 		let cells = Uint8Array.from(encoded, (character) => BASE64URL.indexOf(character));
 		if (cells.some((cell) => cell === 255)) {
 			throw new Error('invalid shared puzzle data');
+		}
+		if (version === '2') {
+			cells = cells.map((cell, index) => cell ^ SHARED_PUZZLE_MASK[index]);
 		}
 		if (!cells.some((cell) => (cell & ACTIVE) !== 0)) {
 			throw new Error('shared board is not a puzzle');
@@ -185,7 +200,10 @@ export class MineField {
 	 * @returns {string}
 	 */
 	encode() {
-		return `1.${Array.from(this.state, (cell) => BASE64URL[cell & 0x3f]).join('')}`;
+		let encoded = Array.from(this.state, (cell, index) => {
+			return BASE64URL[(cell & 0x3f) ^ SHARED_PUZZLE_MASK[index]];
+		}).join('');
+		return `2.${encoded}`;
 	}
 
 	/** @returns {GameOverReason} The board's current completion state. */
@@ -430,6 +448,9 @@ export class MineField {
 		if (!this.isPuzzle || (cell & ACTIVE) === 0) return;
 
 		let previous = cell & (MARKED_MINE | MARKED_SAFE);
+		// An opposite gesture on an annotated cell is most likely an input slip.
+		// Only the gesture that created a mark may remove it.
+		if (previous !== 0 && previous !== mark) return;
 		let next = previous === mark ? 0 : mark;
 		if (next !== 0 && (cell & expected) === 0) {
 			this.incorrectIndex = index;
@@ -454,5 +475,44 @@ export class MineField {
 	 */
 	actionMarkMine(x, y) {
 		this._actionMark(x, y, MARKED_MINE, FORCED_MINE);
+	}
+
+	/**
+	 * Completes either direct deduction around a revealed puzzle clue.
+	 * Existing board flags and player mine marks both count as known mines.
+	 * @param {number} x
+	 * @param {number} y
+	 * @returns {Array<{ index: number, mine: boolean }>} Newly applied marks.
+	 */
+	actionChordMarks(x, y) {
+		let index = this.getIndex(x, y);
+		let cell = this.state[index];
+		if (!this.isPuzzle || (cell & REVEALED) === 0 || (cell & MINE) !== 0) return [];
+
+		let knownMines = 0;
+		/** @type {Array<[number, number]>} */
+		let unknown = [];
+		forEachNeighbour(x, y, this.width, this.height, (neighbourX, neighbourY) => {
+			let neighbour = this.state[this.getIndex(neighbourX, neighbourY)];
+			if ((neighbour & (FLAG | MARKED_MINE)) !== 0) knownMines += 1;
+			else if ((neighbour & ACTIVE) !== 0 && (neighbour & MARKED_SAFE) === 0) {
+				unknown.push([neighbourX, neighbourY]);
+			}
+		});
+
+		let clue = this.clues[index];
+		if (knownMines !== clue && knownMines + unknown.length !== clue) return [];
+		let markMine = knownMines !== clue;
+
+		let changed = [];
+		for (let [neighbourX, neighbourY] of unknown) {
+			let neighbourIndex = this.getIndex(neighbourX, neighbourY);
+			if (markMine) this.actionMarkMine(neighbourX, neighbourY);
+			else this.actionMarkSafe(neighbourX, neighbourY);
+			if ((this.state[neighbourIndex] & (markMine ? MARKED_MINE : MARKED_SAFE)) !== 0) {
+				changed.push({ index: neighbourIndex, mine: markMine });
+			}
+		}
+		return changed;
 	}
 }

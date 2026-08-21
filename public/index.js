@@ -4,13 +4,25 @@ import { MineField } from './mines.js';
 import { feedbackEffects } from './feedback.js';
 import { gameSounds } from './sounds.js';
 
-const CHALLENGES_PER_DIFFICULTY = 3;
 const BOARD_SIZE = 8;
 const PUZZLE_ATTEMPTS = 1000;
 const GIVE_UP_HOLD_MS = 900;
+const SCRATCH_TAP_DISTANCE = .01;
+const SCRATCH_MARK_SIZE = .04125;
+const SCRATCH_MARK_ANIMATION_MS = 220;
 const MINESIGHT_STORAGE_KEY = 'minesight';
 const SHARED_PUZZLE_PARAMETER = 'p';
 const TUTORIAL_PARAMETER = 'tutorial';
+const CHALLENGE_MODE_PARAMETER = 'challenge';
+const CHALLENGE_SEED_PARAMETER = 'seed';
+const MAX_CHALLENGE_SEED = 0xffff_ffff_ffff_ffffn;
+/** @type {Record<string, [number, number]>} */
+const CELL_FOCUS_DIRECTIONS = {
+	ArrowUp: [0, -1],
+	ArrowDown: [0, 1],
+	ArrowLeft: [-1, 0],
+	ArrowRight: [1, 0],
+};
 
 /** @param {number} elapsedMs */
 function formatElapsedTime(elapsedMs) {
@@ -120,12 +132,71 @@ const PRACTICE_DIFFICULTIES = [
 	HARD_DIFFICULTY,
 	EXPERT_DIFFICULTY,
 ];
-const CHALLENGE_DIFFICULTIES = [
-	EASY_DIFFICULTY,
-	MEDIUM_DIFFICULTY,
-	HARD_DIFFICULTY,
-	EXPERT_DIFFICULTY,
+const CHALLENGE_MODES = [
+	{
+		key: 'expert',
+		label: 'Easy to Expert',
+		route: [
+			{ difficulty: EASY_DIFFICULTY, puzzleCount: 3 },
+			{ difficulty: MEDIUM_DIFFICULTY, puzzleCount: 3 },
+			{ difficulty: HARD_DIFFICULTY, puzzleCount: 3 },
+			{ difficulty: EXPERT_DIFFICULTY, puzzleCount: 3 },
+		],
+	},
+	{
+		key: 'hard',
+		label: 'Easy to Hard',
+		route: [
+			{ difficulty: EASY_DIFFICULTY, puzzleCount: 4 },
+			{ difficulty: MEDIUM_DIFFICULTY, puzzleCount: 4 },
+			{ difficulty: HARD_DIFFICULTY, puzzleCount: 4 },
+		],
+	},
 ];
+
+/** @param {unknown} value */
+function parseChallengeSeed(value) {
+	if (typeof value !== 'string' || !/^\s*[0-9a-f]+\s*$/i.test(value)) return undefined;
+	try {
+		let seed = BigInt(`0x${value.trim()}`);
+		return seed <= MAX_CHALLENGE_SEED ? seed : undefined;
+	}
+	catch {
+		return undefined;
+	}
+}
+
+/** @param {URL} url */
+function resolveUrlGame(url) {
+	if (url.searchParams.has(SHARED_PUZZLE_PARAMETER)) return { mode: 'shared' };
+
+	let modeKey = url.searchParams.get(CHALLENGE_MODE_PARAMETER);
+	if (modeKey !== null && CHALLENGE_MODES.some(({ key }) => key === modeKey)) {
+		let seedText = url.searchParams.get(CHALLENGE_SEED_PARAMETER);
+		return {
+			mode: 'challenge',
+			modeKey,
+			seed: seedText === null ? undefined : parseChallengeSeed(seedText),
+		};
+	}
+
+	if (url.searchParams.has(TUTORIAL_PARAMETER)) return { mode: 'tutorial' };
+	return { mode: 'stored' };
+}
+
+/**
+ * @param {string | URL} source
+ * @param {string} modeKey
+ * @param {bigint} seed
+ */
+function createChallengeShareUrl(source, modeKey, seed) {
+	let url = new URL(source);
+	url.searchParams.delete(SHARED_PUZZLE_PARAMETER);
+	url.searchParams.delete(TUTORIAL_PARAMETER);
+	url.searchParams.set(CHALLENGE_MODE_PARAMETER, modeKey);
+	url.searchParams.set(CHALLENGE_SEED_PARAMETER, seed.toString(16));
+	return url;
+}
 
 function loadMinesightData() {
 	try {
@@ -148,6 +219,10 @@ function saveMinesightData(key, value) {
 		window.localStorage.setItem(MINESIGHT_STORAGE_KEY, JSON.stringify(data));
 	}
 	catch {}
+}
+
+function isLocalDevelopment() {
+	return ['', 'localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
 }
 
 /** @type {WebAssembly.Exports | undefined} */
@@ -275,6 +350,50 @@ async function generateField(difficulty, shouldContinue) {
 	return undefined;
 }
 
+/** Returns a uniformly distributed unsigned 64-bit seed. */
+function randomChallengeSeed() {
+	let entropy = new Uint32Array(2);
+	crypto.getRandomValues(entropy);
+	return BigInt(entropy[0]) | BigInt(entropy[1]) << 32n;
+}
+
+/**
+ * Generates a puzzle from a deterministic sequence beginning at `seed`.
+ *
+ * @param {{ generator: string }} difficulty
+ * @param {bigint} seed
+ * @param {() => boolean} shouldContinue
+ */
+async function generateSeededField(difficulty, seed, shouldContinue) {
+	await ensurePuzzleGenerator();
+	if (!shouldContinue()) return undefined;
+	let generatePuzzle = wasm?.[difficulty.generator];
+	if (typeof generatePuzzle !== 'function') {
+		throw new Error('the Rust puzzle generator is not loaded');
+	}
+	let search = /** @type {(seedLow: number, seedHigh: number, attempts: number) => unknown} */ (generatePuzzle);
+	let candidateSeed = seed;
+
+	while (shouldContinue()) {
+		generatedPuzzle = undefined;
+		let puzzle = invokePuzzleSearch(search, candidateSeed, PUZZLE_ATTEMPTS, takeGeneratedPuzzle);
+		if (puzzle) {
+			if (puzzle.cells.length !== BOARD_SIZE * BOARD_SIZE) {
+				throw new Error(`wasm returned ${puzzle.cells.length} cells instead of 64`);
+			}
+			if (!shouldContinue()) return undefined;
+			return {
+				field: new MineField(BOARD_SIZE, BOARD_SIZE, puzzle.cells),
+				seed: puzzle.seed,
+				attempts: puzzle.attempts,
+			};
+		}
+		candidateSeed = candidateSeed === MAX_CHALLENGE_SEED ? 0n : candidateSeed + 1n;
+		await yieldToBrowser();
+	}
+	return undefined;
+}
+
 /** Lets the browser paint before another synchronous puzzle-generation attempt. */
 function yieldToBrowser() {
 	return new Promise((resolve) => {
@@ -298,27 +417,35 @@ function challengePuzzleSquareCount(puzzle) {
 	return forced;// + ambiguous;
 }
 
-/** @param {Array<{ field: MineField, seed: bigint, attempts: number }>} puzzles */
-function sortChallengeTiers(puzzles) {
-	for (let start = 0; start < puzzles.length; start += CHALLENGES_PER_DIFFICULTY) {
-		let tier = puzzles.slice(start, start + CHALLENGES_PER_DIFFICULTY);
+/**
+ * @param {Array<{ field: MineField, seed: bigint, attempts: number }>} puzzles
+ * @param {Array<{ puzzleCount: number }>} route
+ */
+function sortChallengeTiers(puzzles, route) {
+	let start = 0;
+	for (let { puzzleCount } of route) {
+		let tier = puzzles.slice(start, start + puzzleCount);
 		tier.sort((left, right) => challengePuzzleSquareCount(left) - challengePuzzleSquareCount(right));
 		puzzles.splice(start, tier.length, ...tier);
+		start += puzzleCount;
 	}
 }
 
 /** @typedef {'tutorial' | 'practice' | 'challenge' | 'shared'} GameMode */
-/** @typedef {'playing' | 'cleared' | 'failed' | 'complete'} GameResult */
+/** @typedef {'playing' | 'cleared' | 'failed' | 'gave-up' | 'complete'} GameResult */
+/** @typedef {'cleared' | 'failed'} ChallengeResult */
 /** @typedef {{ field: MineField, seed: bigint, result: GameResult, hintUsed: boolean, streak: number, ready: boolean }} PracticeState */
 
 function createMinesight() {
 	let stored = loadMinesightData();
+	/** @type {ResizeObserver | undefined} */
+	let scratchResizeObserver;
 	/** @type {MineField | undefined} */
 	let sharedPuzzle;
 	let sharedPuzzleError = '';
 	let initialUrl = new URL(window.location.href);
 	let sharedPayload = initialUrl.searchParams.get(SHARED_PUZZLE_PARAMETER);
-	let tutorialRequested = initialUrl.searchParams.has(TUTORIAL_PARAMETER);
+	let urlGame = resolveUrlGame(initialUrl);
 	if (sharedPayload !== null) {
 		try {
 			sharedPuzzle = MineField.decode(sharedPayload);
@@ -329,14 +456,16 @@ function createMinesight() {
 	}
 	gameSounds.setEnabled(stored.soundEnabled !== false);
 	let storedPractice = stored?.practice ?? {};
-	let difficultyKey = PRACTICE_DIFFICULTIES.some(({ key }) => key === storedPractice.difficultyKey)
-		? storedPractice.difficultyKey
-		: 'easy';
+	let difficultyKey = PRACTICE_DIFFICULTIES.some(({ key }) => key === storedPractice.difficultyKey) ? storedPractice.difficultyKey : 'easy';
 	let practiceStreaks = Object.fromEntries(PRACTICE_DIFFICULTIES.map(({ key }) => {
 		let streak = storedPractice.difficulties?.[key]?.streak;
 		return [key, Math.max(0, Number.parseInt(streak) || 0)];
 	}));
 	let storedMode = ['practice', 'challenge'].includes(stored.mode) ? stored.mode : 'tutorial';
+	let savedChallengeModeKey = stored.challengeModeKey ?? 'expert';
+	let challengeModeKey = CHALLENGE_MODES.some(({ key }) => key === savedChallengeModeKey) ? savedChallengeModeKey : CHALLENGE_MODES[0].key;
+	if (urlGame.mode === 'challenge') challengeModeKey = urlGame.modeKey;
+	let challengeSeed = urlGame.mode === 'challenge' && urlGame.seed !== undefined ? urlGame.seed : randomChallengeSeed();
 	/** @type {Record<string, PracticeState | undefined>} */
 	let practiceStates = Object.fromEntries(PRACTICE_DIFFICULTIES.map(({ key }) => {
 		let saved = storedPractice.difficulties?.[key];
@@ -358,13 +487,18 @@ function createMinesight() {
 	}));
 	return {
 		/** @type {GameMode} */
-		mode: sharedPayload !== null ? 'shared' : tutorialRequested ? 'tutorial' : storedMode,
+		mode: urlGame.mode === 'shared' ? 'shared'
+			: urlGame.mode === 'challenge' ? 'challenge'
+				: urlGame.mode === 'tutorial' ? 'tutorial' : storedMode,
 		soundEnabled: gameSounds.enabled,
 		actionsInverted: false,
 		/** @type {GameResult} */
 		result: 'playing',
 		difficultyKey,
 		difficulties: PRACTICE_DIFFICULTIES,
+		challengeModes: CHALLENGE_MODES,
+		challengeModeKey,
+		challengeSeed,
 		challengeIndex: 0,
 		challengeStarted: false,
 		challengePreparing: false,
@@ -377,11 +511,14 @@ function createMinesight() {
 		practiceStates,
 		/** @type {Array<{ field: MineField, seed: bigint, attempts: number }>} */
 		challengePuzzles: [],
+		/** @type {ChallengeResult[]} */
+		challengeResults: [],
 		elapsedMs: 0,
 		practiceStreaks,
 		practiceStreak: practiceStreaks[difficultyKey],
 		hintUsed: false,
 		tutorialStep: 0,
+		keyboardFocusIndex: -1,
 		boardNumber: 0,
 		boardSeed: 0n,
 		revision: 0,
@@ -406,7 +543,26 @@ function createMinesight() {
 		giveUpTimerId: undefined,
 		giveUpHolding: false,
 		giveUpHoldDuration: GIVE_UP_HOLD_MS,
+		scratchActive: false,
+		scratchColor: 'graphite',
+		scratchColors: [
+			{ key: 'graphite', label: 'Graphite' },
+			{ key: 'blue', label: 'Blue' },
+			{ key: 'red', label: 'Red' },
+		],
+		scratchHasMarks: false,
+		/** @type {Array<{ color: string, points: Array<{ x: number, y: number }> }>} */
+		scratchStrokes: [],
+		/** @type {{ color: string, points: Array<{ x: number, y: number }> } | undefined} */
+		scratchStroke: undefined,
 		init() {
+			if (isLocalDevelopment()) {
+				Object.assign(window, {
+					minesightTestChallengeEnd: (failedCount = 0) => this.showChallengeTestEnd(failedCount),
+				});
+			}
+			this.$watch('boardNumber', () => this.resetScratchPad());
+			this.$nextTick(() => this.setupScratchPad());
 			if (sharedPuzzleError) return;
 			if (sharedPuzzle) {
 				this.field = sharedPuzzle;
@@ -435,11 +591,14 @@ function createMinesight() {
 			this.clearPracticeSearchingDelay();
 			if (this.shareFeedbackTimerId !== undefined) window.clearTimeout(this.shareFeedbackTimerId);
 			this.cancelGiveUpGesture();
+			scratchResizeObserver?.disconnect();
 		},
 
 		get currentDifficulty() {
 			if (this.mode === 'challenge') {
-				return CHALLENGE_DIFFICULTIES[Math.floor(this.challengeIndex / CHALLENGES_PER_DIFFICULTY)];
+				return this.challengeGroups.find(({ start, puzzleCount }) => (
+					this.challengeIndex >= start && this.challengeIndex < start + puzzleCount
+				))?.difficulty ?? this.challengeGroups[0].difficulty;
 			}
 			return PRACTICE_DIFFICULTIES.find((difficulty) => difficulty.key === this.difficultyKey) ?? PRACTICE_DIFFICULTIES[0];
 		},
@@ -509,17 +668,17 @@ function createMinesight() {
 			return this.mode === 'challenge' && !this.challengeStarted;
 		},
 
-		get challengeRouteLabel() {
-			return `${this.challengesPerDifficulty} puzzles at each of ${this.challengeGroups.length} difficulty levels`;
-		},
-
-		get challengeSummary() {
-			return `Solve ${this.challengeTotal} challenges without a mistake. They get harder as you go.`;
-		},
-
 		get challengeStartLabel() {
 			if (this.challengePreparing) return `Building puzzles ${this.challengePuzzles.length} / ${this.challengeTotal}…`;
 			return this.challengeReady ? 'Start challenge' : 'Try again';
+		},
+
+		get challengeShareDisabled() {
+			return false;
+		},
+
+		get shareButtonLabel() {
+			return this.mode === 'challenge' ? 'Share this challenge' : 'Share this puzzle';
 		},
 
 		get showChallengeFinish() {
@@ -527,7 +686,12 @@ function createMinesight() {
 		},
 
 		get challengeCompleteMessage() {
-			return `You cleared all ${this.challengeTotal} challenges.`;
+			if (this.challengeFailedCount === 0) return `You cleared all ${this.challengeTotal} challenges.`;
+			return `${this.challengeClearedCount} completed · ${this.challengeFailedCount} failed`;
+		},
+
+		get challengeFinishTitle() {
+			return this.challengeFailedCount === 0 ? 'Perfect run' : 'Run complete';
 		},
 
 		get showChallengePath() {
@@ -554,7 +718,8 @@ function createMinesight() {
 		},
 
 		get sharePuzzleDisabled() {
-			return !this.practiceBoardReady || this.boardPreparing;
+			if (this.mode === 'challenge') return this.challengeShareDisabled;
+			return this.boardPreparing || (this.mode === 'practice' && !this.practiceBoardReady);
 		},
 
 		get showPuzzleStatus() {
@@ -576,7 +741,8 @@ function createMinesight() {
 		},
 
 		get challengeResultActionLabel() {
-			return this.result === 'failed' ? 'Restart run' : 'Next challenge';
+			if (this.result === 'gave-up') return 'Restart run';
+			return 'Next challenge';
 		},
 
 		get hintButtonClass() {
@@ -621,11 +787,23 @@ function createMinesight() {
 		},
 
 		get challengeTotal() {
-			return CHALLENGE_DIFFICULTIES.length * CHALLENGES_PER_DIFFICULTY;
+			return this.challengeModeTotal(this.challengeMode);
 		},
 
-		get challengesPerDifficulty() {
-			return CHALLENGES_PER_DIFFICULTY;
+		get challengeMode() {
+			return CHALLENGE_MODES.find(({ key }) => key === this.challengeModeKey) ?? CHALLENGE_MODES[0];
+		},
+
+		/** @param {{ route: Array<{ puzzleCount: number }> }} challengeMode */
+		challengeModeTotal(challengeMode) {
+			return challengeMode.route.reduce((total, { puzzleCount }) => total + puzzleCount, 0);
+		},
+
+		/** @param {{ route: Array<{ difficulty: { label: string }, puzzleCount: number }> }} challengeMode */
+		challengeModeRouteLabel(challengeMode) {
+			return challengeMode.route.map(({ difficulty, puzzleCount }) => (
+				`${puzzleCount} ${difficulty.label}`
+			)).join(' · ');
 		},
 
 		get challengeReady() {
@@ -633,53 +811,308 @@ function createMinesight() {
 		},
 
 		get challengeRunActive() {
-			return this.mode === 'challenge' && this.challengeStarted && !['failed', 'complete'].includes(this.result);
+			return this.mode === 'challenge' && this.challengeStarted && !['gave-up', 'complete'].includes(this.result);
+		},
+
+		get challengeClearedCount() {
+			return this.challengeResults.filter((result) => result === 'cleared').length;
+		},
+
+		get challengeFailedCount() {
+			return this.challengeResults.filter((result) => result === 'failed').length;
 		},
 
 		get tapActionLabel() {
 			return this.actionsInverted ? 'Mine' : 'Safe';
 		},
 
-		get tapActionSymbol() {
-			return this.actionsInverted ? '⚑' : '✓';
-		},
-
 		get holdActionLabel() {
 			return this.actionsInverted ? 'Safe' : 'Mine';
 		},
 
-		get holdActionSymbol() {
-			return this.actionsInverted ? '✓' : '⚑';
-		},
-
-		get actionSwitchLabel() {
-			return `Tap to mark ${this.tapActionLabel.toLowerCase()}. Long-press or right-click to mark ${this.holdActionLabel.toLowerCase()}. Activate this control to swap the actions.`;
-		},
-
 		get inputHelp() {
+			if (this.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
 			return `Tap or left-click to mark ${this.tapActionLabel}. Long-press or right-click to mark ${this.holdActionLabel}.`;
+		},
+
+		/** @param {number} failedCount */
+		showChallengeTestEnd(failedCount) {
+			if (!isLocalDevelopment() || this.mode !== 'challenge') return false;
+			let failures = Math.min(this.challengeTotal, Math.max(0, Math.trunc(Number(failedCount) || 0)));
+			this.cancelGiveUpGesture();
+			this.stopTimer();
+			this.challengePreparationId += 1;
+			this.challengePreparing = false;
+			this.challengeStarted = true;
+			this.challengeIndex = this.challengeTotal - 1;
+			this.challengeResults = Array.from(
+				{ length: this.challengeTotal },
+				(_, index) => index < this.challengeTotal - failures ? 'cleared' : 'failed',
+			);
+			this.result = 'complete';
+			this.playChallengeFanfare();
+			this.revision += 1;
+			return true;
+		},
+
+		playChallengeFanfare() {
+			if (this.challengeFailedCount === 0) gameSounds.play('perfectComplete');
+			else gameSounds.play('failedComplete');
+		},
+
+		toggleScratchPad() {
+			this.scratchActive = !this.scratchActive;
+			this.scratchStroke = undefined;
+		},
+
+		setupScratchPad() {
+			let canvas = this.$refs.scratchCanvas;
+			if (!(canvas instanceof HTMLCanvasElement)) return;
+			scratchResizeObserver?.disconnect();
+			scratchResizeObserver = new ResizeObserver(() => this.resizeScratchPad());
+			scratchResizeObserver.observe(canvas.parentElement ?? canvas);
+			this.resizeScratchPad();
+		},
+
+		resizeScratchPad() {
+			let canvas = this.$refs.scratchCanvas;
+			if (!(canvas instanceof HTMLCanvasElement)) return;
+			let rect = canvas.getBoundingClientRect();
+			if (rect.width <= 0 || rect.height <= 0) return;
+			let scale = Math.min(window.devicePixelRatio || 1, 3);
+			let width = Math.round(rect.width * scale);
+			let height = Math.round(rect.height * scale);
+			if (canvas.width !== width || canvas.height !== height) {
+				canvas.width = width;
+				canvas.height = height;
+			}
+			this.renderScratchPad();
+		},
+
+		renderScratchPad() {
+			let canvas = this.$refs.scratchCanvas;
+			if (!(canvas instanceof HTMLCanvasElement)) return;
+			let context = canvas.getContext('2d');
+			if (!context) return;
+			let rect = canvas.getBoundingClientRect();
+			if (rect.width <= 0 || rect.height <= 0) return;
+			let scale = canvas.width / rect.width;
+			let styles = getComputedStyle(document.documentElement);
+			/** @type {Record<string, string>} */
+			let colors = {
+				graphite: styles.getPropertyValue('--scratch-graphite').trim(),
+				blue: styles.getPropertyValue('--scratch-blue').trim(),
+				red: styles.getPropertyValue('--scratch-red').trim(),
+			};
+			context.setTransform(1, 0, 0, 1, 0, 0);
+			context.clearRect(0, 0, canvas.width, canvas.height);
+			context.setTransform(scale, 0, 0, scale, 0, 0);
+			context.lineCap = 'round';
+			context.lineJoin = 'round';
+			context.lineWidth = 2.4;
+			for (let stroke of this.scratchStrokes) {
+				let first = stroke.points[0];
+				if (!first) continue;
+				let progress = Math.max(0, Math.min(1, stroke.drawProgress ?? 1));
+				if (progress === 0) continue;
+				context.beginPath();
+				context.strokeStyle = colors[stroke.color] || colors.graphite;
+				context.moveTo(first.x * rect.width, first.y * rect.height);
+				let segments = stroke.points.slice(1).map((point, index) => {
+					let previous = stroke.points[index];
+					return {
+						point,
+						previous,
+						length: Math.hypot(
+							(point.x - previous.x) * rect.width,
+							(point.y - previous.y) * rect.height,
+						),
+					};
+				});
+				let remaining = segments.reduce((total, segment) => total + segment.length, 0) * progress;
+				for (let segment of segments) {
+					if (remaining >= segment.length) {
+						context.lineTo(segment.point.x * rect.width, segment.point.y * rect.height);
+						remaining -= segment.length;
+						continue;
+					}
+					let amount = segment.length === 0 ? 1 : remaining / segment.length;
+					context.lineTo(
+						(segment.previous.x + (segment.point.x - segment.previous.x) * amount) * rect.width,
+						(segment.previous.y + (segment.point.y - segment.previous.y) * amount) * rect.height,
+					);
+					break;
+				}
+				if (stroke.points.length === 1) {
+					context.lineTo(first.x * rect.width + .01, first.y * rect.height + .01);
+				}
+				context.stroke();
+			}
+		},
+
+		/**
+		 * @param {{ x: number, y: number }} point
+		 * @param {boolean} invert
+		 */
+		drawScratchMark(point, invert) {
+			let markMine = invert !== this.actionsInverted;
+			let jitter = () => (Math.random() - .5) * SCRATCH_MARK_SIZE * .12;
+			let rotate = (x, y, angle) => ({
+				x: point.x + x * Math.cos(angle) - y * Math.sin(angle) + jitter(),
+				y: point.y + x * Math.sin(angle) + y * Math.cos(angle) + jitter(),
+			});
+			let angle = (Math.random() - .5) * .14;
+			let paths = markMine
+				? [
+					[[-.32, .9], [-.32, -.9]],
+					[[-.3, -.82], [.72, -.48], [-.3, -.08]],
+				]
+				: [[[-.8, -.02], [-.22, .62], [.86, -.72]]];
+			let strokes = paths.map((path) => ({
+					color: this.scratchColor,
+					points: path.map(([x, y]) => rotate(x * SCRATCH_MARK_SIZE, y * SCRATCH_MARK_SIZE, angle)),
+					drawProgress: 0,
+				}));
+			this.scratchStrokes.push(...strokes);
+			this.scratchHasMarks = true;
+			this.animateScratchMark(strokes);
+		},
+
+		/** @param {Array<{ drawProgress: number }>} strokes */
+		animateScratchMark(strokes) {
+			let startTime;
+			let drawFrame = (time) => {
+				startTime ??= time;
+				let progress = Math.min(1, (time - startTime) / SCRATCH_MARK_ANIMATION_MS);
+				for (let [index, stroke] of strokes.entries()) {
+					stroke.drawProgress = Math.max(0, Math.min(1, progress * strokes.length - index));
+				}
+				this.renderScratchPad();
+				if (progress < 1) requestAnimationFrame(drawFrame);
+			};
+			requestAnimationFrame(drawFrame);
+		},
+
+		/** @param {{ points: Array<{ x: number, y: number }> }} stroke @param {{ x: number, y: number }} [endPoint] */
+		isScratchTap(stroke, endPoint) {
+			let first = stroke.points[0];
+			if (!first) return false;
+			return [...stroke.points, ...(endPoint ? [endPoint] : [])]
+				.every((point) => Math.hypot(point.x - first.x, point.y - first.y) < SCRATCH_TAP_DISTANCE);
+		},
+
+		/** @param {{ color: string, points: Array<{ x: number, y: number }> }} stroke */
+		removeScratchStroke(stroke) {
+			let index = this.scratchStrokes.indexOf(stroke);
+			if (index >= 0) this.scratchStrokes.splice(index, 1);
+		},
+
+		/** @param {PointerEvent} event */
+		startScratchStroke(event) {
+			if (!this.scratchActive || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+			event.preventDefault();
+			event.currentTarget.setPointerCapture(event.pointerId);
+			let stroke = { color: this.scratchColor, points: [this.scratchPoint(event)] };
+			this.scratchStroke = stroke;
+			this.scratchStrokes.push(stroke);
+			this.scratchHasMarks = true;
+			this.renderScratchPad();
+		},
+
+		/** @param {PointerEvent} event */
+		continueScratchStroke(event) {
+			if (!this.scratchStroke || !event.isPrimary || event.buttons === 0) return;
+			event.preventDefault();
+			let point = this.scratchPoint(event);
+			let previous = this.scratchStroke.points.at(-1);
+			if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < .0015) return;
+			this.scratchStroke.points.push(point);
+			this.renderScratchPad();
+		},
+
+		/** @param {PointerEvent} event */
+		endScratchStroke(event) {
+			if (!event.isPrimary) return;
+			let stroke = this.scratchStroke;
+			this.scratchStroke = undefined;
+			if (!stroke) return;
+			if (event.type === 'pointercancel') {
+				if (this.isScratchTap(stroke)) this.removeScratchStroke(stroke);
+				this.scratchHasMarks = this.scratchStrokes.length > 0;
+				this.renderScratchPad();
+				return;
+			}
+			let point = this.scratchPoint(event);
+			if (!this.isScratchTap(stroke, point)) return;
+			this.removeScratchStroke(stroke);
+			this.drawScratchMark(point, false);
+			this.scratchHasMarks = this.scratchStrokes.length > 0;
+			this.renderScratchPad();
+		},
+
+		/** @param {MouseEvent} event */
+		contextMenuScratch(event) {
+			if (!this.scratchActive) return;
+			let point = this.scratchPoint(event);
+			if (this.scratchStroke && this.isScratchTap(this.scratchStroke, point)) {
+				this.removeScratchStroke(this.scratchStroke);
+				this.scratchStroke = undefined;
+			}
+			this.drawScratchMark(point, true);
+			this.renderScratchPad();
+		},
+
+		/** @param {MouseEvent | PointerEvent} event */
+		scratchPoint(event) {
+			let rect = event.currentTarget.getBoundingClientRect();
+			return {
+				x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+				y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+			};
+		},
+
+		clearScratchPad() {
+			this.scratchStrokes = [];
+			this.scratchStroke = undefined;
+			this.scratchHasMarks = false;
+			this.renderScratchPad();
+		},
+
+		resetScratchPad() {
+			this.scratchActive = false;
+			this.clearScratchPad();
+			this.$nextTick(() => this.resizeScratchPad());
 		},
 
 		get formattedTime() {
 			return formatElapsedTime(this.elapsedMs);
 		},
 
+		get challengeTimerTime() {
+			return this.formattedTime.replace(/\.\d{2}$/, '');
+		},
+
 		get challengeGroups() {
-			return CHALLENGE_DIFFICULTIES.map((difficulty, difficultyIndex) => ({
-				key: difficulty.key,
-				label: difficulty.label,
-				steps: Array.from(
-					{ length: CHALLENGES_PER_DIFFICULTY },
-					(_, index) => difficultyIndex * CHALLENGES_PER_DIFFICULTY + index,
-				),
-			}));
+			let start = 0;
+			return this.challengeMode.route.map(({ difficulty, puzzleCount }) => {
+				let group = {
+					key: difficulty.key,
+					label: difficulty.label,
+					difficulty,
+					puzzleCount,
+					start,
+					steps: Array.from({ length: puzzleCount }, (_, index) => start + index),
+				};
+				start += puzzleCount;
+				return group;
+			});
 		},
 
 		get cells() {
 			this.revision;
 			let cells = [];
 			let showHints = ['practice', 'shared'].includes(this.mode) && this.hintUsed && this.result === 'playing';
-			let showSolution = this.mode === 'challenge' && this.result === 'failed';
+			let showSolution = this.mode === 'challenge' && this.result === 'gave-up';
 			for (let y = 0; y < this.field.height; y += 1) {
 				for (let x = 0; x < this.field.width; x += 1) {
 					let index = this.field.getIndex(x, y);
@@ -740,28 +1173,43 @@ function createMinesight() {
 					if (tutorialTarget) label += ', current tutorial target';
 
 					let practiceBoardUnavailable = this.mode === 'practice' && !this.practiceBoardReady;
+					let chordable = this.mode !== 'tutorial' && revealed && !mine;
 					let disabled = this.boardPreparing || practiceBoardUnavailable ||
-						this.result !== 'playing' || !active || revealed ||
+						this.result !== 'playing' || (!active && !chordable) ||
 						(this.mode === 'tutorial' && this.tutorialComplete);
 					let key = `${this.boardNumber}-${index}`;
-					cells.push({ key, index, x, y, text, label, className: classNames.join(' '), disabled });
+					cells.push({ key, index, x, y, text, label, className: classNames.join(' '), disabled, tabIndex: -1 });
 				}
 			}
+			let keyboardTarget = cells.find((cell) => cell.index === this.keyboardFocusIndex && !cell.disabled)
+				?? cells.find((cell) => !cell.disabled);
+			for (let cell of cells) cell.tabIndex = cell === keyboardTarget ? 0 : -1;
 			return cells;
 		},
 
 		get resultTitle() {
-			if (this.result === 'cleared') return this.mode === 'shared' ? 'Shared puzzle solved' : 'Puzzle solved';
+			if (this.result === 'cleared') {
+				if (this.mode === 'shared') return 'Shared puzzle solved';
+				if (this.mode === 'challenge' && this.challengeResults[this.challengeIndex] === 'failed') {
+					return 'Puzzle completed';
+				}
+				return 'Puzzle solved';
+			}
 			if (this.result === 'complete') return 'Challenge complete';
-			return this.mode === 'challenge' ? 'Run ended' : 'Incorrect move';
+			return this.result === 'gave-up' ? 'Run ended' : 'Incorrect move';
 		},
 
 		get resultMessage() {
-			if (this.result === 'cleared' && this.mode === 'challenge') return 'Good solve. Ready for the next one?';
+			if (this.result === 'cleared' && this.mode === 'challenge') {
+				if (this.challengeResults[this.challengeIndex] === 'failed') {
+					return 'You finished it, but this puzzle counts as failed. Ready for the next one?';
+				}
+				return 'Good solve. Ready for the next one?';
+			}
 			if (this.result === 'cleared' && this.mode === 'shared') return 'Nice solve. Open the link again for a fresh board.';
 			if (this.result === 'cleared') return 'Good solve. Keep the streak going.';
-			if (this.result === 'complete') return `All ${this.challengeTotal} cleared in ${this.formattedTime}.`;
-			if (this.mode === 'challenge') return `You reached puzzle ${this.challengeIndex + 1} of ${this.challengeTotal}.`;
+			if (this.result === 'complete') return `${this.challengeClearedCount} completed cleanly and ${this.challengeFailedCount} failed in ${this.formattedTime}.`;
+			if (this.result === 'gave-up') return `You gave up on puzzle ${this.challengeIndex + 1} of ${this.challengeTotal}.`;
 			return "The clues don't support that mark.";
 		},
 
@@ -775,9 +1223,19 @@ function createMinesight() {
 			else if (!this.challengePreparing) void this.prepareChallenge();
 		},
 
+		/** @param {string} modeKey */
+		selectChallengeMode(modeKey) {
+			if (this.challengeStarted || modeKey === this.challengeModeKey) return;
+			if (!CHALLENGE_MODES.some(({ key }) => key === modeKey)) return;
+			this.challengeModeKey = modeKey;
+			this.challengeSeed = randomChallengeSeed();
+			saveMinesightData('challengeModeKey', modeKey);
+			void this.prepareChallenge();
+		},
+
 		activateChallengeResultAction() {
 			if (this.result === 'cleared') this.advanceChallenge();
-			else if (this.result === 'failed') void this.restartChallenge();
+			else if (this.result === 'gave-up') void this.restartChallenge();
 		},
 
 		activatePracticeBoardAction() {
@@ -812,6 +1270,14 @@ function createMinesight() {
 			window.history.replaceState(null, '', url);
 		},
 
+		removeChallengeFromUrl() {
+			let url = new URL(window.location.href);
+			if (!url.searchParams.has(CHALLENGE_MODE_PARAMETER) && !url.searchParams.has(CHALLENGE_SEED_PARAMETER)) return;
+			url.searchParams.delete(CHALLENGE_MODE_PARAMETER);
+			url.searchParams.delete(CHALLENGE_SEED_PARAMETER);
+			window.history.replaceState(null, '', url);
+		},
+
 		/** @param {GameMode} nextMode */
 		switchMode(nextMode) {
 			if (this.mode === nextMode) return;
@@ -827,15 +1293,18 @@ function createMinesight() {
 				this.boardPreparing = false;
 				this.clearPracticeSearchingDelay();
 				this.mode = nextMode;
+				this.challengeSeed = randomChallengeSeed();
 				saveMinesightData('mode', nextMode);
 				void this.prepareChallenge();
 			}
 			else {
 				this.removeSharedPuzzleFromUrl();
+				this.removeChallengeFromUrl();
 				this.challengePreparationId += 1;
 				this.challengePreparing = false;
 				this.challengeStarted = false;
 				this.challengePuzzles = [];
+				this.challengeResults = [];
 				this.stopTimer();
 				this.mode = nextMode;
 				saveMinesightData('mode', nextMode);
@@ -851,9 +1320,16 @@ function createMinesight() {
 			window.history.replaceState(null, '', url);
 		},
 
-		async sharePracticePuzzle() {
-			if (this.mode !== 'practice' || !this.practiceBoardReady || this.boardPreparing) return;
+		async sharePuzzle() {
+			if (this.mode === 'challenge') {
+				await this.shareChallenge();
+				return;
+			}
+			if (this.sharePuzzleDisabled || !this.showBoard) return;
 			let url = new URL(window.location.href);
+			url.searchParams.delete(TUTORIAL_PARAMETER);
+			url.searchParams.delete(CHALLENGE_MODE_PARAMETER);
+			url.searchParams.delete(CHALLENGE_SEED_PARAMETER);
 			url.searchParams.set(SHARED_PUZZLE_PARAMETER, this.field.encode());
 			let shareData = {
 				title: 'Minesight puzzle',
@@ -875,6 +1351,35 @@ function createMinesight() {
 			try {
 				await this.copyShareUrl(url.href);
 				this.showShareFeedback('Share link copied');
+			}
+			catch {
+				this.showShareFeedback('Could not copy the link');
+			}
+		},
+
+		async shareChallenge() {
+			if (this.challengeShareDisabled) return;
+			let url = createChallengeShareUrl(window.location.href, this.challengeModeKey, this.challengeSeed);
+			let shareData = {
+				title: 'Minesight challenge',
+				text: `Try my ${this.challengeMode.label} Minesight challenge.`,
+				url: url.href,
+			};
+
+			if (typeof navigator.share === 'function') {
+				try {
+					await navigator.share(shareData);
+					this.showShareFeedback('Challenge shared');
+					return;
+				}
+				catch (error) {
+					if (error instanceof DOMException && error.name === 'AbortError') return;
+				}
+			}
+
+			try {
+				await this.copyShareUrl(url.href);
+				this.showShareFeedback('Challenge link copied');
 			}
 			catch {
 				this.showShareFeedback('Could not copy the link');
@@ -1006,6 +1511,7 @@ function createMinesight() {
 			this.challengeStarted = false;
 			this.challengePreparing = true;
 			this.challengePuzzles = [];
+			this.challengeResults = [];
 			this.challengeIndex = 0;
 			this.elapsedMs = 0;
 			this.result = 'playing';
@@ -1016,18 +1522,20 @@ function createMinesight() {
 				// Paint the initial 0 / total state, then give each completed puzzle its
 				// own frame so progress remains visible and mode changes stay responsive.
 				await yieldToBrowser();
-				for (let difficulty of CHALLENGE_DIFFICULTIES) {
-					for (let index = 0; index < CHALLENGES_PER_DIFFICULTY; index += 1) {
+				let nextSeed = this.challengeSeed;
+				for (let { difficulty, puzzleCount } of this.challengeMode.route) {
+					for (let index = 0; index < puzzleCount; index += 1) {
 						if (this.mode !== 'challenge' || preparationId !== this.challengePreparationId) return;
-						let puzzle = await generateField(difficulty, () => (
+						let puzzle = await generateSeededField(difficulty, nextSeed, () => (
 							this.mode === 'challenge' && preparationId === this.challengePreparationId
 						));
 						if (!puzzle) return;
 						this.challengePuzzles.push(puzzle);
+						nextSeed = puzzle.seed === MAX_CHALLENGE_SEED ? 0n : puzzle.seed + 1n;
 						await yieldToBrowser();
 					}
 				}
-				sortChallengeTiers(this.challengePuzzles);
+				sortChallengeTiers(this.challengePuzzles, this.challengeMode.route);
 			}
 			catch (error) {
 				if (preparationId !== this.challengePreparationId) return;
@@ -1044,6 +1552,7 @@ function createMinesight() {
 			this.stopTimer();
 			this.challengeStarted = true;
 			this.challengeIndex = 0;
+			this.challengeResults = [];
 			this.elapsedMs = 0;
 			this.result = 'playing';
 			this.hintUsed = false;
@@ -1053,6 +1562,7 @@ function createMinesight() {
 		},
 
 		async restartChallenge() {
+			this.challengeSeed = randomChallengeSeed();
 			await this.prepareChallenge();
 		},
 
@@ -1073,17 +1583,23 @@ function createMinesight() {
 		},
 
 		giveUpChallenge() {
-			this.failChallenge();
-		},
-
-		/** @param {number} [cellIndex] */
-		failChallenge(cellIndex = -1) {
 			if (!this.challengeRunActive) return;
 			this.cancelGiveUpGesture();
 			this.stopTimer();
-			this.result = 'failed';
+			this.result = 'gave-up';
 			gameSounds.play('failure');
-			feedbackEffects.failure({ cellIndex, terminal: true });
+			feedbackEffects.failure({ terminal: true });
+			this.revision += 1;
+		},
+
+		/** @param {number} cellIndex */
+		markChallengeFailed(cellIndex) {
+			if (!this.challengeRunActive || this.result !== 'playing') return;
+			this.challengeResults[this.challengeIndex] = 'failed';
+			let incorrectIndex = this.field.consumeIncorrect();
+			this.showIncorrectFeedback(incorrectIndex >= 0 ? incorrectIndex : cellIndex);
+			gameSounds.play('incorrect');
+			feedbackEffects.failure({ cellIndex, terminal: false });
 			this.revision += 1;
 		},
 
@@ -1216,7 +1732,6 @@ function createMinesight() {
 			if (!['practice', 'shared'].includes(this.mode) || this.result !== 'playing') return;
 			if (this.mode === 'practice' && !this.practiceBoardReady) return;
 			this.hintUsed = !this.hintUsed;
-			gameSounds.play(this.hintUsed ? 'hint' : 'unmark');
 			this.revision += 1;
 			if (this.mode === 'practice') {
 				this.snapshotPracticeState();
@@ -1227,18 +1742,32 @@ function createMinesight() {
 		/**
 		 * @param {number} x
 		 * @param {number} y
-		 * @param {boolean} secondary
+		 * @param {boolean} invert
 		 */
-		applyCellInput(x, y, secondary) {
+		applyCellInput(x, y, invert) {
 			if (this.result !== 'playing') return;
 			if (this.mode === 'tutorial') {
-				this.applyTutorialInput(x, y, secondary);
+				this.applyTutorialInput(x, y, invert);
 				return;
 			}
 			if (this.mode === 'challenge' && !this.challengeStarted) return;
+			if (this.field.isRevealed(x, y)) {
+				let marks = this.field.actionChordMarks(x, y);
+				if (marks.length === 0) return;
+				let [first, ...additionalMarks] = marks;
+				this.afterMove({
+					removing: false,
+					cellIndex: first.index,
+					markMine: first.mine,
+					additionalMarks,
+				});
+				return;
+			}
 			if (!this.field.isActive(x, y)) return;
 			let cellIndex = this.field.getIndex(x, y);
-			let markMine = secondary !== this.actionsInverted;
+			let markMine = invert !== this.actionsInverted;
+			let oppositeMarked = markMine ? this.field.isMarkedSafe(x, y) : this.field.isMarkedMine(x, y);
+			if (oppositeMarked) return;
 			let removing = markMine ? this.field.isMarkedMine(x, y) : this.field.isMarkedSafe(x, y);
 			if (markMine) this.field.actionMarkMine(x, y);
 			else this.field.actionMarkSafe(x, y);
@@ -1248,13 +1777,14 @@ function createMinesight() {
 		/**
 		 * @param {number} x
 		 * @param {number} y
-		 * @param {boolean} secondary
+		 * @param {boolean} invert
 		 */
-		applyTutorialInput(x, y, secondary) {
+		applyTutorialInput(x, y, invert) {
 			if (this.tutorialComplete) return;
 			let step = TUTORIAL_STEPS[this.tutorialStep];
 			let correctCell = x === step.x && y === step.y;
-			let correctGesture = step.action === 'ambiguous' || (step.action === 'mine') === secondary;
+			let markMine = invert !== this.actionsInverted;
+			let correctGesture = step.action === 'ambiguous' || (step.action === 'mine') === markMine;
 			if (!correctCell || !correctGesture) {
 				this.rejectTutorialInput(x, y);
 				return;
@@ -1289,12 +1819,71 @@ function createMinesight() {
 			feedbackEffects.failure({ cellIndex: index, terminal: false });
 		},
 
+		/** @param {number} index */
+		focusCell(index) {
+			this.keyboardFocusIndex = index;
+		},
+
 		/**
+		 * @param {MouseEvent} event
 		 * @param {number} x
 		 * @param {number} y
 		 */
-		tapCell(x, y) {
-			this.applyCellInput(x, y, false);
+		clickCell(event, x, y) {
+			this.applyCellInput(x, y, event.shiftKey);
+		},
+
+		/**
+		 * @param {KeyboardEvent} event
+		 * @param {number} x
+		 * @param {number} y
+		 */
+		keydownCell(event, x, y) {
+			let direction = CELL_FOCUS_DIRECTIONS[event.key];
+			if (direction) {
+				event.preventDefault();
+				this.moveCellFocus(x, y, direction[0], direction[1]);
+				return;
+			}
+			if (![' ', 'Enter'].includes(event.key)) return;
+			event.preventDefault();
+			if (!event.repeat) this.applyCellInput(x, y, event.shiftKey);
+		},
+
+		/**
+		 * @param {number} x
+		 * @param {number} y
+		 * @param {number} deltaX
+		 * @param {number} deltaY
+		 */
+		moveCellFocus(x, y, deltaX, deltaY) {
+			let candidates = this.cells
+				.filter((cell) => {
+					if (cell.disabled) return false;
+					return (cell.x - x) * deltaX + (cell.y - y) * deltaY > 0;
+				})
+				.map((cell) => {
+					let horizontalDistance = cell.x - x;
+					let verticalDistance = cell.y - y;
+					let forwardDistance = Math.abs(horizontalDistance * deltaX + verticalDistance * deltaY);
+					let sidewaysDistance = Math.abs(horizontalDistance * deltaY + verticalDistance * deltaX);
+					return {
+						cell,
+						score: Math.hypot(horizontalDistance, verticalDistance) + sidewaysDistance * 0.25,
+						forwardDistance,
+						sidewaysDistance,
+					};
+				})
+				.sort((left, right) => left.score - right.score
+					|| left.sidewaysDistance - right.sidewaysDistance
+					|| left.forwardDistance - right.forwardDistance
+					|| left.cell.index - right.cell.index);
+			let index = candidates[0]?.cell.index;
+			if (index === undefined) return;
+			this.keyboardFocusIndex = index;
+			this.$nextTick(() => {
+				document.querySelector(`.minefield .cell[data-cell-index="${index}"]`)?.focus();
+			});
 		},
 
 		/**
@@ -1305,13 +1894,19 @@ function createMinesight() {
 			this.applyCellInput(x, y, true);
 		},
 
-		/** @param {{ removing: boolean, cellIndex: number, markMine: boolean }} move */
+		/** @param {{ removing: boolean, cellIndex: number, markMine: boolean, additionalMarks?: Array<{ index: number, mine: boolean }> }} move */
 		afterMove(move) {
+			let showMarkEffects = () => {
+				feedbackEffects.correctMark({ cellIndex: move.cellIndex, mine: move.markMine });
+				for (let mark of move.additionalMarks ?? []) {
+					feedbackEffects.correctMark({ cellIndex: mark.index, mine: mark.mine });
+				}
+			};
 			let gameOver = this.field.gameOverReason();
 			if (gameOver === MineField.GAME_OVER_DETONATION) {
 				let feedbackCellIndex = this.field.incorrectIndex;
 				if (this.mode === 'challenge') {
-					this.failChallenge(feedbackCellIndex);
+					this.markChallengeFailed(feedbackCellIndex);
 					return;
 				}
 				if (this.mode === 'practice') {
@@ -1330,10 +1925,15 @@ function createMinesight() {
 			else if (gameOver === MineField.GAME_OVER_CLEARED) {
 				this.clearIncorrectFeedback();
 				let challengeComplete = this.mode === 'challenge' && this.challengeIndex === this.challengeTotal - 1;
-				if (this.mode === 'challenge') this.stopTimer();
+				if (this.mode === 'challenge') {
+					this.stopTimer();
+					if (this.challengeResults[this.challengeIndex] !== 'failed') {
+						this.challengeResults[this.challengeIndex] = 'cleared';
+					}
+				}
 				if (challengeComplete) {
 					this.result = 'complete';
-					gameSounds.play('complete');
+					this.playChallengeFanfare();
 				}
 				else {
 					this.result = 'cleared';
@@ -1341,14 +1941,14 @@ function createMinesight() {
 					gameSounds.play('success');
 				}
 				feedbackEffects.success({ grand: challengeComplete });
-				feedbackEffects.correctMark({ cellIndex: move.cellIndex, mine: move.markMine });
+				showMarkEffects();
 			}
 			else if (move.removing) {
 				gameSounds.play('unmark');
 			}
 			else {
 				gameSounds.play('mark');
-				feedbackEffects.correctMark({ cellIndex: move.cellIndex, mine: move.markMine });
+				showMarkEffects();
 			}
 			this.revision += 1;
 			if (this.mode === 'practice') {
@@ -1359,17 +1959,20 @@ function createMinesight() {
 
 		/** @param {number} step */
 		challengeStepClass(step) {
-			if (step < this.challengeIndex || (step === this.challengeIndex && ['cleared', 'complete'].includes(this.result))) return 'complete';
-			if (step === this.challengeIndex && this.result === 'failed') return 'failed';
-			if (step === this.challengeIndex) return 'current';
+			let outcome = this.challengeResults[step];
+			if (outcome === 'cleared') return 'complete';
+			if (outcome === 'failed') return 'failed';
+			if (step === this.challengeIndex && this.result !== 'complete') return 'current';
 			return '';
 		},
 
 		/** @param {number} step */
 		challengeStepLabel(step) {
-			let difficulty = CHALLENGE_DIFFICULTIES[Math.floor(step / CHALLENGES_PER_DIFFICULTY)];
+			let group = this.challengeGroups.find(({ start, puzzleCount }) => (
+				step >= start && step < start + puzzleCount
+			)) ?? this.challengeGroups[0];
 			let state = this.challengeStepClass(step) || 'upcoming';
-			return `${difficulty.label} challenge ${(step % CHALLENGES_PER_DIFFICULTY) + 1}, ${state}`;
+			return `${group.label} challenge ${step - group.start + 1}, ${state}`;
 		},
 	};
 }
@@ -1379,5 +1982,3 @@ function createMinesight() {
 void ensurePuzzleGenerator().catch(() => {});
 
 Object.assign(window, { minesight: createMinesight });
-// @ts-expect-error Alpine is a bundled side-effect script without module typings.
-await import('./alpine.min.js');

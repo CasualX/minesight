@@ -1045,8 +1045,6 @@ impl GameState {
 	}
 }
 
-const MAX_PUZZLE_EXACT_FRONTIER: u32 = 18;
-
 //----------------------------------------------------------------
 
 /// A generated tactics position.
@@ -1109,21 +1107,14 @@ fn make_puzzle(seed: u64, attempts: u32, state: GameState, deductions: Deduction
 		always_safe: deductions.always_safe & active,
 	};
 	let ambiguous = ambiguous_count(&state, forced);
-
-	Puzzle {
-		seed,
-		attempts,
-		state,
-		forced,
-		ambiguous,
-	}
+	Puzzle { seed, attempts, state, forced, ambiguous }
 }
 
 /// Keeps exhaustive puzzle analysis within a predictable amount of work.
 #[inline]
-fn try_solve_exact(state: &GameState) -> Option<Deductions> {
+fn try_solve_exact<const N: u32>(state: &GameState) -> Option<Deductions> {
 	let frontier = state.frontier() & !state.flagged;
-	if frontier.count_ones() > MAX_PUZZLE_EXACT_FRONTIER {
+	if frontier.count_ones() > N {
 		return None;
 	}
 	Some(state.solve_exact())
@@ -1138,26 +1129,6 @@ pub trait BoardGenerator {
 impl BoardGenerator for Gradient {
 	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64> {
 		Some(self.generate_mines(rng))
-	}
-}
-
-/// Intersects uniformly random bit masks to produce a flat mine probability.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct RandomBitsBoard {
-	/// One word gives one-half density, two give one quarter, and three give one eighth.
-	pub random_words: u8,
-}
-
-impl BoardGenerator for RandomBitsBoard {
-	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64> {
-		if self.random_words == 0 {
-			return None;
-		}
-		let mut mines = !0u64;
-		for _ in 0..self.random_words {
-			mines &= rng.random::<u64>();
-		}
-		Some(mines)
 	}
 }
 
@@ -1185,7 +1156,7 @@ impl BoardGenerator for HardBoard {
 		// Uniform half-density boards pass relatively often, while steep gradients
 		// are much cheaper to reject. The blend performs better than either alone.
 		if rng.uniform(0..8) == 0 {
-			return RandomBitsBoard { random_words: 1 }.generate(rng);
+			return Some(rng.random::<u64>());
 		}
 
 		let center_x = rng.uniform(2..=5);
@@ -1203,6 +1174,16 @@ impl BoardGenerator for HardBoard {
 	}
 }
 
+/// Produces dense uniform boards for expert puzzles.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct ExpertBoard;
+
+impl BoardGenerator for ExpertBoard {
+	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64> {
+		Some(rng.random::<u64>())
+	}
+}
+
 /// Turns a hidden mine layout into a visible candidate state.
 pub trait Explorer {
 	/// Explores one board, applying the configured cleanup solver as needed.
@@ -1210,8 +1191,7 @@ pub trait Explorer {
 	/// `candidate_score` returns a score only for states accepted by the complete
 	/// puzzle pipeline. Explorers may use it to retain the strongest acceptable
 	/// intermediate state.
-	fn explore<R: urandom::Rng>(
-		&self,
+	fn explore<R: urandom::Rng>(&self,
 		mines: u64,
 		rng: &mut urandom::Random<R>,
 		cleanup: Solver,
@@ -1230,8 +1210,7 @@ pub struct InitialRevealExplorer {
 }
 
 impl Explorer for InitialRevealExplorer {
-	fn explore<R: urandom::Rng>(
-		&self,
+	fn explore<R: urandom::Rng>(&self,
 		mines: u64,
 		rng: &mut urandom::Random<R>,
 		cleanup: Solver,
@@ -1303,8 +1282,7 @@ pub struct RandomWalkExplorer {
 }
 
 impl Explorer for RandomWalkExplorer {
-	fn explore<R: urandom::Rng>(
-		&self,
+	fn explore<R: urandom::Rng>(&self,
 		mines: u64,
 		rng: &mut urandom::Random<R>,
 		cleanup: Solver,
@@ -1365,7 +1343,7 @@ fn same_solver(left: Solver, right: Solver) -> bool {
 /// Applies the fixed frontier limit when the configured function is the exact solver.
 fn run_solver(solver: Solver, state: &GameState) -> Option<Deductions> {
 	if same_solver(solver, GameState::solve_exact) {
-		try_solve_exact(state)
+		try_solve_exact::<18>(state)
 	}
 	else {
 		Some(solver(state))
@@ -1383,13 +1361,15 @@ pub struct SolverConfig {
 /// Inclusive high-level constraints applied to fully analyzed candidates.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PuzzleCriteria {
+	/// Minimum number of forced cells.
 	pub min_forced: u32,
 	/// Minimum inclusive bounding-box area occupied by the forced cells.
 	pub min_forced_area: u32,
+	/// Minimum number of ambiguous cells.
 	pub min_ambiguous: u32,
-	pub min_active: u32,
 	/// Minimum number of clues already visible in the starting position.
 	pub min_revealed: u32,
+	/// Allow empty clue 0 revealed cells.
 	pub allow_empty: bool,
 }
 
@@ -1404,7 +1384,6 @@ impl PuzzleCriteria {
 		forced != 0 && forced >= self.min_forced &&
 			puzzle.forced.area() >= self.min_forced_area &&
 			puzzle.ambiguous >= self.min_ambiguous &&
-			puzzle.ambiguous + forced >= self.min_active &&
 			puzzle.state.revealed.count_ones() >= self.min_revealed &&
 			puzzle.forced.always_mine.count_ones() > 0 &&
 			puzzle.forced.always_safe.count_ones() > 0 &&
@@ -1436,24 +1415,16 @@ impl<B: BoardGenerator, E: Explorer> PuzzleGenerator<B, E> {
 
 	fn try_attempt<R: urandom::Rng>(&self, seed: u64, attempts: u32, rng: &mut urandom::Random<R>) -> Option<Puzzle> {
 		let mines = self.board.generate(rng)?;
-		let solvers = self.solvers;
-		let criteria = self.criteria;
 		let mut candidate_score = |state: &GameState| {
-			analyze_candidate(seed, attempts, *state, solvers, criteria)
+			analyze_candidate(seed, attempts, *state, self.solvers, self.criteria)
 				.map(|puzzle| (puzzle.forced.count(), puzzle.ambiguous))
 		};
-		let state = self.explorer.explore(mines, rng, solvers.cleanup, &mut candidate_score)?;
-		analyze_candidate(seed, attempts, state, solvers, criteria)
+		let state = self.explorer.explore(mines, rng, self.solvers.cleanup, &mut candidate_score)?;
+		analyze_candidate(seed, attempts, state, self.solvers, self.criteria)
 	}
 }
 
-fn analyze_candidate(
-	seed: u64,
-	attempts: u32,
-	state: GameState,
-	solvers: SolverConfig,
-	criteria: PuzzleCriteria,
-) -> Option<Puzzle> {
+fn analyze_candidate(seed: u64, attempts: u32, state: GameState, solvers: SolverConfig, criteria: PuzzleCriteria) -> Option<Puzzle> {
 	let deductions = run_solver(solvers.test, &state)?;
 	let puzzle = make_puzzle(seed, attempts, state, deductions);
 
@@ -1499,7 +1470,6 @@ pub fn generate_easy_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 			min_forced: 4,
 			min_forced_area: 9,
 			min_ambiguous: 2,
-			min_active: 0,
 			min_revealed: 24,
 			allow_empty: true,
 		},
@@ -1520,7 +1490,6 @@ pub fn generate_medium_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 			min_forced: 4,
 			min_forced_area: 16,
 			min_ambiguous: 3,
-			min_active: 0,
 			min_revealed: 0,
 			allow_empty: true,
 		},
@@ -1539,9 +1508,8 @@ pub fn generate_hard_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 		},
 		criteria: PuzzleCriteria {
 			min_forced: 4,
-			min_forced_area: 16,
-			min_ambiguous: 2,
-			min_active: 0,
+			min_forced_area: 17,
+			min_ambiguous: 3,
 			min_revealed: 0,
 			allow_empty: false,
 		},
@@ -1551,7 +1519,7 @@ pub fn generate_hard_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 /// Expert puzzles use the random-walk explorer and advertise exact deductions.
 pub fn generate_expert_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 	PuzzleGenerator {
-		board: RandomBitsBoard { random_words: 1 },
+		board: ExpertBoard,
 		explorer: RandomWalkExplorer { max_steps: 16 },
 		solvers: SolverConfig {
 			cleanup: |state| state.solve_subset() | state.solve_two_clue(),
@@ -1562,7 +1530,6 @@ pub fn generate_expert_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 			min_forced: 4,
 			min_forced_area: 16,
 			min_ambiguous: 3,
-			min_active: 0,
 			min_revealed: 0,
 			allow_empty: false,
 		},

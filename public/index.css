@@ -54,6 +54,9 @@
 	--skip-hover: #ebe2d4;
 	--skip-ink: #684f31;
 	--skip-line: #a98c68;
+	--scratch-graphite: #282b2a;
+	--scratch-blue: #2766a3;
+	--scratch-red: #b94c43;
 	--app-width: 420px;
 }
 
@@ -111,13 +114,23 @@
 		--skip-hover: #4a4033;
 		--skip-ink: #e8c99f;
 		--skip-line: #806b50;
+		--scratch-graphite: #eeeae2;
+		--scratch-blue: #76b5eb;
+		--scratch-red: #f08c82;
 	}
 }
 
-*, *::before, *::after { box-sizing: border-box; }
-[x-cloak] { display: none !important; }
+*, *::before, *::after {
+	box-sizing: border-box;
+}
+[x-cloak] {
+	display: none !important;
+}
 
-html { min-width: 320px; background: var(--background); }
+html {
+	min-width: 320px;
+	background: var(--background);
+}
 
 body {
 	min-height: 100vh;
@@ -129,10 +142,30 @@ body {
 	-webkit-tap-highlight-color: transparent;
 }
 
-button, select { color: inherit; font: 14px ui-sans-serif, system-ui, sans-serif; }
-button, select { cursor: pointer; }
-button:disabled { cursor: default; }
-button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+button, select {
+	color: inherit;
+	font: 14px ui-sans-serif, system-ui, sans-serif;
+}
+button, select {
+	cursor: pointer;
+}
+button:not(.cell) {
+	transition: transform 90ms ease-out, filter 140ms ease-out;
+}
+button:not(.cell):hover:not(:disabled) {
+	filter: brightness(.96);
+}
+button:not(.cell):active:not(:disabled) {
+	transform: translateY(1px) scale(.985);
+	filter: brightness(.9);
+}
+button:disabled {
+	cursor: default;
+}
+button:focus-visible, select:focus-visible, a:focus-visible {
+	outline: 2px solid var(--focus);
+	outline-offset: 2px;
+}
 
 .site-header,
 .app-shell {
@@ -176,8 +209,12 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	font-weight: 700;
 }
 
-.mode-switcher button:hover { color: var(--ink); }
-.mode-switcher button:disabled { color: var(--line); }
+.mode-switcher button:hover {
+	color: var(--ink);
+}
+.mode-switcher button:disabled {
+	color: var(--line);
+}
 .mode-switcher button.active {
 	color: var(--ink);
 	text-decoration: underline;
@@ -195,8 +232,12 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	background: var(--paper);
 }
 
-.sound-toggle:hover { border-color: var(--ink); }
-.sound-toggle.muted { color: var(--muted); }
+.sound-toggle:hover {
+	border-color: var(--ink);
+}
+.sound-toggle.muted {
+	color: var(--muted);
+}
 .sound-toggle svg {
 	width: 18px;
 	height: 18px;
@@ -207,7 +248,9 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	stroke-width: 1.8;
 }
 
-.app-shell { padding: 10px 0 calc(28px + env(safe-area-inset-bottom)); }
+.app-shell {
+	padding: 10px 0 calc(28px + env(safe-area-inset-bottom));
+}
 
 .game-heading {
 	display: flex;
@@ -217,9 +260,19 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	margin-bottom: 10px;
 }
 
-.game-heading h1 { margin: 0; font-size: 19px; line-height: 1.1; }
-.game-heading p { margin: 3px 0 0; color: var(--muted); font: 12px ui-sans-serif, system-ui, sans-serif; }
-.heading-copy { min-width: 0; }
+.game-heading h1 {
+	margin: 0;
+	font-size: 19px;
+	line-height: 1.1;
+}
+.game-heading p {
+	margin: 3px 0 0;
+	color: var(--muted);
+	font: 12px ui-sans-serif, system-ui, sans-serif;
+}
+.heading-copy {
+	min-width: 0;
+}
 .share-puzzle {
 	display: grid;
 	place-items: center;
@@ -230,8 +283,13 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	background: transparent;
 	color: var(--muted);
 }
-.share-puzzle:hover:not(:disabled) { color: var(--ink); }
-.share-puzzle:disabled { color: var(--line); opacity: .7; }
+.share-puzzle:hover:not(:disabled) {
+	color: var(--ink);
+}
+.share-puzzle:disabled {
+	color: var(--line);
+	opacity: .7;
+}
 .share-puzzle svg {
 	width: 18px;
 	height: 18px;
@@ -242,11 +300,28 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	stroke-width: 1.7;
 }
 
-.timer { text-align: right; }
-.timer span { display: block; color: var(--muted); font: 11px ui-sans-serif, system-ui, sans-serif; }
-.timer strong { display: block; font: 700 18px/1.15 ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+.heading-share {
+	flex: none;
+	margin-left: auto;
+}
 
-.difficulty-picker { margin-bottom: 10px; }
+.timer {
+	text-align: right;
+}
+.timer span {
+	display: block;
+	color: var(--muted);
+	font: 11px ui-sans-serif, system-ui, sans-serif;
+}
+.timer strong {
+	display: block;
+	font: 700 18px/1.15 ui-sans-serif, system-ui, sans-serif;
+	font-variant-numeric: tabular-nums;
+}
+
+.difficulty-picker {
+	margin-bottom: 10px;
+}
 .practice-toolbar {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) 104px;
@@ -300,6 +375,48 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	padding: 0 0 4px;
 }
 
+.challenge-mode-picker {
+	display: grid;
+	gap: 7px;
+	margin-bottom: 12px;
+}
+
+.challenge-mode-picker button {
+	display: grid;
+	gap: 4px;
+	padding: 9px 10px;
+	border: 1px solid var(--line);
+	outline: 2px solid transparent;
+	outline-offset: 2px;
+	background: var(--paper);
+	text-align: left;
+	transition: transform 90ms ease-out, filter 140ms ease-out, border-color 140ms ease-out, box-shadow 140ms ease-out, outline-color 140ms ease-out;
+}
+
+.challenge-mode-picker button:hover {
+	border-color: color-mix(in srgb, var(--muted) 40%, var(--line));
+}
+.challenge-mode-picker button.active {
+	border-color: color-mix(in srgb, var(--muted) 72%, var(--line));
+	box-shadow: inset 2px 0 color-mix(in srgb, var(--muted) 72%, var(--line));
+}
+.challenge-mode-picker button:focus-visible {
+	outline-color: color-mix(in srgb, var(--focus) 65%, var(--background));
+}
+.challenge-mode-heading {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+}
+.challenge-mode-heading strong {
+	font-size: 12px;
+}
+.challenge-mode-heading > span,
+.challenge-mode-route {
+	color: var(--muted);
+	font-size: 10px;
+}
+
 .tutorial-guide {
 	min-height: 150px;
 	margin-bottom: 12px;
@@ -315,8 +432,15 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	text-transform: uppercase;
 }
 
-.tutorial-guide h2 { margin: 5px 0 4px; font-size: 19px; }
-.tutorial-guide p { margin: 0; color: var(--muted); font: 12px/1.45 ui-sans-serif, system-ui, sans-serif; }
+.tutorial-guide h2 {
+	margin: 5px 0 4px;
+	font-size: 19px;
+}
+.tutorial-guide p {
+	margin: 0;
+	color: var(--muted);
+	font: 12px/1.45 ui-sans-serif, system-ui, sans-serif;
+}
 
 @media (max-width: 360px) {
 	.tutorial-guide { min-height: 170px; }
@@ -336,25 +460,6 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	font: 13px/1.5 ui-sans-serif, system-ui, sans-serif;
 }
 
-.challenge-route {
-	display: grid;
-	grid-template-columns: repeat(4, 1fr);
-	align-items: center;
-	gap: 8px;
-	margin: 10px 0;
-}
-
-.challenge-route > span {
-	padding: 10px 6px;
-	border: 1px solid var(--line);
-	background: var(--paper);
-	font: 700 12px ui-sans-serif, system-ui, sans-serif;
-	text-align: center;
-}
-
-.challenge-route strong { font-size: 16px; }
-.challenge-intro > .challenge-rule { font-size: 12px; }
-
 .challenge-start {
 	width: 100%;
 	min-height: 46px;
@@ -366,8 +471,18 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	font-weight: 700;
 }
 
-.challenge-start:disabled { border-color: var(--line); background: var(--covered); color: var(--muted); }
-.challenge-ready { display: block; margin-top: 7px; color: var(--success); font: 11px ui-sans-serif, system-ui, sans-serif; text-align: center; }
+.challenge-start:disabled {
+	border-color: var(--line);
+	background: var(--covered);
+	color: var(--muted);
+}
+.challenge-ready {
+	display: block;
+	margin-top: 7px;
+	color: var(--success);
+	font: 11px ui-sans-serif, system-ui, sans-serif;
+	text-align: center;
+}
 
 .challenge-finish {
 	padding: 32px 0 4px;
@@ -413,7 +528,19 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	animation: victory-rays 14s linear infinite;
 }
 
-.victory-effect span { font: 800 43px/1 ui-sans-serif, system-ui, sans-serif; }
+.victory-effect span {
+	font: 800 43px/1 ui-sans-serif, system-ui, sans-serif;
+}
+
+.victory-effect.failed {
+	border-color: var(--danger);
+	color: var(--danger);
+	box-shadow: 0 0 0 8px var(--background), 0 0 0 9px var(--danger);
+}
+
+.victory-effect.failed::before {
+	background: repeating-conic-gradient(from 0deg, var(--danger) 0 2deg, transparent 2deg 18deg);
+}
 
 .finish-time {
 	margin: 26px 0 7px;
@@ -447,7 +574,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 
 .challenge-path {
 	display: grid;
-	grid-template-columns: repeat(4, 1fr);
+	grid-template-columns: repeat(var(--challenge-difficulty-count), 1fr);
 	gap: 7px;
 	margin: 1px 0 10px;
 }
@@ -459,15 +586,32 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	font: 10px ui-sans-serif, system-ui, sans-serif;
 }
 
-.path-steps { display: grid; grid-template-columns: repeat(var(--challenges-per-difficulty), 1fr); gap: 3px; }
-.path-step { height: 5px; background: var(--path-pending); }
-.path-step.current { background: var(--path-current); }
-.path-step.complete { background: var(--ink); }
-.path-step.failed { background: var(--danger); }
+.path-steps {
+	display: grid;
+	grid-template-columns: repeat(var(--challenge-puzzle-count), 1fr);
+	gap: 3px;
+}
+.path-step {
+	height: 5px;
+	background: var(--path-pending);
+}
+.path-step.current {
+	background: var(--path-current);
+}
+.path-step.complete {
+	background: var(--ink);
+}
+.path-step.failed {
+	background: var(--danger);
+}
 
-.board-card { background: transparent; }
+.board-card {
+	background: transparent;
+}
 
-.minefield-shell { position: relative; }
+.minefield-shell {
+	position: relative;
+}
 
 .minefield {
 	display: grid;
@@ -482,9 +626,26 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	-webkit-user-select: none;
 }
 
-.board-loading {
+.scratch-canvas {
 	position: absolute;
 	z-index: 2;
+	inset: 0;
+	display: block;
+	width: 100%;
+	height: 100%;
+	opacity: .88;
+	pointer-events: none;
+}
+
+.scratch-canvas.active {
+	cursor: crosshair;
+	pointer-events: auto;
+	touch-action: none;
+}
+
+.board-loading {
+	position: absolute;
+	z-index: 3;
 	inset: 0;
 	display: grid;
 	place-content: center;
@@ -535,12 +696,31 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	touch-action: manipulation;
 }
 
-.cell:hover:not(:disabled) { background: var(--covered-hover); }
-.cell:active:not(:disabled) { filter: brightness(.94); }
-.cell:disabled { opacity: 1; }
-.cell.inactive { background: var(--inactive); }
-.cell.revealed { background: var(--revealed); }
-.cell.flagged { color: var(--flag-ink); }
+.cell:hover:not(:disabled):not(.revealed) {
+	background: var(--covered-hover);
+}
+.cell:active:not(:disabled):not(.revealed) {
+	filter: brightness(.94);
+}
+.cell:focus-visible {
+	position: relative;
+	z-index: 2;
+	outline-width: 3px;
+	outline-offset: -3px;
+}
+.cell:disabled {
+	opacity: 1;
+}
+.cell.inactive {
+	background: var(--inactive);
+}
+.cell.revealed {
+	background: var(--revealed);
+	cursor: default;
+}
+.cell.flagged {
+	color: var(--flag-ink);
+}
 .cell.marked-safe {
 	background: var(--marked-safe);
 	color: var(--marked-safe-ink);
@@ -551,17 +731,37 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	color: var(--marked-mine-ink);
 	box-shadow: inset 0 0 0 1px var(--marked-mine-line);
 }
-.cell.marked-safe:hover:not(:disabled) { background: var(--marked-safe-hover); }
-.cell.marked-mine:hover:not(:disabled) { background: var(--marked-mine-hover); }
-.cell.hinted { background: var(--hint); color: var(--hint-ink); box-shadow: inset 0 0 0 1px var(--hint-line); }
-.cell.hinted:hover:not(:disabled) { background: var(--hint-hover); }
+.cell.marked-safe:hover:not(:disabled) {
+	background: var(--marked-safe-hover);
+}
+.cell.marked-mine:hover:not(:disabled) {
+	background: var(--marked-mine-hover);
+}
+.cell.hinted {
+	background: var(--hint);
+	color: var(--hint-ink);
+	box-shadow: inset 0 0 0 1px var(--hint-line);
+	animation: hint-reveal 180ms ease-out;
+}
+.cell.hinted:hover:not(:disabled) {
+	background: var(--hint-hover);
+}
+@keyframes hint-reveal {
+	from {
+		background: var(--covered);
+		color: transparent;
+		box-shadow: inset 0 0 0 1px transparent;
+	}
+}
 .cell.tutorial-target {
 	position: relative;
 	z-index: 1;
 	box-shadow: inset 0 0 0 3px var(--tutorial), 0 0 0 3px var(--tutorial-ring);
 	animation: tutorial-target 900ms ease-in-out infinite alternate;
 }
-.cell.mine { background: var(--mine); color: var(--mine-ink); }
+.cell.mine {
+	background: var(--mine); color: var(--mine-ink);
+}
 .cell.incorrect-guess {
 	z-index: 1;
 	background: var(--incorrect);
@@ -569,13 +769,20 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	box-shadow: inset 0 0 0 2px var(--incorrect-line);
 	animation: incorrect-guess 600ms ease-in-out;
 }
-.cell.incorrect-guess:hover:not(:disabled) { background: var(--incorrect); }
-.cell.detonated { background: var(--danger); color: var(--on-danger); box-shadow: none; }
+.cell.incorrect-guess:hover:not(:disabled) {
+	background: var(--incorrect);
+}
+.cell.detonated {
+	background: var(--danger);
+	color: var(--on-danger);
+	box-shadow: none;
+}
 .cell.clue-1 { color: var(--clue-1); }
 .cell.clue-2 { color: var(--clue-2); }
 .cell.clue-3 { color: var(--clue-3); }
 .cell.clue-4 { color: var(--clue-4); }
-.cell.clue-5, .cell.clue-6 { color: var(--clue-5); }
+.cell.clue-5 { color: var(--clue-5); }
+.cell.clue-6 { color: var(--clue-5); }
 
 @keyframes incorrect-guess {
 	0%, 100% { transform: translateX(0); }
@@ -604,11 +811,19 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 }
 
 .practice-status strong, .practice-status span,
-.result-banner strong, .result-banner span { display: block; }
+.result-banner strong, .result-banner span {
+	display: block;
+}
 .practice-status strong,
-.result-banner strong { font: 700 14px ui-sans-serif, system-ui, sans-serif; }
+.result-banner strong {
+	font: 700 14px ui-sans-serif, system-ui, sans-serif;
+}
 .practice-status span,
-.result-banner span { margin-top: 2px; color: var(--muted); font: 11px ui-sans-serif, system-ui, sans-serif; }
+.result-banner span {
+	margin-top: 2px;
+	color: var(--muted);
+	font: 11px ui-sans-serif, system-ui, sans-serif;
+}
 .result-banner button,
 .board-actions button {
 	min-height: 44px;
@@ -620,9 +835,17 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	font-weight: 700;
 }
 
-.game-controls { margin-top: 12px; }
-.action-switcher { display: block; }
-.board-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.game-controls {
+	margin-top: 12px;
+}
+.action-switcher {
+	display: block;
+}
+.board-actions {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+}
 .board-actions.challenge-actions { grid-template-columns: 1fr; }
 .board-actions.shared-actions { grid-template-columns: 1fr; }
 .board-actions.tutorial-actions { grid-template-columns: 1fr; }
@@ -645,8 +868,14 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	padding: 4px 8px;
 	border-color: var(--ink);
 }
-.action-mapping { display: grid; gap: 1px; text-align: left; }
-.action-mapping:last-child { text-align: right; }
+.action-mapping {
+	display: grid;
+	gap: 1px;
+	text-align: left;
+}
+.action-mapping:last-child {
+	text-align: right;
+}
 .action-mapping small {
 	color: var(--muted);
 	font-size: 9px;
@@ -655,10 +884,20 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	line-height: 1;
 	text-transform: uppercase;
 }
-.action-mapping strong { font-size: 12px; line-height: 1.2; }
-.action-mapping i { margin-right: 4px; font-style: normal; }
-.action-mapping.safe strong { color: var(--safe-label); }
-.action-mapping.mine strong { color: var(--mine-label); }
+.action-mapping strong {
+	font-size: 12px;
+	line-height: 1.2;
+}
+.action-mapping i {
+	margin-right: 4px;
+	font-style: normal;
+}
+.action-mapping.safe strong {
+	color: var(--safe-label);
+}
+.action-mapping.mine strong {
+	color: var(--mine-label);
+}
 .switch-arrows {
 	display: grid;
 	place-items: center;
@@ -670,22 +909,34 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	font-size: 13px;
 	transition: transform 120ms ease, background 120ms ease;
 }
-.action-switch:hover .switch-arrows { background: var(--covered); }
-.action-switch[aria-checked="true"] .switch-arrows { transform: rotate(180deg); }
-.board-actions button { padding: 0 16px; }
+.action-switch:hover .switch-arrows {
+	background: var(--covered);
+}
+.action-switch[aria-checked="true"] .switch-arrows {
+	transform: rotate(180deg);
+}
+.board-actions button {
+	padding: 0 16px;
+}
+.board-actions button.secondary:hover:not(:disabled) {
+	border-color: color-mix(in srgb, var(--ink) 45%, var(--line));
+	background: color-mix(in srgb, var(--paper) 82%, var(--covered));
+}
 .board-actions button.secondary.active {
 	border-color: var(--active-hint-line);
 	background: var(--hint);
 	color: var(--ink);
 	box-shadow: inset 0 0 0 1px var(--active-hint-inset);
 }
-.board-actions button.secondary.active:hover { background: var(--hint-hover); }
+.board-actions button.secondary.active:hover {
+	background: var(--hint-hover);
+}
 .board-actions button.give-up-button {
 	position: relative;
 	isolation: isolate;
 	overflow: hidden;
 	touch-action: none;
-	transition: border-color 160ms ease;
+	transition: transform 90ms ease-out, filter 140ms ease-out, border-color 160ms ease;
 }
 .give-up-label {
 	position: relative;
@@ -710,17 +961,33 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--danger) 45%, transparent));
 	content: '';
 }
-.board-actions button.give-up-button.is-holding { border-color: var(--danger); }
+.board-actions button.give-up-button.is-holding {
+	border-color: var(--danger);
+}
 .give-up-button.is-holding .give-up-progress {
 	transform: scaleX(1);
 	transition-duration: var(--give-up-duration, 900ms);
 	transition-timing-function: linear;
 }
-.board-actions button.primary { border-color: var(--ink); background: var(--ink); color: var(--paper); }
-.board-actions button.skip { border-color: var(--skip-line); background: var(--skip); color: var(--skip-ink); }
-.board-actions button.skip:hover { background: var(--skip-hover); }
-.board-actions.is-searching button:disabled { opacity: .42; }
-.result-banner button { width: 100%; }
+.board-actions button.primary {
+	border-color: var(--ink);
+	background: var(--ink);
+	color: var(--paper);
+}
+.board-actions button.skip {
+	border-color: var(--skip-line);
+	background: var(--skip);
+	color: var(--skip-ink);
+}
+.board-actions button.skip:hover {
+	background: var(--skip-hover);
+}
+.board-actions.is-searching button:disabled {
+	opacity: .42;
+}
+.result-banner button {
+	width: 100%;
+}
 .result-banner button:disabled,
 .board-actions button:disabled {
 	border-color: var(--line);
@@ -738,7 +1005,99 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 	min-height: 28px;
 	margin-top: 5px;
 }
-.input-help { margin: 0; color: var(--muted); font: 11px ui-sans-serif, system-ui, sans-serif; text-align: left; }
+.input-help {
+	min-width: 0;
+	margin: 0;
+	color: var(--muted);
+	font: 11px ui-sans-serif, system-ui, sans-serif;
+	text-align: left;
+}
+.board-utilities {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 3px;
+}
+.scratch-tools,
+.scratch-options {
+	display: flex;
+	align-items: center;
+}
+.scratch-tools {
+	min-height: 30px;
+	border: 1px solid transparent;
+}
+.scratch-tools.active {
+	border-color: var(--line);
+	background: var(--paper);
+}
+.scratch-options {
+	gap: 2px;
+	padding-right: 3px;
+}
+.scratch-tools button {
+	display: inline-grid;
+	place-items: center;
+	min-width: 28px;
+	height: 28px;
+	padding: 4px;
+	border: 0;
+	background: transparent;
+	color: var(--muted);
+}
+.scratch-tools button:hover:not(:disabled) {
+	color: var(--ink);
+}
+.scratch-tools .scratch-toggle {
+	grid-template-columns: 16px auto;
+	gap: 4px;
+	padding-inline: 5px 7px;
+	font-size: 11px;
+	font-weight: 700;
+}
+.scratch-toggle.active {
+	color: var(--ink);
+}
+.scratch-tools svg {
+	width: 16px;
+	height: 16px;
+	fill: none;
+	stroke: currentColor;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	stroke-width: 1.7;
+}
+.scratch-tools button.scratch-color {
+	position: relative;
+	min-width: 24px;
+	width: 24px;
+}
+.scratch-color::before {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	background: var(--scratch-color);
+	content: '';
+}
+.scratch-color.graphite {
+	--scratch-color: var(--scratch-graphite);
+}
+.scratch-color.blue {
+	--scratch-color: var(--scratch-blue);
+}
+.scratch-color.red {
+	--scratch-color: var(--scratch-red);
+}
+.scratch-color.selected::after {
+	position: absolute;
+	inset: 4px;
+	border: 1px solid var(--scratch-color);
+	border-radius: 50%;
+	content: '';
+}
+.scratch-tools button:disabled {
+	opacity: .3;
+}
 .engine-error {
 	margin: 0 0 10px;
 	padding: 9px 10px;
@@ -780,5 +1139,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 		animation-duration: .01ms !important;
 		transition-duration: .01ms !important;
 	}
-	.board-loading-spinner { animation: none; }
+	.board-loading-spinner {
+		animation: none;
+	}
 }

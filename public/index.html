@@ -11,6 +11,7 @@
 	<link rel="stylesheet" href="./index.css">
 	<link rel="stylesheet" href="./feedback.css">
 	<script type="module" src="./index.js"></script>
+	<script src="./alpine.min.js" defer></script>
 </head>
 <body x-data="minesight" x-cloak>
 	<header class="site-header">
@@ -55,9 +56,24 @@
 				<h1 x-text="headingTitle"></h1>
 				<p x-show="headingSubtitle" x-text="headingSubtitle"></p>
 			</div>
+			<button
+				type="button"
+				class="share-puzzle heading-share"
+				x-show="showChallengeIntro || showChallengeFinish"
+				aria-label="Share this challenge"
+				title="Share this challenge"
+				@click="shareChallenge()"
+			>
+				<svg viewBox="0 0 24 24" aria-hidden="true">
+					<circle cx="18" cy="5" r="2.5"></circle>
+					<circle cx="6" cy="12" r="2.5"></circle>
+					<circle cx="18" cy="19" r="2.5"></circle>
+					<path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5"></path>
+				</svg>
+			</button>
 			<div class="timer" x-show="showChallengeTimer" aria-label="Elapsed time">
 				<span>Time</span>
-				<strong x-text="formattedTime"></strong>
+				<strong x-text="challengeTimerTime"></strong>
 			</div>
 		</section>
 		<p class="engine-error" x-show="sharedPuzzleError" x-text="sharedPuzzleError" role="alert"></p>
@@ -90,12 +106,23 @@
 		</section>
 
 		<section class="challenge-intro" x-show="showChallengeIntro" :aria-busy="challengePreparing">
-			<p class="challenge-summary" x-text="challengeSummary"></p>
-			<div class="challenge-route" :aria-label="challengeRouteLabel">
-				<template x-for="group in challengeGroups" :key="group.key">
-					<span><strong x-text="challengesPerDifficulty"></strong> <span x-text="group.label"></span></span>
+			<div class="challenge-mode-picker" role="group" aria-label="Challenge mode">
+				<template x-for="challengeMode in challengeModes" :key="challengeMode.key">
+					<button
+						type="button"
+						:class="{ active: challengeModeKey === challengeMode.key }"
+						:aria-pressed="challengeModeKey === challengeMode.key"
+						@click="selectChallengeMode(challengeMode.key)"
+					>
+						<span class="challenge-mode-heading">
+							<strong x-text="challengeMode.label"></strong>
+							<span x-text="`${challengeModeTotal(challengeMode)} puzzles`"></span>
+						</span>
+						<span class="challenge-mode-route" x-text="challengeModeRouteLabel(challengeMode)"></span>
+					</button>
 				</template>
 			</div>
+			<p class="challenge-summary">Work through the challenges. Each mistake marks that puzzle failed, but you can keep solving it.</p>
 			<p class="challenge-rule">Mark every covered square the clues prove safe or mined. The clock starts with the first puzzle.</p>
 			<button
 				type="button"
@@ -107,9 +134,11 @@
 		</section>
 
 		<section class="challenge-finish" x-show="showChallengeFinish" x-transition.opacity role="status" aria-live="polite">
-			<div class="victory-effect" aria-hidden="true"><span>&#10003;</span></div>
-			<span class="challenge-kicker">Run complete</span>
-			<h2>Victory</h2>
+			<div class="victory-effect" :class="{ failed: challengeFailedCount > 0 }" aria-hidden="true">
+				<span x-text="challengeFailedCount > 0 ? '\u2691' : '\u2713'"></span>
+			</div>
+			<span class="challenge-kicker">Challenge complete</span>
+			<h2 x-text="challengeFinishTitle"></h2>
 			<p x-text="challengeCompleteMessage"></p>
 			<div class="finish-time" aria-label="Final time">
 				<span>Final time</span>
@@ -121,13 +150,13 @@
 		<section
 			class="challenge-path"
 			x-show="showChallengePath"
-			:style="{ '--challenges-per-difficulty': challengesPerDifficulty }"
+			:style="{ '--challenge-difficulty-count': challengeGroups.length }"
 			aria-label="Challenge progress"
 		>
 			<template x-for="group in challengeGroups" :key="group.key">
 				<div class="path-group">
 					<span class="path-label" x-text="group.label"></span>
-					<div class="path-steps">
+					<div class="path-steps" :style="{ '--challenge-puzzle-count': group.puzzleCount }">
 						<template x-for="step in group.steps" :key="step">
 							<span class="path-step" :class="challengeStepClass(step)" :aria-label="challengeStepLabel(step)"></span>
 						</template>
@@ -145,13 +174,30 @@
 								class="cell"
 								:class="cell.className"
 								:aria-label="cell.label"
+								aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Space Enter Shift+Space Shift+Enter"
 								:disabled="cell.disabled"
-								@click="tapCell(cell.x, cell.y)"
+								:tabindex="cell.tabIndex"
+								:data-cell-index="cell.index"
+								@focus="focusCell(cell.index)"
+								@keydown="keydownCell($event, cell.x, cell.y)"
+								@click="clickCell($event, cell.x, cell.y)"
 								@contextmenu.prevent="contextMenuCell(cell.x, cell.y)"
 								x-text="cell.text"
 							></button>
 						</template>
 					</div>
+					<canvas
+						x-ref="scratchCanvas"
+						id="scratch-pad"
+						class="scratch-canvas"
+						:class="{ active: scratchActive }"
+						aria-hidden="true"
+						@pointerdown="startScratchStroke($event)"
+						@pointermove="continueScratchStroke($event)"
+						@pointerup="endScratchStroke($event)"
+						@pointercancel="endScratchStroke($event)"
+						@contextmenu.prevent="contextMenuScratch($event)"
+					></canvas>
 					<div class="board-loading" x-show="practiceSearchingVisible" x-transition.opacity role="status" aria-live="polite">
 						<span class="board-loading-spinner" aria-hidden="true"></span>
 						<strong>Building a puzzle…</strong>
@@ -161,22 +207,60 @@
 			</div>
 			<div class="input-help-row">
 				<p class="input-help" x-text="inputHelp"></p>
-				<button
-					x-show="mode === 'practice'"
-					type="button"
-					class="share-puzzle"
-					:disabled="sharePuzzleDisabled"
-					aria-label="Share this puzzle"
-					title="Share this puzzle"
-					@click="sharePracticePuzzle()"
-				>
-					<svg viewBox="0 0 24 24" aria-hidden="true">
-						<circle cx="18" cy="5" r="2.5"></circle>
-						<circle cx="6" cy="12" r="2.5"></circle>
-						<circle cx="18" cy="19" r="2.5"></circle>
-						<path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5"></path>
-					</svg>
-				</button>
+				<div class="board-utilities">
+					<div class="scratch-tools" :class="{ active: scratchActive }" role="toolbar" aria-label="Scratch pad">
+						<button
+							type="button"
+							class="scratch-toggle"
+							:class="{ active: scratchActive }"
+							:aria-pressed="scratchActive"
+							aria-controls="scratch-pad"
+							:title="scratchActive ? 'Finish drawing' : 'Draw notes over the board'"
+							@click="toggleScratchPad()"
+						>
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.7-10.7a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"></path><path d="m14.8 6.5 3 3M8.2 19l-3-3"></path></svg>
+							<span x-text="scratchActive ? 'Done' : 'Notes'"></span>
+						</button>
+						<div class="scratch-options" x-show="scratchActive" x-transition.opacity>
+							<template x-for="color in scratchColors" :key="color.key">
+								<button
+									type="button"
+									class="scratch-color"
+									:class="[color.key, { selected: scratchColor === color.key }]"
+									:aria-label="`${color.label} pencil`"
+									:aria-pressed="scratchColor === color.key"
+									:title="color.label"
+									@click="scratchColor = color.key"
+								></button>
+							</template>
+							<button
+								type="button"
+								class="scratch-clear"
+								:disabled="!scratchHasMarks"
+								aria-label="Clear all notes"
+								title="Clear all notes"
+								@click="clearScratchPad()"
+							>
+								<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3m2 0-1 13H8L7 7m3 4v5m4-5v5"></path></svg>
+							</button>
+						</div>
+					</div>
+					<button
+						type="button"
+						class="share-puzzle"
+						:disabled="sharePuzzleDisabled"
+						:aria-label="shareButtonLabel"
+						:title="shareButtonLabel"
+						@click="sharePuzzle()"
+					>
+						<svg viewBox="0 0 24 24" aria-hidden="true">
+							<circle cx="18" cy="5" r="2.5"></circle>
+							<circle cx="6" cy="12" r="2.5"></circle>
+							<circle cx="18" cy="19" r="2.5"></circle>
+							<path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5"></path>
+						</svg>
+					</button>
+				</div>
 			</div>
 
 			<div class="practice-status" x-show="showPuzzleStatus" role="status" aria-live="polite">

@@ -406,7 +406,7 @@ fn assert_puzzle_analysis(puzzle: &Puzzle) {
 fn exhausts_exact_deductions(puzzle: &Puzzle) -> bool {
 	let mut state = puzzle.state;
 	state.apply(puzzle.forced);
-	try_solve_exact(&state).is_some_and(|deductions| deductions.is_empty())
+	try_solve_exact::<18>(&state).is_some_and(|deductions| deductions.is_empty())
 }
 
 #[test]
