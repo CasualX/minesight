@@ -6,6 +6,9 @@ import { gameSounds } from './sounds.js';
 
 const BOARD_SIZE = 8;
 const PUZZLE_ATTEMPTS = 1000;
+const CELL_HOLD_MS = 450;
+const CELL_GESTURE_MOVE_TOLERANCE = 10;
+const CELL_CONTEXT_MENU_DEDUP_MS = 1000;
 const GIVE_UP_HOLD_MS = 900;
 const SCRATCH_TAP_DISTANCE = .01;
 const SCRATCH_ERASER_RADIUS = .025;
@@ -598,6 +601,15 @@ function createMinesight() {
 		/** @type {number | undefined} */
 		shareFeedbackTimerId: undefined,
 		/** @type {number | undefined} */
+		cellHoldTimerId: undefined,
+		/** @type {number | undefined} */
+		cellGesturePointerId: undefined,
+		cellGestureStartX: 0,
+		cellGestureStartY: 0,
+		lastCellHoldX: -1,
+		lastCellHoldY: -1,
+		lastCellHoldTime: 0,
+		/** @type {number | undefined} */
 		giveUpTimerId: undefined,
 		giveUpHolding: false,
 		giveUpHoldDuration: GIVE_UP_HOLD_MS,
@@ -650,6 +662,7 @@ function createMinesight() {
 			this.clearIncorrectFeedback();
 			this.clearStudySearchingDelay();
 			if (this.shareFeedbackTimerId !== undefined) window.clearTimeout(this.shareFeedbackTimerId);
+			this.cancelCellGesture();
 			this.cancelGiveUpGesture();
 			scratchResizeObserver?.disconnect();
 		},
@@ -1996,12 +2009,65 @@ function createMinesight() {
 		},
 
 		/**
+		 * @param {PointerEvent} event
+		 * @param {number} x
+		 * @param {number} y
+		 */
+		beginCellGesture(event, x, y) {
+			if (!event.isPrimary || event.button !== 0 || this.cellGesturePointerId !== undefined) return;
+			event.currentTarget.setPointerCapture(event.pointerId);
+			this.cellGesturePointerId = event.pointerId;
+			this.cellGestureStartX = event.clientX;
+			this.cellGestureStartY = event.clientY;
+			this.cellHoldTimerId = window.setTimeout(() => {
+				this.cellHoldTimerId = undefined;
+				if (this.cellGesturePointerId !== event.pointerId) return;
+				this.cellGesturePointerId = undefined;
+				this.lastCellHoldX = x;
+				this.lastCellHoldY = y;
+				this.lastCellHoldTime = performance.now();
+				this.applyCellInput(x, y, true);
+			}, CELL_HOLD_MS);
+		},
+
+		/** @param {PointerEvent} event */
+		moveCellGesture(event) {
+			if (event.pointerId !== this.cellGesturePointerId) return;
+			let distance = Math.hypot(
+				event.clientX - this.cellGestureStartX,
+				event.clientY - this.cellGestureStartY,
+			);
+			if (distance > CELL_GESTURE_MOVE_TOLERANCE) this.cancelCellGesture(event);
+		},
+
+		/**
+		 * @param {PointerEvent} event
+		 * @param {number} x
+		 * @param {number} y
+		 */
+		endCellGesture(event, x, y) {
+			if (event.pointerId !== this.cellGesturePointerId) return;
+			this.cancelCellGesture(event);
+			this.applyCellInput(x, y, false);
+		},
+
+		/**
+		 * Preserve button activation from assistive technology without handling
+		 * the synthetic click that follows a pointer gesture.
 		 * @param {MouseEvent} event
 		 * @param {number} x
 		 * @param {number} y
 		 */
 		clickCell(event, x, y) {
-			this.applyCellInput(x, y, event.shiftKey);
+			if (event.detail === 0) this.applyCellInput(x, y, event.shiftKey);
+		},
+
+		/** @param {PointerEvent} [event] */
+		cancelCellGesture(event) {
+			if (event && event.pointerId !== this.cellGesturePointerId) return;
+			if (this.cellHoldTimerId !== undefined) window.clearTimeout(this.cellHoldTimerId);
+			this.cellHoldTimerId = undefined;
+			this.cellGesturePointerId = undefined;
 		},
 
 		/**
@@ -2058,10 +2124,25 @@ function createMinesight() {
 		},
 
 		/**
+		 * Keep right-click support and use contextmenu as a fallback on browsers
+		 * that emit it for touch. A timer-recognized hold must not run twice.
+		 * @param {MouseEvent | PointerEvent} event
 		 * @param {number} x
 		 * @param {number} y
 		 */
-		contextMenuCell(x, y) {
+		contextMenuCell(event, x, y) {
+			let repeatsTimedHold = x === this.lastCellHoldX && y === this.lastCellHoldY
+				&& performance.now() - this.lastCellHoldTime < CELL_CONTEXT_MENU_DEDUP_MS;
+			if (repeatsTimedHold) return;
+			let pointerType = 'pointerType' in event ? event.pointerType : '';
+			if (pointerType === 'mouse') {
+				this.applyCellInput(x, y, true);
+				return;
+			}
+			this.cancelCellGesture();
+			this.lastCellHoldX = x;
+			this.lastCellHoldY = y;
+			this.lastCellHoldTime = performance.now();
 			this.applyCellInput(x, y, true);
 		},
 

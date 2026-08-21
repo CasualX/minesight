@@ -843,6 +843,7 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	font: 800 clamp(12px, calc(44vw / var(--columns)), 23px)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 	cursor: pointer;
 	touch-action: manipulation;
+	-webkit-touch-callout: none;
 }
 
 .cell:hover:not(:disabled):not(.revealed) {

@@ -201,7 +201,12 @@
 								@focus="focusCell(cell.index)"
 								@keydown="keydownCell($event, cell.x, cell.y)"
 								@click="clickCell($event, cell.x, cell.y)"
-								@contextmenu.prevent="contextMenuCell(cell.x, cell.y)"
+								@pointerdown="beginCellGesture($event, cell.x, cell.y)"
+								@pointermove="moveCellGesture($event)"
+								@pointerup="endCellGesture($event, cell.x, cell.y)"
+								@pointercancel="cancelCellGesture($event)"
+								@lostpointercapture="cancelCellGesture($event)"
+								@contextmenu.prevent="contextMenuCell($event, cell.x, cell.y)"
 								x-text="cell.text"
 							></button>
 						</template>
