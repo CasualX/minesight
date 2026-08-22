@@ -1311,7 +1311,7 @@ pub fn generate_mit_puzzle<const REFINEMENTS: usize>(seed: u64, attempts: u32) -
 		let mut rng = master_rng.split();
 
 		let mines = loop {
-			let mines = rng.random::<u64>();
+			let mines = rng.random::<u64>() & rng.random::<u64>();
 			if empty_squares(mines) == 0 {
 				break mines;
 			}

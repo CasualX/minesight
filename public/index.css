@@ -12,6 +12,8 @@
 	--focus: #2457a6;
 	--covered: #dededb;
 	--covered-hover: #d4d4d0;
+	--covered-raised-light: rgb(255 255 255 / 65%);
+	--covered-raised-shadow: rgb(0 0 0 / 22%);
 	--inactive: #b8b8b4;
 	--loading-overlay: rgb(250 250 250 / 90%);
 	--path-pending: #ddd;
@@ -72,6 +74,8 @@
 		--focus: #8bb7ff;
 		--covered: #343733;
 		--covered-hover: #3e423d;
+		--covered-raised-light: rgb(255 255 255 / 16%);
+		--covered-raised-shadow: rgb(0 0 0 / 45%);
 		--inactive: #1d1f1d;
 		--loading-overlay: rgb(23 24 23 / 92%);
 		--path-pending: #3f413e;
@@ -695,9 +699,6 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
 	width: 100%;
 	margin: 0;
-	border-top: 1px solid var(--grid-line);
-	border-left: 1px solid var(--grid-line);
-	background: var(--grid-line);
 	touch-action: manipulation;
 	user-select: none;
 	-webkit-user-select: none;
@@ -829,14 +830,13 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 }
 
 .cell {
+	position: relative;
 	display: grid;
 	place-items: center;
 	min-width: 0;
 	aspect-ratio: 1;
 	padding: 0;
 	border: 0;
-	border-right: 1px solid var(--grid-line);
-	border-bottom: 1px solid var(--grid-line);
 	border-radius: 0;
 	background: var(--covered);
 	color: var(--ink);
@@ -844,6 +844,15 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	cursor: pointer;
 	touch-action: manipulation;
 	-webkit-touch-callout: none;
+}
+.cell:not(.revealed):not(.marked-safe)::after {
+	position: absolute;
+	inset: 0;
+	box-shadow:
+		inset 2px 2px 0 var(--covered-raised-light),
+		inset -2px -2px 0 var(--covered-raised-shadow);
+	content: '';
+	pointer-events: none;
 }
 
 .cell:hover:not(:disabled):not(.revealed) {
@@ -865,6 +874,7 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	background: var(--inactive);
 }
 .cell.revealed {
+	border: 1px solid var(--grid-line);
 	background: var(--revealed);
 	cursor: default;
 }
@@ -872,9 +882,10 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	color: var(--flag-ink);
 }
 .cell.marked-safe {
+	border: 1px solid var(--marked-safe-line);
 	background: var(--marked-safe);
 	color: var(--marked-safe-ink);
-	box-shadow: inset 0 0 0 1px var(--marked-safe-line);
+	box-shadow: none;
 }
 .cell.marked-mine {
 	background: var(--marked-mine);
@@ -1223,11 +1234,12 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	stroke-width: 1.7;
 }
 .scratch-eraser svg {
-	transition: width 120ms ease, height 120ms ease;
-}
-.scratch-eraser.active svg {
 	width: 20px;
 	height: 20px;
+}
+.scratch-tools .scratch-clear svg {
+	fill: currentColor;
+	stroke: none;
 }
 .scratch-tools button.scratch-color {
 	position: relative;

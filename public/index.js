@@ -998,7 +998,12 @@ function createMinesight() {
 		},
 
 		toggleScratchPad() {
-			this.scratchActive = !this.scratchActive;
+			let opening = !this.scratchActive;
+			this.scratchActive = opening;
+			if (opening && this.scratchTool === 'eraser') {
+				this.scratchTool = 'pencil';
+				this.scratchColor = this.scratchColors[0].key;
+			}
 			this.scratchStroke = undefined;
 			this.scratchEraserPoint = undefined;
 		},
