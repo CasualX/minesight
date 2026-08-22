@@ -4,12 +4,12 @@ const HELP: &str = "Commands:
   reveal <x> <y>  Reveal a square (aliases: x; compact: x12)
   flag <x> <y>    Flag a square (alias: f; compact: f12)
   wand <x> <y>    Safely play a square (alias: w; compact: w12)
-  solve exact     Apply exact deductions (alias: se)
+  solve sat       Apply SAT deductions (alias: sa)
   solve subset    Apply subset deductions (alias: ss)
   solve total     Apply total mine-count deductions (alias: st)
   solve local     Apply local deductions (alias: sl)
   solve pair      Apply neighbouring two-clue deductions (alias: sp)
-  check exact     Check for exact deductions without applying them (alias: ce)
+  check sat       Check for SAT deductions without applying them (alias: ca)
   check subset    Check for subset deductions without applying them (alias: cs)
   check total     Check for total mine-count deductions without applying them (alias: ct)
   check local     Check for local deductions without applying them (alias: cl)
@@ -27,12 +27,12 @@ enum Action {
 	Reveal(i8, i8),
 	Flag(i8, i8),
 	Wand(i8, i8),
-	SolveExact,
+	SolveSat,
 	SolveSubset,
 	SolveTotal,
 	SolveLocal,
 	SolveTwoClue,
-	CheckExact,
+	CheckSat,
 	CheckSubset,
 	CheckTotal,
 	CheckLocal,
@@ -70,12 +70,12 @@ impl FromStr for Action {
 			[] => Err(ParseActionError("Please enter a command. Type `help` to see the available commands.")),
 			["h" | "help"] => Ok(Action::Help),
 			["q" | "quit" | "exit"] => Ok(Action::Quit),
-			["se"] | ["solve", "exact"] => Ok(Action::SolveExact),
+			["sa"] | ["solve", "sat"] => Ok(Action::SolveSat),
 			["ss"] | ["solve", "subset"] => Ok(Action::SolveSubset),
 			["st"] | ["solve", "total"] => Ok(Action::SolveTotal),
 			["sl"] | ["solve", "local"] => Ok(Action::SolveLocal),
 			["sp"] | ["solve", "pair"] | ["solve", "two"] => Ok(Action::SolveTwoClue),
-			["ce"] | ["check", "exact"] => Ok(Action::CheckExact),
+			["ca"] | ["check", "sat"] => Ok(Action::CheckSat),
 			["cs"] | ["check", "subset"] => Ok(Action::CheckSubset),
 			["ct"] | ["check", "total"] => Ok(Action::CheckTotal),
 			["cl"] | ["check", "local"] => Ok(Action::CheckLocal),
@@ -199,7 +199,7 @@ fn generate_board() -> minetacs::GameState {
 			subset_state.apply(deductions);
 		}
 
-		if !subset_state.solve_exact().is_empty() {
+		if !subset_state.solve_sat().is_empty() {
 			return state;
 		}
 	}
@@ -253,12 +253,12 @@ fn main() {
 					println!("The wand requires an unrevealed, unflagged square.");
 				}
 			}
-			Action::SolveExact => apply_solver(&mut state, "exact", minetacs::GameState::solve_exact),
+			Action::SolveSat => apply_solver(&mut state, "SAT", minetacs::GameState::solve_sat),
 			Action::SolveSubset => apply_solver(&mut state, "subset", minetacs::GameState::solve_subset),
 			Action::SolveTotal => apply_solver(&mut state, "total", minetacs::GameState::solve_total),
 			Action::SolveLocal => apply_solver(&mut state, "local", minetacs::GameState::solve_local),
 			Action::SolveTwoClue => apply_solver(&mut state, "neighbouring two-clue", minetacs::GameState::solve_two_clue),
-			Action::CheckExact => check_solver(&state, "exact", minetacs::GameState::solve_exact),
+			Action::CheckSat => check_solver(&state, "SAT", minetacs::GameState::solve_sat),
 			Action::CheckSubset => check_solver(&state, "subset", minetacs::GameState::solve_subset),
 			Action::CheckTotal => check_solver(&state, "total", minetacs::GameState::solve_total),
 			Action::CheckLocal => check_solver(&state, "local", minetacs::GameState::solve_local),
@@ -297,12 +297,12 @@ fn parses_coordinate_actions() {
 
 #[test]
 fn parses_non_coordinate_actions() {
-	assert_eq!("se".parse(), Ok(Action::SolveExact));
+	assert_eq!("sa".parse(), Ok(Action::SolveSat));
 	assert_eq!("solve subset".parse(), Ok(Action::SolveSubset));
 	assert_eq!("solve total".parse(), Ok(Action::SolveTotal));
 	assert_eq!("solve local".parse(), Ok(Action::SolveLocal));
 	assert_eq!("solve pair".parse(), Ok(Action::SolveTwoClue));
-	assert_eq!("ce".parse(), Ok(Action::CheckExact));
+	assert_eq!("ca".parse(), Ok(Action::CheckSat));
 	assert_eq!("check subset".parse(), Ok(Action::CheckSubset));
 	assert_eq!("check total".parse(), Ok(Action::CheckTotal));
 	assert_eq!("check local".parse(), Ok(Action::CheckLocal));

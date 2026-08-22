@@ -9,6 +9,7 @@ enum Difficulty {
 	Medium,
 	Hard,
 	Expert,
+	Mit,
 }
 
 fn parse_difficulty(value: &str) -> Option<Difficulty> {
@@ -17,6 +18,7 @@ fn parse_difficulty(value: &str) -> Option<Difficulty> {
 		"medium" => Some(Difficulty::Medium),
 		"hard" => Some(Difficulty::Hard),
 		"expert" => Some(Difficulty::Expert),
+		"mit" => Some(Difficulty::Mit),
 		_ => None,
 	}
 }
@@ -32,7 +34,7 @@ fn parse_count(value: &str) -> Result<usize, String> {
 fn parse_args() -> (Difficulty, usize, u32) {
 	let matches = clap::Command::new("generate_puzzles")
 		.about("Generate an HTML gallery of Minesight puzzles")
-		.arg(clap::Arg::new("difficulty").required(true).value_parser(["easy", "medium", "hard", "expert"]))
+		.arg(clap::Arg::new("difficulty").required(true).value_parser(["easy", "medium", "hard", "expert", "mit"]))
 		.arg(clap::Arg::new("count").short('n').long("count").value_name("COUNT").value_parser(parse_count))
 		.arg(clap::Arg::new("attempts").long("attempts").value_name("ATTEMPTS").default_value("1000").value_parser(clap::value_parser!(u32)))
 		.arg(clap::Arg::new("positional_count").index(2).value_name("COUNT").value_parser(parse_count).conflicts_with("count"))
@@ -51,6 +53,7 @@ impl Difficulty {
 			Difficulty::Medium => minetacs::generate_medium_puzzle(seed, attempts),
 			Difficulty::Hard => minetacs::generate_hard_puzzle(seed, attempts),
 			Difficulty::Expert => minetacs::generate_expert_puzzle(seed, attempts),
+			Difficulty::Mit => minetacs::generate_mit_puzzle::<100>(seed, attempts),
 		}
 	}
 }
@@ -61,6 +64,7 @@ fn title(difficulty: Difficulty) -> &'static str {
 		Difficulty::Medium => "Medium puzzles",
 		Difficulty::Hard => "Hard puzzles",
 		Difficulty::Expert => "Expert puzzles",
+		Difficulty::Mit => "MIT-style puzzles",
 	}
 }
 
@@ -70,6 +74,7 @@ fn intro(difficulty: Difficulty) -> &'static str {
 		Difficulty::Medium => "Find squares that must be safe or contain a mine by comparing clues across a wider part of the board. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Hard => "Find widely separated squares using only local deductions from nearby clues. These denser boards require more scanning despite using basic rules.",
 		Difficulty::Expert => "Find squares that must be safe or contain a mine in a broader, more tangled position where several clues and possibilities must be tracked together. Highlighted squares show the answers, while faded squares are outside the puzzle.",
+		Difficulty::Mit => "Determine the entire mine layout from a minimal set of clues. Every covered square has one logically forced answer.",
 	}
 }
 

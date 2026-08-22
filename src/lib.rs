@@ -3,6 +3,8 @@ use std::{fmt, ops};
 #[cfg(target_arch = "wasm32")]
 mod wasm32;
 
+mod sat;
+
 /// Width and height of every generated puzzle.
 pub const BOARD_SIZE: usize = 8;
 /// Number of cells in every generated puzzle.
@@ -326,68 +328,12 @@ impl ops::BitOrAssign<Deductions> for Deductions {
 	}
 }
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-struct Constraint {
-	cells: u64,
-	mines: u32,
-}
-
-impl Constraint {
-	#[inline]
-	fn is_valid(self) -> bool {
-		self.mines <= self.cells.count_ones()
-	}
-
-	/// Applies the information gained by subtracting this constraint from a constraint that contains it.
-	fn subtract_from(self, superset: Constraint, result: &mut Deductions) -> bool {
-		if self.cells & !superset.cells != 0 {
-			return true;
+impl From<sat::Forced> for Deductions {
+	fn from(forced: sat::Forced) -> Self {
+		Deductions {
+			always_mine: forced.one,
+			always_safe: forced.zero,
 		}
-
-		let Some(mines) = superset.mines.checked_sub(self.mines) else {
-			return false;
-		};
-		let cells = superset.cells & !self.cells;
-		let count = cells.count_ones();
-
-		if mines > count {
-			return false;
-		}
-		if mines == 0 {
-			result.always_safe |= cells;
-		}
-		else if mines == count {
-			result.always_mine |= cells;
-		}
-
-		true
-	}
-
-	/// Returns exact constraints for the cells exclusive to two overlapping
-	/// constraints, when the number of mines in their shared cells is fixed.
-	fn exact_exclusives(self, other: Constraint) -> Result<Option<[Constraint; 2]>, ()> {
-		let shared = self.cells & other.cells;
-		if shared == 0 {
-			return Ok(None);
-		}
-
-		let self_only = self.cells & !other.cells;
-		let other_only = other.cells & !self.cells;
-		let min_shared = self.mines.saturating_sub(self_only.count_ones())
-			.max(other.mines.saturating_sub(other_only.count_ones()));
-		let max_shared = shared.count_ones().min(self.mines).min(other.mines);
-
-		if min_shared > max_shared {
-			return Err(());
-		}
-		if min_shared != max_shared {
-			return Ok(None);
-		}
-
-		Ok(Some([
-			Constraint { cells: self_only, mines: self.mines - min_shared },
-			Constraint { cells: other_only, mines: other.mines - min_shared },
-		]))
 	}
 }
 
@@ -396,89 +342,6 @@ impl Constraint {
 const DERIVED_CONSTRAINT_DEPTH: usize = 2;
 /// Keeps adversarial frontiers from making the quadratic pair scan unbounded.
 const MAX_DERIVED_CONSTRAINTS: usize = 256;
-
-fn add_constraint(constraints: &mut Vec<Constraint>, constraint: Constraint, max_len: usize) -> Option<()> {
-	if !constraint.is_valid() {
-		return None;
-	}
-	if constraint.cells == 0 {
-		return (constraint.mines == 0).then_some(());
-	}
-
-	if let Some(existing) = constraints.iter().find(|existing| existing.cells == constraint.cells) {
-		if existing.mines != constraint.mines {
-			return None;
-		}
-		return Some(());
-	}
-
-	if constraints.len() < max_len {
-		constraints.push(constraint);
-	}
-	Some(())
-}
-
-/// Runs simple deductions over a bounded number of derived-constraint rounds.
-fn solve_constraint_set(original: impl IntoIterator<Item = Constraint>, depth: usize) -> Option<Deductions> {
-	let mut constraints = Vec::with_capacity(64 + MAX_DERIVED_CONSTRAINTS);
-	for constraint in original {
-		add_constraint(&mut constraints, constraint, usize::MAX)?;
-	}
-	let max_len = constraints.len() + MAX_DERIVED_CONSTRAINTS;
-	let mut result = Deductions::default();
-
-	// The final pass reasons over the last generation without deriving another.
-	for round in 0..=depth {
-		let len = constraints.len();
-
-		for a_index in 0..len {
-			let a = constraints[a_index];
-			// Subtracting the empty constraint is ordinary local reasoning.
-			if !Constraint::default().subtract_from(a, &mut result) {
-				return None;
-			}
-
-			for b_index in a_index + 1..len {
-				let b = constraints[b_index];
-				if a.cells & b.cells == 0 {
-					continue;
-				}
-
-				// Subset subtraction, including forced exclusive groups.
-				if !a.subtract_from(b, &mut result) || !b.subtract_from(a, &mut result) {
-					return None;
-				}
-
-				// The two-clue extreme-difference rule works even when neither
-				// constraint is a subset of the other.
-				let a_only = a.cells & !b.cells;
-				let b_only = b.cells & !a.cells;
-				if b.mines == a.mines + b_only.count_ones() {
-					result.always_mine |= b_only;
-					result.always_safe |= a_only;
-				}
-				else if a.mines == b.mines + a_only.count_ones() {
-					result.always_mine |= a_only;
-					result.always_safe |= b_only;
-				}
-
-				let derived = a.exact_exclusives(b).ok()?;
-				if round < depth
-					&& let Some(derived) = derived
-				{
-						for constraint in derived {
-							add_constraint(&mut constraints, constraint, max_len)?;
-						}
-				}
-			}
-		}
-	}
-
-	if result.always_mine & result.always_safe != 0 {
-		return None;
-	}
-	Some(result)
-}
 
 //----------------------------------------------------------------
 
@@ -771,24 +634,23 @@ impl GameState {
 		self.revealed |= result.always_safe;
 		self.flagged |= result.always_mine;
 	}
-	fn remaining_constraints(&self, clues: u64) -> Option<[Constraint; 64]> {
-		let mut constraints = [Constraint::default(); 64];
+	/// Translates visible Minesweeper clues into Boolean cardinality constraints.
+	/// The returned map preserves clue-cell to constraint-index correspondence for
+	/// solvers whose choice of constraint pairs depends on board geometry.
+	fn constraint_state(&self, clues: u64) -> Option<(sat::State<64>, [usize; 64])> {
+		let mut state = sat::State::EMPTY;
+		let mut indices = [usize::MAX; 64];
 
 		for i in enumerate(clues & self.revealed) {
 			let adjacent = NEIGHBOURS[i];
-			let cells = adjacent & !self.revealed & !self.flagged;
+			let vars = adjacent & !self.revealed & !self.flagged;
 			let clue = (self.mines & adjacent).count_ones();
 			let flagged = (self.flagged & adjacent).count_ones();
-			let mines = clue.checked_sub(flagged)?;
-
-			if mines > cells.count_ones() {
-				return None;
-			}
-
-			constraints[i] = Constraint { cells, mines };
+			let sum = u8::try_from(clue.checked_sub(flagged)?).ok()?;
+			indices[i] = state.push(vars, sum)?;
 		}
 
-		Some(constraints)
+		Some((state, indices))
 	}
 	/// Computes deductions implied by the total number of mines on the board.
 	///
@@ -817,12 +679,12 @@ impl GameState {
 			Deductions::default()
 		}
 	}
-	/// Computes all exact deductions available from the current state.
+	/// Computes all exact deductions implied by the revealed clues.
 	///
-	/// This composes revealed-clue constraints with the total mine count. Callers
-	/// must apply the result and call this method again to continue solving.
+	/// The board's total mine count is intentionally not used. Callers must apply
+	/// the result and call this method again to continue solving.
 	pub fn solve(&self) -> Deductions {
-		self.solve_exact_with_total()
+		self.solve_sat()
 	}
 	/// Computes mines and safe cells implied directly by revealed clues.
 	pub fn solve_local(&self) -> Deductions {
@@ -854,49 +716,10 @@ impl GameState {
 	/// For example, if one clue requires one mine in `{a, b}` and another requires one mine in `{a, b, c}`, then `c` is safe.
 	/// Direct local deductions are included, making this solver strictly more capable than [`GameState::solve_local`].
 	pub fn solve_subset(&self) -> Deductions {
-		let mut constraints = [Constraint::default(); 64];
-		let mut len = 0;
-
-		for i in enumerate(self.revealed) {
-			let neighbours = NEIGHBOURS[i];
-			let cells = neighbours & !self.revealed & !self.flagged;
-			let clue = (self.mines & neighbours).count_ones();
-			let flagged = (self.flagged & neighbours).count_ones();
-			let Some(mines) = clue.checked_sub(flagged) else {
-				return Deductions::default();
-			};
-
-			if mines > cells.count_ones() {
-				return Deductions::default();
-			}
-
-			constraints[len] = Constraint { cells, mines };
-			len += 1;
-		}
-
-		let mut result = Deductions::default();
-		for a in 0..len {
-			// Subtracting the empty constraint gives the ordinary local rules.
-			if !Constraint::default().subtract_from(constraints[a], &mut result) {
-				return Deductions::default();
-			}
-
-			for b in a + 1..len {
-				if !constraints[a].subtract_from(constraints[b], &mut result) ||
-					!constraints[b].subtract_from(constraints[a], &mut result)
-				{
-					return Deductions::default();
-				}
-			}
-		}
-
-		// Conflicting deductions mean the visible state has no solution under
-		// the current flags. Match the exact solver by returning no moves.
-		if result.always_mine & result.always_safe != 0 {
+		let Some((state, _)) = self.constraint_state(self.revealed) else {
 			return Deductions::default();
-		}
-
-		result
+		};
+		state.solve_subset().map(Into::into).unwrap_or_default()
 	}
 	/// Computes deductions from every geometrically adjacent pair of frontier
 	/// clues using their remaining mine counts.
@@ -917,39 +740,20 @@ impl GameState {
 		}
 
 		let clues = neighbours(active) & self.revealed;
-		let Some(constraints) = self.remaining_constraints(clues) else {
+		let Some((state, indices)) = self.constraint_state(clues) else {
 			return Deductions::default();
 		};
-		let mut result = Deductions::default();
+		let mut pairs = Vec::new();
 
 		for a_index in enumerate(clues) {
-			let a = constraints[a_index];
-
 			for b_index in enumerate(NEIGHBOURS[a_index] & clues) {
 				if b_index <= a_index {
 					continue;
 				}
-
-				let b = constraints[b_index];
-				let a_only = a.cells & !b.cells;
-				let b_only = b.cells & !a.cells;
-
-				if b.mines == a.mines + b_only.count_ones() {
-					result.always_mine |= b_only;
-					result.always_safe |= a_only;
-				}
-				else if a.mines == b.mines + a_only.count_ones() {
-					result.always_mine |= a_only;
-					result.always_safe |= b_only;
-				}
+				pairs.push((indices[a_index], indices[b_index]));
 			}
 		}
-
-		if result.always_mine & result.always_safe != 0 {
-			return Deductions::default();
-		}
-
-		result
+		state.solve_pairs(pairs).map(Into::into).unwrap_or_default()
 	}
 	/// Computes deductions from a small, temporary set of derived frontier constraints.
 	///
@@ -964,84 +768,20 @@ impl GameState {
 		}
 
 		let clues = neighbours(active) & self.revealed;
-		let Some(constraints) = self.remaining_constraints(clues) else {
+		let Some((state, _)) = self.constraint_state(clues) else {
 			return Deductions::default();
 		};
-
-		solve_constraint_set(
-			enumerate(clues).map(|index| constraints[index]),
-			DERIVED_CONSTRAINT_DEPTH,
-		).unwrap_or_default()
+		state
+			.solve_derived::<MAX_DERIVED_CONSTRAINTS>(DERIVED_CONSTRAINT_DEPTH)
+			.map(Into::into)
+			.unwrap_or_default()
 	}
-	/// Computes deductions by exhaustively enumerating the frontier against the
-	/// revealed clues, without using the board's total mine count.
-	pub fn solve_exact(&self) -> Deductions {
-		// Flags are fixed mines, not variables to enumerate.
-		let active = self.active();
-		let n = active.count_ones();
-
-		let mut always_mine = active;
-		let mut always_safe = active;
-		let mut valid = 0;
-
-		for i in 0..(1u64 << n) {
-			let guess = deposit(i, active);
-
-			if self.check_frontier_assignment(guess, active, self.revealed) {
-				valid += 1;
-				always_mine &= guess;
-				always_safe &= active & !guess;
-			}
-		}
-
-		if valid == 0 {
-			// contradictory state; no valid solution exists
+	/// Computes exact deductions from the revealed clues using the SAT solver.
+	pub fn solve_sat(&self) -> Deductions {
+		let Some((state, _)) = self.constraint_state(self.revealed) else {
 			return Deductions::default();
-		}
-
-		Deductions {
-			always_mine,
-			always_safe,
-		}
-	}
-	/// Computes exact deductions from revealed clues and the board's total mine count.
-	pub fn solve_exact_with_total(&self) -> Deductions {
-		let frontier = self.active();
-		let outside = !(self.revealed | self.flagged | frontier);
-		let outside_count = outside.count_ones();
-		let n = frontier.count_ones();
-
-		let mut always_mine = frontier | outside;
-		let mut always_safe = frontier | outside;
-		let mut valid = 0;
-
-		for i in 0..(1u64 << n) {
-			let guess = deposit(i, frontier);
-
-			if self.check_frontier_assignment_with_total(guess, frontier, self.revealed) {
-				valid += 1;
-
-				let placed = (guess | self.flagged).count_ones();
-				let remaining = self.count_mines() - placed;
-				let outside_mines = if remaining == outside_count { outside } else { 0 };
-				let outside_safe = if remaining == 0 { outside } else { 0 };
-
-				// Outside cells are interchangeable because they touch no enabled clue.
-				// Unless all or none of them must be mines,
-				// no individual outside cell is certain for this frontier assignment.
-				always_mine &= guess | outside_mines;
-				always_safe &= (frontier & !guess) | outside_safe;
-			}
-		}
-
-		if valid == 0 {
-			return Deductions::default();
-		}
-
-		Deductions {
-			always_mine,
-			always_safe,
-		}
+		};
+		state.solve().map(Into::into).unwrap_or_default()
 	}
 }
 
@@ -1108,16 +848,6 @@ fn make_puzzle(seed: u64, attempts: u32, state: GameState, deductions: Deduction
 	};
 	let ambiguous = ambiguous_count(&state, forced);
 	Puzzle { seed, attempts, state, forced, ambiguous }
-}
-
-/// Keeps exhaustive puzzle analysis within a predictable amount of work.
-#[inline]
-fn try_solve_exact<const N: u32>(state: &GameState) -> Option<Deductions> {
-	let frontier = state.frontier() & !state.flagged;
-	if frontier.count_ones() > N {
-		return None;
-	}
-	Some(state.solve_exact())
 }
 
 /// Constructs a mine layout for one puzzle-generation attempt.
@@ -1217,7 +947,7 @@ impl Explorer for InitialRevealExplorer {
 		candidate_score: &mut dyn FnMut(&GameState) -> Option<(u32, u32)>,
 	) -> Option<GameState> {
 		let mut state = GameState { mines, revealed: initial_reveal(mines), flagged: 0 };
-		apply_cleanup(&mut state, cleanup)?;
+		apply_cleanup(&mut state, cleanup);
 
 		let initial = state;
 		let original_frontier = state.frontier();
@@ -1235,7 +965,7 @@ impl Explorer for InitialRevealExplorer {
 		let start = deposit(1u64 << rng.uniform(0..safe_starts.count_ones()), safe_starts);
 		let start_index = start.trailing_zeros();
 		state.reveal((start_index & 7) as i8, (start_index >> 3) as i8);
-		apply_cleanup(&mut state, cleanup)?;
+		apply_cleanup(&mut state, cleanup);
 		let mut walk_revealed = state.revealed & !initial.revealed;
 
 		for step in 0..self.max_steps {
@@ -1267,7 +997,7 @@ impl Explorer for InitialRevealExplorer {
 			let square = deposit(1u64 << rng.uniform(0..safe_squares.count_ones()), safe_squares);
 			let square_index = square.trailing_zeros();
 			state.reveal((square_index & 7) as i8, (square_index >> 3) as i8);
-			apply_cleanup(&mut state, cleanup)?;
+			apply_cleanup(&mut state, cleanup);
 			walk_revealed |= state.revealed & !initial.revealed;
 		}
 
@@ -1318,7 +1048,7 @@ impl Explorer for RandomWalkExplorer {
 			let square = deposit(1u64 << rng.uniform(0..safe_squares.count_ones()), safe_squares);
 			let square_index = square.trailing_zeros();
 			state.reveal((square_index & 7) as i8, (square_index >> 3) as i8);
-			apply_cleanup(&mut state, cleanup)?;
+			apply_cleanup(&mut state, cleanup);
 
 			let Some(score) = candidate_score(&state) else {
 				continue;
@@ -1338,16 +1068,6 @@ pub type Solver = fn(&GameState) -> Deductions;
 
 fn same_solver(left: Solver, right: Solver) -> bool {
 	std::ptr::fn_addr_eq(left, right)
-}
-
-/// Applies the fixed frontier limit when the configured function is the exact solver.
-fn run_solver(solver: Solver, state: &GameState) -> Option<Deductions> {
-	if same_solver(solver, GameState::solve_exact) {
-		try_solve_exact::<18>(state)
-	}
-	else {
-		Some(solver(state))
-	}
 }
 
 /// Cleanup, advertised-answer, and hidden-deduction solver roles.
@@ -1425,7 +1145,7 @@ impl<B: BoardGenerator, E: Explorer> PuzzleGenerator<B, E> {
 }
 
 fn analyze_candidate(seed: u64, attempts: u32, state: GameState, solvers: SolverConfig, criteria: PuzzleCriteria) -> Option<Puzzle> {
-	let deductions = run_solver(solvers.test, &state)?;
+	let deductions = (solvers.test)(&state);
 	let puzzle = make_puzzle(seed, attempts, state, deductions);
 
 	// Count checks are cheap and can avoid a stronger reject solver.
@@ -1436,7 +1156,7 @@ fn analyze_candidate(seed: u64, attempts: u32, state: GameState, solvers: Solver
 	if !same_solver(solvers.test, solvers.reject) {
 		let mut remainder = state;
 		remainder.apply(puzzle.forced);
-		if !run_solver(solvers.reject, &remainder)?.is_empty() {
+		if !(solvers.reject)(&remainder).is_empty() {
 			return None;
 		}
 	}
@@ -1444,18 +1164,18 @@ fn analyze_candidate(seed: u64, attempts: u32, state: GameState, solvers: Solver
 	Some(puzzle)
 }
 
-fn apply_cleanup(state: &mut GameState, solver: Solver) -> Option<()> {
+fn apply_cleanup(state: &mut GameState, solver: Solver) {
 	loop {
-		let deductions = run_solver(solver, state)?;
+		let deductions = solver(state);
 		if deductions.is_empty() {
-			return Some(());
+			return;
 		}
 		state.apply(deductions);
 	}
 }
 
 /// Easy puzzles start with most of the board open, use local cleanup, and
-/// advertise two-clue deductions only when exhaustive solving finds nothing
+/// advertise two-clue deductions only when SAT solving finds nothing
 /// left after those answers are applied.
 pub fn generate_easy_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 	PuzzleGenerator {
@@ -1464,7 +1184,7 @@ pub fn generate_easy_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 		solvers: SolverConfig {
 			cleanup: GameState::solve_local,
 			test: |state| state.solve_subset() | state.solve_two_clue(),
-			reject: GameState::solve_exact,
+			reject: GameState::solve_sat,
 		},
 		criteria: PuzzleCriteria {
 			min_forced: 4,
@@ -1484,7 +1204,7 @@ pub fn generate_medium_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 		solvers: SolverConfig {
 			cleanup: |state| state.solve_local(),
 			test: GameState::solve_derived,
-			reject: GameState::solve_exact,
+			reject: GameState::solve_sat,
 		},
 		criteria: PuzzleCriteria {
 			min_forced: 4,
@@ -1504,7 +1224,7 @@ pub fn generate_hard_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 		solvers: SolverConfig {
 			cleanup: GameState::solve_local,
 			test: |state| state.solve_subset() | state.solve_two_clue(),
-			reject: GameState::solve_exact,
+			reject: GameState::solve_sat,
 		},
 		criteria: PuzzleCriteria {
 			min_forced: 4,
@@ -1523,8 +1243,8 @@ pub fn generate_expert_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 		explorer: RandomWalkExplorer { max_steps: 16 },
 		solvers: SolverConfig {
 			cleanup: |state| state.solve_subset() | state.solve_two_clue(),
-			test: GameState::solve_exact,
-			reject: GameState::solve_exact,
+			test: GameState::solve_sat,
+			reject: GameState::solve_sat,
 		},
 		criteria: PuzzleCriteria {
 			min_forced: 4,
@@ -1534,6 +1254,102 @@ pub fn generate_expert_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 			allow_empty: false,
 		},
 	}.search(seed, attempts)
+}
+
+fn minimize_mit_clues<R: urandom::Rng>(mines: u64, rng: &mut urandom::Random<R>) -> Option<GameState> {
+	// Empty clues make immediate local deductions, so exclude layouts containing them.
+	if empty_squares(mines) != 0 {
+		return None;
+	}
+
+	let mut state = GameState {
+		mines,
+		revealed: !mines,
+		flagged: 0,
+	};
+
+	// Even with every safe clue visible, some mine layouts are not uniquely determined.
+	if state.solve_sat().always_mine != mines {
+		return None;
+	}
+
+	let mut indices: [u8; BOARD_CELLS] = std::array::from_fn(|i| i as u8);
+	let indices = &mut indices[..state.revealed.count_ones() as usize];
+
+	loop {
+		let mut removed_any = false;
+		rng.shuffle(indices);
+
+		for &i in &*indices {
+			let cell = deposit(1u64 << i, !mines);
+			if state.revealed & cell == 0 {
+				continue;
+			}
+
+			state.revealed &= !cell;
+			if state.solve_sat().always_mine == mines {
+				removed_any = true;
+			}
+			else {
+				state.revealed |= cell;
+			}
+		}
+
+		if !removed_any {
+			return Some(state);
+		}
+	}
+}
+
+/// Generates an MIT-style puzzle with a uniquely determined mine layout and
+/// minimizes the number of deductions available to the local solver.
+pub fn generate_mit_puzzle<const REFINEMENTS: usize>(seed: u64, attempts: u32) -> Option<Puzzle> {
+	let cleanup = |state: &GameState| state.solve_local() | state.solve_two_clue();
+
+	let mut master_rng = urandom::seeded(seed);
+	for attempt in 0..attempts {
+		let mut rng = master_rng.split();
+
+		let mines = loop {
+			let mines = rng.random::<u64>();
+			if empty_squares(mines) == 0 {
+				break mines;
+			}
+		};
+		let Some(mut current) = minimize_mit_clues(mines, &mut rng) else {
+			continue;
+		};
+
+		let mut best = current;
+		let mut best_local_count = cleanup(&best).count();
+
+		for _ in 0..REFINEMENTS {
+			let local = cleanup(&current);
+			let forced = local.always_mine | local.always_safe;
+			if forced == 0 {
+				break;
+			}
+
+			// Rescramble locally obvious cells and their neighbourhood, then repeat
+			// clue minimization for the resulting mine layout.
+			let rescramble = expand(forced);
+			let candidate_mines = (current.mines & !rescramble) | (rng.random::<u64>() & rescramble);
+			let Some(candidate) = minimize_mit_clues(candidate_mines, &mut rng) else {
+				continue;
+			};
+
+			current = candidate;
+			let local_count = cleanup(&current).count();
+			if local_count < best_local_count {
+				best = current;
+				best_local_count = local_count;
+			}
+		}
+
+		let deductions = best.solve_sat();
+		return Some(make_puzzle(seed, attempt + 1, best, deductions));
+	}
+	None
 }
 
 #[cfg(test)]

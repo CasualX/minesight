@@ -246,21 +246,21 @@ fn test_prune_preserves_existing_exact_deductions() {
 		revealed: cell(0, 0),
 		flagged: mine,
 	};
-	let exact = state.solve_exact();
+	let exact = state.solve_sat();
 
 	assert_eq!(exact.always_safe, cell(0, 1) | cell(1, 1));
 	state.prune(true);
 
-	assert_eq!(state.solve_exact(), exact);
+	assert_eq!(state.solve_sat(), exact);
 	assert_eq!(state.revealed, cell(0, 0));
 	assert_eq!(state.flagged, mine);
 
 	// Once every neighbour has been consumed, the clue itself is redundant.
 	state.revealed |= exact.always_safe;
-	let exact = state.solve_exact();
+	let exact = state.solve_sat();
 	state.prune(true);
 
-	assert_eq!(state.solve_exact(), exact);
+	assert_eq!(state.solve_sat(), exact);
 	assert_eq!(state.revealed, cell(0, 0) | cell(0, 1) | cell(1, 1));
 
 	// An isolated, fully consumed clue and its now-unused flags can be removed.
@@ -270,10 +270,10 @@ fn test_prune_preserves_existing_exact_deductions() {
 		revealed: cell(0, 0),
 		flagged: adjacent,
 	};
-	let exact = state.solve_exact();
+	let exact = state.solve_sat();
 	state.prune(true);
 
-	assert_eq!(state.solve_exact(), exact);
+	assert_eq!(state.solve_sat(), exact);
 	assert_eq!(state.revealed, 0);
 	assert_eq!(state.flagged, 0);
 
@@ -284,9 +284,9 @@ fn test_prune_preserves_existing_exact_deductions() {
 		revealed: rect(0, 0, 8, 4),
 		flagged: 0,
 	};
-	let exact = state.solve_exact();
+	let exact = state.solve_sat();
 	state.prune(true);
-	let pruned_exact = state.solve_exact();
+	let pruned_exact = state.solve_sat();
 
 	assert_eq!(exact.always_mine & !pruned_exact.always_mine, 0);
 	assert_eq!(exact.always_safe & !pruned_exact.always_safe, 0);
@@ -320,57 +320,6 @@ fn test_check_guess() {
 }
 
 #[test]
-fn test_derived_constraint_subtraction() {
-	let a = cell(0, 0);
-	let b = cell(1, 0);
-	let c = cell(2, 0);
-	let deductions = solve_constraint_set([
-		Constraint { cells: a | b | c, mines: 2 },
-		Constraint { cells: a | b, mines: 1 },
-	], DERIVED_CONSTRAINT_DEPTH).expect("constraints are consistent");
-
-	assert_eq!(deductions.always_mine, c);
-	assert_eq!(deductions.always_safe, 0);
-}
-
-#[test]
-fn test_derived_constraint_depth_is_bounded() {
-	let a = cell(0, 0);
-	let b = cell(1, 0);
-	let c = cell(2, 0);
-	let d = cell(3, 0);
-	let e = cell(4, 0);
-	let f = cell(5, 0);
-	let g = cell(6, 0);
-	let constraints = [
-		Constraint { cells: a | b | c | d, mines: 2 },
-		Constraint { cells: a | b, mines: 1 },
-		Constraint { cells: c | d | e | f, mines: 2 },
-		Constraint { cells: e | f | g, mines: 1 },
-	];
-
-	// First derive {c,d}=1, then derive {e,f}=1. Only the second
-	// derivation round lets the final subset rule prove that g is safe.
-	assert_eq!(solve_constraint_set(constraints, 1), Some(Deductions::default()));
-	assert_eq!(
-		solve_constraint_set(constraints, 2),
-		Some(Deductions { always_mine: 0, always_safe: g }),
-	);
-}
-
-#[test]
-fn test_derived_constraints_reject_conflicts() {
-	let cells = cell(0, 0) | cell(1, 0);
-	assert_eq!(
-		solve_constraint_set([
-			Constraint { cells, mines: 0 },
-			Constraint { cells, mines: 1 },
-		], DERIVED_CONSTRAINT_DEPTH),
-		None,
-	);
-}
-
-#[test]
 fn test_flood_fill() {
 	let mut state = GameState {
 		mines: 0x0808_0808_0808_0808,
@@ -388,9 +337,9 @@ fn assert_puzzle_analysis(puzzle: &Puzzle) {
 	let forced = puzzle.forced.always_mine | puzzle.forced.always_safe;
 
 	let mut pruned = puzzle.state;
-	let exact = pruned.solve_exact();
+	let exact = pruned.solve_sat();
 	pruned.prune(true);
-	let pruned_exact = pruned.solve_exact();
+	let pruned_exact = pruned.solve_sat();
 	assert_eq!(exact.always_mine & !pruned_exact.always_mine, 0);
 	assert_eq!(exact.always_safe & !pruned_exact.always_safe, 0);
 	assert_eq!(puzzle.state.flagged & !neighbours(puzzle.state.revealed & !puzzle.state.mines), 0);
@@ -406,12 +355,16 @@ fn assert_puzzle_analysis(puzzle: &Puzzle) {
 fn exhausts_exact_deductions(puzzle: &Puzzle) -> bool {
 	let mut state = puzzle.state;
 	state.apply(puzzle.forced);
-	try_solve_exact::<18>(&state).is_some_and(|deductions| deductions.is_empty())
+	state.solve_sat().is_empty()
 }
 
 #[test]
 fn test_generators() {
 	assert!(generate_expert_puzzle(56, 0).is_none());
+	assert!(generate_mit_puzzle::<100>(56, 0).is_none());
+	let mit = generate_mit_puzzle::<100>(3, 100).expect("MIT search should succeed");
+	assert_eq!(empty_squares(mit.state.mines), 0);
+	assert_eq!(mit.state.solve_sat().always_mine, mit.state.mines);
 
 	let easy = generate_easy_puzzle(32, 1000).expect("easy search should succeed");
 	assert_puzzle_analysis(&easy);

@@ -173,11 +173,18 @@ const EXPERT_DIFFICULTY = {
 	generator: 'randomExpertPuzzle',
 	description: 'The clues overlap across a larger, messier area. Keep track of several possible mine layouts at once.',
 };
+const MIT_DIFFICULTY = {
+	key: 'mit',
+	label: 'MIT-style',
+	generator: 'randomMitPuzzle',
+	description: 'Determine the entire mine layout from a minimal set of clues. Every covered square has one logically forced answer.',
+};
 const STUDY_DIFFICULTIES = [
 	EASY_DIFFICULTY,
 	MEDIUM_DIFFICULTY,
 	HARD_DIFFICULTY,
 	EXPERT_DIFFICULTY,
+	MIT_DIFFICULTY,
 ];
 const CHALLENGE_MODES = [
 	{
