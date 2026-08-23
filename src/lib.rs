@@ -634,6 +634,41 @@ impl GameState {
 		self.revealed |= result.always_safe;
 		self.flagged |= result.always_mine;
 	}
+	/// Translates the revealed region and its frontier towards the board's center if possible.
+	///
+	/// Inactive region is replaced by all mines.
+	#[must_use]
+	fn center(mut self) -> GameState {
+		if self.revealed == 0 {
+			return self;
+		}
+
+		let mut columns = self.revealed;
+		columns |= columns >> 32;
+		columns |= columns >> 16;
+		columns |= columns >> 8;
+		let columns = columns as u8;
+		let min_x = columns.trailing_zeros() as i8;
+		let max_x = (u8::BITS - 1 - columns.leading_zeros()) as i8;
+		let min_y = (self.revealed.trailing_zeros() / BOARD_SIZE as u32) as i8;
+		let max_y = ((u64::BITS - 1 - self.revealed.leading_zeros()) / BOARD_SIZE as u32) as i8;
+
+		let dx = if min_x == 0 || max_x == BOARD_SIZE as i8 - 1 { 0 }
+		else { (BOARD_SIZE as i8 - 1 - min_x - max_x) / 2 };
+		let dy = if min_y == 0 || max_y == BOARD_SIZE as i8 - 1 { 0 }
+		else { (BOARD_SIZE as i8 - 1 - min_y - max_y) / 2 };
+
+		let shifth = |cells: u64| if dx < 0 { cells >> -dx } else { cells << dx };
+		let shiftv = |cells: u64| if dy < 0 { cells >> (-dy * BOARD_SIZE as i8) } else { cells << (dy * BOARD_SIZE as i8) };
+		let shift = |cells: u64| shiftv(shifth(cells));
+
+		let local = expand(self.revealed);
+		let target = shift(local);
+		self.mines = shift(self.mines & local) | !target;
+		self.revealed = shift(self.revealed);
+		self.flagged = shift(self.flagged);
+		return self;
+	}
 	/// Translates visible Minesweeper clues into Boolean cardinality constraints.
 	/// The returned map preserves clue-cell to constraint-index correspondence for
 	/// solvers whose choice of constraint pairs depends on board geometry.
@@ -1242,7 +1277,7 @@ impl<B: BoardGenerator, E: Explorer> PuzzleGenerator<B, E> {
 			analyze_candidate(seed, attempts, *state, self.solvers, self.criteria)
 				.map(|puzzle| (puzzle.forced.count(), puzzle.ambiguous))
 		};
-		let state = self.explorer.explore(mines, rng, self.solvers.cleanup, &mut candidate_score)?;
+		let state = self.explorer.explore(mines, rng, self.solvers.cleanup, &mut candidate_score)?.center();
 		analyze_candidate(seed, attempts, state, self.solvers, self.criteria)
 	}
 }
