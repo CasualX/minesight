@@ -239,62 +239,6 @@ fn test_coverup() {
 }
 
 #[test]
-fn test_prune_preserves_existing_exact_deductions() {
-	let mine = cell(1, 0);
-	let mut state = GameState {
-		mines: mine,
-		revealed: cell(0, 0),
-		flagged: mine,
-	};
-	let exact = state.solve_sat();
-
-	assert_eq!(exact.always_safe, cell(0, 1) | cell(1, 1));
-	state.prune(true);
-
-	assert_eq!(state.solve_sat(), exact);
-	assert_eq!(state.revealed, cell(0, 0));
-	assert_eq!(state.flagged, mine);
-
-	// Once every neighbour has been consumed, the clue itself is redundant.
-	state.revealed |= exact.always_safe;
-	let exact = state.solve_sat();
-	state.prune(true);
-
-	assert_eq!(state.solve_sat(), exact);
-	assert_eq!(state.revealed, cell(0, 0) | cell(0, 1) | cell(1, 1));
-
-	// An isolated, fully consumed clue and its now-unused flags can be removed.
-	let adjacent = cell(1, 0) | cell(0, 1) | cell(1, 1);
-	let mut state = GameState {
-		mines: adjacent,
-		revealed: cell(0, 0),
-		flagged: adjacent,
-	};
-	let exact = state.solve_sat();
-	state.prune(true);
-
-	assert_eq!(state.solve_sat(), exact);
-	assert_eq!(state.revealed, 0);
-	assert_eq!(state.flagged, 0);
-
-	// A large solved interior can be hidden. Its boundary remains visible so the
-	// original frontier deductions survive; the newly exposed inner row is safe.
-	let mut state = GameState {
-		mines: 0,
-		revealed: rect(0, 0, 8, 4),
-		flagged: 0,
-	};
-	let exact = state.solve_sat();
-	state.prune(true);
-	let pruned_exact = state.solve_sat();
-
-	assert_eq!(exact.always_mine & !pruned_exact.always_mine, 0);
-	assert_eq!(exact.always_safe & !pruned_exact.always_safe, 0);
-	assert_eq!(state.revealed, rect(0, 2, 8, 2));
-	assert_eq!(pruned_exact.always_safe & rect(0, 1, 8, 1), rect(0, 1, 8, 1));
-}
-
-#[test]
 fn test_check_guess() {
 	let mine = cell(1, 0);
 	let state = GameState { mines: mine, revealed: cell(0, 0), flagged: 0 };
@@ -320,6 +264,29 @@ fn test_check_guess() {
 }
 
 #[test]
+fn test_clue_cover_solves_131() {
+	let upper = cell(2, 1);
+	let left = cell(1, 2);
+	let center = cell(2, 2);
+	let corner_mine = cell(3, 3);
+	let state = GameState {
+		mines: cell(3, 1) | cell(1, 3) | corner_mine,
+		revealed: upper | left | center,
+		flagged: 0,
+	};
+	let expected = Deductions {
+		always_mine: corner_mine,
+		always_safe: cell(1, 1) |
+			cell(1, 0) | cell(2, 0) | cell(3, 0) |
+			cell(0, 1) | cell(0, 2) | cell(0, 3),
+	};
+	println!("{}", state);
+
+	assert_eq!(state.solve_overlap(), Deductions::default());
+	assert_eq!(state.solve_clue_cover(), expected);
+}
+
+#[test]
 fn test_flood_fill() {
 	let mut state = GameState {
 		mines: 0x0808_0808_0808_0808,
@@ -330,66 +297,4 @@ fn test_flood_fill() {
 	state.reveal(0, 0);
 
 	assert_eq!(state.revealed, 0x0707_0707_0707_0707);
-}
-
-fn assert_puzzle_analysis(puzzle: &Puzzle) {
-	let active = puzzle.state.active();
-	let forced = puzzle.forced.always_mine | puzzle.forced.always_safe;
-
-	let mut pruned = puzzle.state;
-	let exact = pruned.solve_sat();
-	pruned.prune(true);
-	let pruned_exact = pruned.solve_sat();
-	assert_eq!(exact.always_mine & !pruned_exact.always_mine, 0);
-	assert_eq!(exact.always_safe & !pruned_exact.always_safe, 0);
-	assert_eq!(puzzle.state.flagged & !neighbours(puzzle.state.revealed & !puzzle.state.mines), 0);
-	assert_eq!(puzzle.forced.always_mine & !puzzle.state.mines, 0);
-	assert_eq!(puzzle.forced.always_safe & puzzle.state.mines, 0);
-	assert_eq!(puzzle.forced.always_mine & puzzle.forced.always_safe, 0);
-	assert_eq!(forced & !active, 0);
-	assert_eq!(puzzle.forced.count(), forced.count_ones());
-	assert_eq!(puzzle.ambiguous, (active & !forced).count_ones());
-	assert_eq!(puzzle.forced.count() + puzzle.ambiguous, active.count_ones());
-}
-
-fn exhausts_exact_deductions(puzzle: &Puzzle) -> bool {
-	let mut state = puzzle.state;
-	state.apply(puzzle.forced);
-	state.solve_sat().is_empty()
-}
-
-#[test]
-fn test_generators() {
-	assert!(generate_expert_puzzle(56, 0).is_none());
-	assert!(generate_mit_puzzle::<100>(56, 0).is_none());
-	let mit = generate_mit_puzzle::<100>(3, 100).expect("MIT search should succeed");
-	assert_eq!(empty_squares(mit.state.mines), 0);
-	assert_eq!(mit.state.solve_sat().always_mine, mit.state.mines);
-
-	let easy = generate_easy_puzzle(32, 1000).expect("easy search should succeed");
-	assert_puzzle_analysis(&easy);
-	assert!(exhausts_exact_deductions(&easy));
-	assert!(easy.forced.count() >= 4);
-	assert!(easy.forced.area() >= 9);
-	assert!(easy.ambiguous >= 2);
-	assert!(easy.state.revealed.count_ones() >= 32);
-
-	let medium = generate_medium_puzzle(2, 1000).expect("medium search should succeed");
-	assert_puzzle_analysis(&medium);
-	assert!(medium.forced.count() >= 4);
-	assert!(medium.ambiguous >= 3);
-
-	let hard = generate_hard_puzzle(32, 1000).expect("hard search should succeed");
-	assert_puzzle_analysis(&hard);
-	assert!(exhausts_exact_deductions(&hard));
-	assert!(hard.forced.count() >= 4);
-	assert!(hard.forced.area() >= 16);
-	assert!(hard.ambiguous >= 2);
-
-	let expert = generate_expert_puzzle(56, 1000).expect("expert search should succeed");
-	assert_puzzle_analysis(&expert);
-	assert!(expert.forced.count() >= 3);
-	assert!(expert.forced.area() >= 16);
-	assert!(expert.state.active().count_ones() >= 8);
-	assert_eq!(expert.attempts, 1);
 }

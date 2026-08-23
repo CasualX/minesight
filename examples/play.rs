@@ -8,12 +8,14 @@ const HELP: &str = "Commands:
   solve subset    Apply subset deductions (alias: ss)
   solve total     Apply total mine-count deductions (alias: st)
   solve local     Apply local deductions (alias: sl)
-  solve pair      Apply neighbouring two-clue deductions (alias: sp)
+  solve overlap   Apply neighbouring clue-overlap deductions (alias: so)
+  solve cover     Apply multi-clue cover deductions (alias: sc)
   check sat       Check for SAT deductions without applying them (alias: ca)
   check subset    Check for subset deductions without applying them (alias: cs)
   check total     Check for total mine-count deductions without applying them (alias: ct)
   check local     Check for local deductions without applying them (alias: cl)
-  check pair      Check neighbouring two-clue deductions (alias: cp)
+  check overlap   Check neighbouring clue-overlap deductions (alias: co)
+  check cover     Check multi-clue cover deductions (alias: cc)
   help            Show this help (alias: h)
   quit            Leave the game (aliases: q, exit)
 
@@ -31,12 +33,14 @@ enum Action {
 	SolveSubset,
 	SolveTotal,
 	SolveLocal,
-	SolveTwoClue,
+	SolveOverlap,
+	SolveCover,
 	CheckSat,
 	CheckSubset,
 	CheckTotal,
 	CheckLocal,
-	CheckTwoClue,
+	CheckOverlap,
+	CheckCover,
 	Help,
 	Quit,
 }
@@ -74,12 +78,14 @@ impl FromStr for Action {
 			["ss"] | ["solve", "subset"] => Ok(Action::SolveSubset),
 			["st"] | ["solve", "total"] => Ok(Action::SolveTotal),
 			["sl"] | ["solve", "local"] => Ok(Action::SolveLocal),
-			["sp"] | ["solve", "pair"] | ["solve", "two"] => Ok(Action::SolveTwoClue),
+			["so"] | ["solve", "overlap"] => Ok(Action::SolveOverlap),
+			["sc"] | ["solve", "cover"] => Ok(Action::SolveCover),
 			["ca"] | ["check", "sat"] => Ok(Action::CheckSat),
 			["cs"] | ["check", "subset"] => Ok(Action::CheckSubset),
 			["ct"] | ["check", "total"] => Ok(Action::CheckTotal),
 			["cl"] | ["check", "local"] => Ok(Action::CheckLocal),
-			["cp"] | ["check", "pair"] | ["check", "two"] => Ok(Action::CheckTwoClue),
+			["co"] | ["check", "overlap"] => Ok(Action::CheckOverlap),
+			["cc"] | ["check", "cover"] => Ok(Action::CheckCover),
 			["x" | "reveal", x, y] => Ok(Action::Reveal(
 				parse_coordinate(x)?,
 				parse_coordinate(y)?,
@@ -257,12 +263,14 @@ fn main() {
 			Action::SolveSubset => apply_solver(&mut state, "subset", minetacs::GameState::solve_subset),
 			Action::SolveTotal => apply_solver(&mut state, "total", minetacs::GameState::solve_total),
 			Action::SolveLocal => apply_solver(&mut state, "local", minetacs::GameState::solve_local),
-			Action::SolveTwoClue => apply_solver(&mut state, "neighbouring two-clue", minetacs::GameState::solve_two_clue),
+			Action::SolveOverlap => apply_solver(&mut state, "clue-overlap", minetacs::GameState::solve_overlap),
+			Action::SolveCover => apply_solver(&mut state, "clue-cover", minetacs::GameState::solve_clue_cover),
 			Action::CheckSat => check_solver(&state, "SAT", minetacs::GameState::solve_sat),
 			Action::CheckSubset => check_solver(&state, "subset", minetacs::GameState::solve_subset),
 			Action::CheckTotal => check_solver(&state, "total", minetacs::GameState::solve_total),
 			Action::CheckLocal => check_solver(&state, "local", minetacs::GameState::solve_local),
-			Action::CheckTwoClue => check_solver(&state, "neighbouring two-clue", minetacs::GameState::solve_two_clue),
+			Action::CheckOverlap => check_solver(&state, "clue-overlap", minetacs::GameState::solve_overlap),
+			Action::CheckCover => check_solver(&state, "clue-cover", minetacs::GameState::solve_clue_cover),
 			Action::Help => println!("{HELP}"),
 			Action::Quit => break 'game None,
 		}
@@ -301,12 +309,14 @@ fn parses_non_coordinate_actions() {
 	assert_eq!("solve subset".parse(), Ok(Action::SolveSubset));
 	assert_eq!("solve total".parse(), Ok(Action::SolveTotal));
 	assert_eq!("solve local".parse(), Ok(Action::SolveLocal));
-	assert_eq!("solve pair".parse(), Ok(Action::SolveTwoClue));
+	assert_eq!("solve overlap".parse(), Ok(Action::SolveOverlap));
+	assert_eq!("sc".parse(), Ok(Action::SolveCover));
 	assert_eq!("ca".parse(), Ok(Action::CheckSat));
 	assert_eq!("check subset".parse(), Ok(Action::CheckSubset));
 	assert_eq!("check total".parse(), Ok(Action::CheckTotal));
 	assert_eq!("check local".parse(), Ok(Action::CheckLocal));
-	assert_eq!("cp".parse(), Ok(Action::CheckTwoClue));
+	assert_eq!("co".parse(), Ok(Action::CheckOverlap));
+	assert_eq!("check cover".parse(), Ok(Action::CheckCover));
 	assert_eq!("HELP".parse(), Ok(Action::Help));
 	assert_eq!("quit".parse(), Ok(Action::Quit));
 }

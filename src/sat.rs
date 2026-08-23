@@ -230,21 +230,6 @@ impl<const N: usize> State<N> {
 		Some(result)
 	}
 
-	/// Applies the extreme-difference rule to selected constraint pairs.
-	pub fn solve_pairs(&self, pairs: impl IntoIterator<Item = (usize, usize)>) -> Option<Forced> {
-		let mut result = Forced::default();
-		for index in 0..self.len {
-			self.constraint(index).forced()?;
-		}
-		for (a, b) in pairs {
-			if a >= self.len || b >= self.len {
-				return None;
-			}
-			result.merge(self.constraint(a).extreme_difference(self.constraint(b)))?;
-		}
-		Some(result)
-	}
-
 	/// Runs bounded rounds of direct, subset, extreme-difference, and derived
 	/// exclusive-constraint deductions. At most `M` derived constraints are kept
 	/// in fixed scratch storage.
@@ -355,6 +340,5 @@ fn invalid_constraint_is_checked_at_solve_time() {
 	assert!(state.push(0b1, 2).is_some());
 	assert_eq!(state.solve(), None);
 	assert_eq!(state.solve_subset(), None);
-	assert_eq!(state.solve_pairs([]), None);
 	assert_eq!(state.solve_derived::<256>(2), None);
 }

@@ -733,32 +733,135 @@ impl GameState {
 	/// If this difference reaches either possible extreme, every cell in both
 	/// exclusive groups is determined. Only clues touching the current unflagged
 	/// frontier are considered, and each clue has at most eight candidate partners.
-	pub fn solve_two_clue(&self) -> Deductions {
+	pub fn solve_overlap(&self) -> Deductions {
 		let active = self.active();
 		if active == 0 {
 			return Deductions::default();
 		}
 
 		let clues = neighbours(active) & self.revealed;
-		let Some((state, indices)) = self.constraint_state(clues) else {
-			return Deductions::default();
-		};
-		let mut pairs = Vec::new();
+		let mut result = Deductions::default();
 
 		for a_index in enumerate(clues) {
+			let a_neighbours = NEIGHBOURS[a_index];
+			let a_unrevealed = a_neighbours & !self.revealed & !self.flagged;
+			let a_clue = (self.mines & a_neighbours).count_ones();
+			let a_flags = (self.flagged & a_neighbours).count_ones();
+			if a_clue < a_flags || a_clue > a_flags + a_unrevealed.count_ones() {
+				return Deductions::default();
+			}
+
 			for b_index in enumerate(NEIGHBOURS[a_index] & clues) {
 				if b_index <= a_index {
 					continue;
 				}
-				pairs.push((indices[a_index], indices[b_index]));
+
+				let b_neighbours = NEIGHBOURS[b_index];
+				let b_unrevealed = b_neighbours & !self.revealed & !self.flagged;
+				let b_clue = (self.mines & b_neighbours).count_ones();
+				let b_flags = (self.flagged & b_neighbours).count_ones();
+				if b_clue < b_flags || b_clue > b_flags + b_unrevealed.count_ones() {
+					return Deductions::default();
+				}
+
+				let a_only = a_unrevealed & !b_unrevealed;
+				let b_only = b_unrevealed & !a_unrevealed;
+
+				if b_clue + a_flags == a_clue + b_flags + b_only.count_ones() {
+					result.always_mine |= b_only;
+					result.always_safe |= a_only;
+				}
+				else if a_clue + b_flags == b_clue + a_flags + a_only.count_ones() {
+					result.always_mine |= a_only;
+					result.always_safe |= b_only;
+				}
 			}
 		}
-		state.solve_pairs(pairs).map(Into::into).unwrap_or_default()
+
+		if result.always_mine & result.always_safe != 0 {
+			return Deductions::default();
+		}
+
+		result
+	}
+	/// Computes deductions by covering one clue with two or more adjacent clues.
+	///
+	/// The sum of the covering clues' remaining mine counts is an upper bound on
+	/// the mines they can account for around the focus clue. If the focus clue can
+	/// only be satisfied by filling every cell outside that cover, those cells are
+	/// mines. At the same tight bound, cells covered outside the focus are safe,
+	/// as are focus cells counted by more than one covering clue.
+	pub fn solve_clue_cover(&self) -> Deductions {
+		let active = self.active();
+		if active == 0 {
+			return Deductions::default();
+		}
+
+		let clues = neighbours(active) & self.revealed;
+		let mut result = Deductions::default();
+
+		for focus_index in enumerate(clues) {
+			let focus_neighbours = NEIGHBOURS[focus_index];
+			let focus_cells = focus_neighbours & !self.revealed & !self.flagged;
+			let focus_clue = (self.mines & focus_neighbours).count_ones();
+			let Some(focus_mines) = focus_clue.checked_sub((self.flagged & focus_neighbours).count_ones()) else {
+				return Deductions::default();
+			};
+			if focus_mines > focus_cells.count_ones() {
+				return Deductions::default();
+			}
+
+			let adjacent_clues = NEIGHBOURS[focus_index] & clues;
+			let mut cover = adjacent_clues;
+			while cover != 0 {
+				if cover.count_ones() >= 2 {
+					let mut covered = 0;
+					let mut covered_twice = 0;
+					let mut covering_mines = 0;
+
+					for cover_index in enumerate(cover) {
+						let cover_neighbours = NEIGHBOURS[cover_index];
+						let cover_cells = cover_neighbours & !self.revealed & !self.flagged;
+						let cover_clue = (self.mines & cover_neighbours).count_ones();
+						let Some(remaining) = cover_clue.checked_sub((self.flagged & cover_neighbours).count_ones()) else {
+							return Deductions::default();
+						};
+						if remaining > cover_cells.count_ones() {
+							return Deductions::default();
+						}
+
+						covered_twice |= covered & cover_cells;
+						covered |= cover_cells;
+						covering_mines += remaining;
+					}
+
+					let uncovered = focus_cells & !covered;
+					if uncovered != 0 {
+						let capacity = covering_mines + uncovered.count_ones();
+						if focus_mines > capacity {
+							return Deductions::default();
+						}
+						if focus_mines == capacity {
+							result.always_mine |= uncovered;
+							result.always_safe |= (covered & !focus_cells) | (covered_twice & focus_cells);
+						}
+					}
+				}
+
+				cover = (cover - 1) & adjacent_clues;
+			}
+		}
+
+		if result.always_mine & result.always_safe != 0 {
+			return Deductions::default();
+		}
+
+		result
 	}
 	/// Computes deductions from a small, temporary set of derived frontier constraints.
 	///
 	/// Overlapping constraints may produce exact constraints on their exclusive
-	/// cells. Those constraints participate in the local, subset, and two-clue
+	/// cells. Those constraints participate in the local, subset, and overlap
 	/// rules for at most [`DERIVED_CONSTRAINT_DEPTH`] generations. This models a
 	/// short chain of human-scale inferences without becoming an exact solver.
 	pub fn solve_derived(&self) -> Deductions {
@@ -1175,7 +1278,7 @@ fn apply_cleanup(state: &mut GameState, solver: Solver) {
 }
 
 /// Easy puzzles start with most of the board open, use local cleanup, and
-/// advertise two-clue deductions only when SAT solving finds nothing
+/// advertise overlap deductions only when SAT solving finds nothing
 /// left after those answers are applied.
 pub fn generate_easy_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 	PuzzleGenerator {
@@ -1183,7 +1286,7 @@ pub fn generate_easy_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 		explorer: InitialRevealExplorer { max_steps: 0, walk_threshold: 0 },
 		solvers: SolverConfig {
 			cleanup: GameState::solve_local,
-			test: |state| state.solve_subset() | state.solve_two_clue(),
+			test: |state| state.solve_subset() | state.solve_overlap() | state.solve_clue_cover(),
 			reject: GameState::solve_sat,
 		},
 		criteria: PuzzleCriteria {
@@ -1203,7 +1306,7 @@ pub fn generate_medium_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
 		solvers: SolverConfig {
 			cleanup: |state| state.solve_local(),
-			test: GameState::solve_derived,
+			test: |state| state.solve_derived() | state.solve_clue_cover(),
 			reject: GameState::solve_sat,
 		},
 		criteria: PuzzleCriteria {
@@ -1223,7 +1326,7 @@ pub fn generate_hard_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
 		solvers: SolverConfig {
 			cleanup: GameState::solve_local,
-			test: |state| state.solve_subset() | state.solve_two_clue(),
+			test: |state| state.solve_subset() | state.solve_overlap() | state.solve_clue_cover(),
 			reject: GameState::solve_sat,
 		},
 		criteria: PuzzleCriteria {
@@ -1242,7 +1345,7 @@ pub fn generate_expert_puzzle(seed: u64, attempts: u32) -> Option<Puzzle> {
 		board: ExpertBoard,
 		explorer: RandomWalkExplorer { max_steps: 16 },
 		solvers: SolverConfig {
-			cleanup: |state| state.solve_subset() | state.solve_two_clue(),
+			cleanup: |state| state.solve_subset() | state.solve_derived() | state.solve_clue_cover(),
 			test: GameState::solve_sat,
 			reject: GameState::solve_sat,
 		},
@@ -1304,14 +1407,20 @@ fn minimize_mit_clues<R: urandom::Rng>(mines: u64, rng: &mut urandom::Random<R>)
 /// Generates an MIT-style puzzle with a uniquely determined mine layout and
 /// minimizes the number of deductions available to the local solver.
 pub fn generate_mit_puzzle<const REFINEMENTS: usize>(seed: u64, attempts: u32) -> Option<Puzzle> {
-	let cleanup = |state: &GameState| state.solve_local() | state.solve_two_clue();
+	fn cleanup(state: &GameState) -> Deductions {
+		state.solve_local() | state.solve_overlap() | state.solve_clue_cover()
+	}
+	fn random(rng: &mut urandom::Random<impl urandom::Rng>) -> u64 {
+		// Since we only ever open clues, balance the unrevealed cells between mines and safe cells
+		rng.random::<u64>() & rng.random::<u64>()
+	}
 
 	let mut master_rng = urandom::seeded(seed);
 	for attempt in 0..attempts {
 		let mut rng = master_rng.split();
 
 		let mines = loop {
-			let mines = rng.random::<u64>() & rng.random::<u64>();
+			let mines = random(&mut rng);
 			if empty_squares(mines) == 0 {
 				break mines;
 			}
@@ -1333,7 +1442,7 @@ pub fn generate_mit_puzzle<const REFINEMENTS: usize>(seed: u64, attempts: u32) -
 			// Rescramble locally obvious cells and their neighbourhood, then repeat
 			// clue minimization for the resulting mine layout.
 			let rescramble = expand(forced);
-			let candidate_mines = (current.mines & !rescramble) | (rng.random::<u64>() & rescramble);
+			let candidate_mines = (current.mines & !rescramble) | (random(&mut rng) & rescramble);
 			let Some(candidate) = minimize_mit_clues(candidate_mines, &mut rng) else {
 				continue;
 			};
