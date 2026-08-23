@@ -264,26 +264,52 @@ fn test_check_guess() {
 }
 
 #[test]
-fn test_clue_cover_solves_131() {
-	let upper = cell(2, 1);
-	let left = cell(1, 2);
-	let center = cell(2, 2);
-	let corner_mine = cell(3, 3);
-	let state = GameState {
-		mines: cell(3, 1) | cell(1, 3) | corner_mine,
-		revealed: upper | left | center,
-		flagged: 0,
-	};
-	let expected = Deductions {
-		always_mine: corner_mine,
+fn test_clue_cover() {
+	let mines_131 = cell(3, 1) | cell(1, 3) | cell(3, 3);
+	let revealed_131 = cell(2, 1) | cell(1, 2) | cell(2, 2);
+	let expected_131 = Deductions {
+		always_mine: cell(3, 3),
 		always_safe: cell(1, 1) |
 			cell(1, 0) | cell(2, 0) | cell(3, 0) |
 			cell(0, 1) | cell(0, 2) | cell(0, 3),
 	};
-	println!("{}", state);
 
-	assert_eq!(state.solve_overlap(), Deductions::default());
-	assert_eq!(state.solve_clue_cover(), expected);
+	let mines_121 = cell(7, 3) | cell(5, 5);
+	let revealed_121 = rect(6, 4, 2, 3) | cell(5, 6);
+	let expected_121 = Deductions {
+		always_mine: 0,
+		always_safe: cell(5, 3) |
+			cell(4, 5) | cell(4, 6) |
+			cell(6, 7) | cell(4, 7),
+	};
+
+	let mines_covering_cells = cell(5, 0) | cell(5, 1);
+	let revealed_covering_cells = cell(6, 0) | cell(7, 0);
+	let expected_covering_cells = Deductions {
+		always_mine: mines_covering_cells,
+		always_safe: 0,
+	};
+
+	let mine_one_covering_clue = cell(0, 6);
+	let revealed_one_covering_clue = cell(0, 7) | cell(1, 7);
+	let expected_one_covering_clue = Deductions {
+		always_mine: 0,
+		always_safe: cell(2, 6) | cell(2, 7),
+	};
+
+	let mut state = GameState {
+		mines: mines_131 | mines_121 | mines_covering_cells | mine_one_covering_clue,
+		revealed: revealed_131 | revealed_121 | revealed_covering_cells | revealed_one_covering_clue,
+		flagged: 0,
+	};
+	println!("{state}");
+
+	let expected = expected_131 | expected_121 | expected_covering_cells | expected_one_covering_clue;
+	let actual = state.solve_clue_cover();
+	state.apply(actual);
+	println!("{state}");
+
+	assert_eq!(actual, expected);
 }
 
 #[test]

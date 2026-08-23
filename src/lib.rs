@@ -821,13 +821,12 @@ impl GameState {
 
 		result
 	}
-	/// Computes deductions by covering one clue with two or more adjacent clues.
+	/// Computes deductions by covering one clue with one or more adjacent clues.
 	///
-	/// The sum of the covering clues' remaining mine counts is an upper bound on
-	/// the mines they can account for around the focus clue. If the focus clue can
-	/// only be satisfied by filling every cell outside that cover, those cells are
-	/// mines. At the same tight bound, cells covered outside the focus are safe,
-	/// as are focus cells counted by more than one covering clue.
+	/// Subtracting the focus constraint from the sum of the covering constraints
+	/// gives negative weight to uncovered focus cells and positive weight to cells
+	/// covered outside the focus or more than once inside it. When this difference
+	/// reaches either possible extreme, all cells in both groups are determined.
 	pub fn solve_clue_cover(&self) -> Deductions {
 		let active = self.active();
 		if active == 0 {
@@ -851,38 +850,43 @@ impl GameState {
 			let adjacent_clues = NEIGHBOURS[focus_index] & clues;
 			let mut cover = adjacent_clues;
 			while cover != 0 {
-				if cover.count_ones() >= 2 {
-					let mut covered = 0;
-					let mut covered_twice = 0;
-					let mut covering_mines = 0;
+				let mut covered = 0;
+				let mut covered_twice = 0;
+				let mut covering_mines = 0;
+				let mut covering_cells = 0;
 
-					for cover_index in enumerate(cover) {
-						let cover_neighbours = NEIGHBOURS[cover_index];
-						let cover_cells = cover_neighbours & !self.revealed & !self.flagged;
-						let cover_clue = (self.mines & cover_neighbours).count_ones();
-						let Some(remaining) = cover_clue.checked_sub((self.flagged & cover_neighbours).count_ones()) else {
-							return Deductions::default();
-						};
-						if remaining > cover_cells.count_ones() {
-							return Deductions::default();
-						}
-
-						covered_twice |= covered & cover_cells;
-						covered |= cover_cells;
-						covering_mines += remaining;
+				for cover_index in enumerate(cover) {
+					let cover_neighbours = NEIGHBOURS[cover_index];
+					let cover_cells = cover_neighbours & !self.revealed & !self.flagged;
+					let cover_clue = (self.mines & cover_neighbours).count_ones();
+					let Some(remaining) = cover_clue.checked_sub((self.flagged & cover_neighbours).count_ones()) else {
+						return Deductions::default();
+					};
+					if remaining > cover_cells.count_ones() {
+						return Deductions::default();
 					}
 
-					let uncovered = focus_cells & !covered;
-					if uncovered != 0 {
-						let capacity = covering_mines + uncovered.count_ones();
-						if focus_mines > capacity {
-							return Deductions::default();
-						}
-						if focus_mines == capacity {
-							result.always_mine |= uncovered;
-							result.always_safe |= (covered & !focus_cells) | (covered_twice & focus_cells);
-						}
-					}
+					covered_twice |= covered & cover_cells;
+					covered |= cover_cells;
+					covering_mines += remaining;
+					covering_cells += cover_cells.count_ones();
+				}
+
+				let uncovered = focus_cells & !covered;
+				let positive = (covered & !focus_cells) | (covered_twice & focus_cells);
+				let negative_capacity = uncovered.count_ones();
+				let positive_capacity = covering_cells - (covered & focus_cells).count_ones();
+
+				if focus_mines > covering_mines + negative_capacity || covering_mines > focus_mines + positive_capacity {
+					return Deductions::default();
+				}
+				if focus_mines == covering_mines + negative_capacity {
+					result.always_mine |= uncovered;
+					result.always_safe |= positive;
+				}
+				if covering_mines == focus_mines + positive_capacity {
+					result.always_mine |= positive;
+					result.always_safe |= uncovered;
 				}
 
 				cover = (cover - 1) & adjacent_clues;
