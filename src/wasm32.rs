@@ -1,4 +1,4 @@
-use super::*;
+use super::puzzle::*;
 
 #[link(wasm_import_module = "env")]
 unsafe extern "C" {
@@ -10,31 +10,31 @@ unsafe extern "C" {
 /// Generates an easy tactics puzzle and returns it through `env.resultPuzzle`.
 #[unsafe(export_name = "randomEasyPuzzle")]
 pub extern "C" fn random_easy_puzzle_wasm(seed_low: u32, seed_high: u32, attempts: u32) -> bool {
-	generate_puzzle(generate_easy_puzzle, seed_low, seed_high, attempts)
+	generate_puzzle(generate_easy, seed_low, seed_high, attempts)
 }
 
 /// Generates a medium tactics puzzle and returns it through `env.resultPuzzle`.
 #[unsafe(export_name = "randomMediumPuzzle")]
 pub extern "C" fn random_medium_puzzle_wasm(seed_low: u32, seed_high: u32, attempts: u32) -> bool {
-	generate_puzzle(generate_medium_puzzle, seed_low, seed_high, attempts)
+	generate_puzzle(generate_medium, seed_low, seed_high, attempts)
 }
 
 /// Generates a hard tactics puzzle and returns it through `env.resultPuzzle`.
 #[unsafe(export_name = "randomHardPuzzle")]
 pub extern "C" fn random_hard_puzzle_wasm(seed_low: u32, seed_high: u32, attempts: u32) -> bool {
-	generate_puzzle(generate_hard_puzzle, seed_low, seed_high, attempts)
+	generate_puzzle(generate_hard, seed_low, seed_high, attempts)
 }
 
 /// Generates an expert tactics puzzle and returns it through `env.resultPuzzle`.
 #[unsafe(export_name = "randomExpertPuzzle")]
 pub extern "C" fn random_expert_puzzle_wasm(seed_low: u32, seed_high: u32, attempts: u32) -> bool {
-	generate_puzzle(generate_expert_puzzle, seed_low, seed_high, attempts)
+	generate_puzzle(generate_expert, seed_low, seed_high, attempts)
 }
 
 /// Generates an MIT-style puzzle and returns it through `env.resultPuzzle`.
 #[unsafe(export_name = "randomMitPuzzle")]
 pub extern "C" fn random_mit_puzzle_wasm(seed_low: u32, seed_high: u32, attempts: u32) -> bool {
-	generate_puzzle(generate_mit_puzzle::<100>, seed_low, seed_high, attempts)
+	generate_puzzle(generate_mit::<100>, seed_low, seed_high, attempts)
 }
 
 /// The raw ABI keeps the full search in Rust without requiring `wasm-bindgen`.

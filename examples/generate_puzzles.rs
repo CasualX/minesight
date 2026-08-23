@@ -2,6 +2,7 @@ use std::io::{self, Write};
 
 const DEFAULT_PUZZLES: usize = 100;
 const DEFAULT_ATTEMPTS: u32 = 1000;
+const PUBLIC_URL: &str = "https://casualhacks.net/minesight/";
 
 #[derive(Copy, Clone)]
 enum Difficulty {
@@ -47,13 +48,13 @@ fn parse_args() -> (Difficulty, usize, u32) {
 }
 
 impl Difficulty {
-	fn generate(self, seed: u64, attempts: u32) -> Option<minetacs::Puzzle> {
+	fn generate(self, seed: u64, attempts: u32) -> Option<minetacs::puzzle::Puzzle> {
 		match self {
-			Difficulty::Easy => minetacs::generate_easy_puzzle(seed, attempts),
-			Difficulty::Medium => minetacs::generate_medium_puzzle(seed, attempts),
-			Difficulty::Hard => minetacs::generate_hard_puzzle(seed, attempts),
-			Difficulty::Expert => minetacs::generate_expert_puzzle(seed, attempts),
-			Difficulty::Mit => minetacs::generate_mit_puzzle::<100>(seed, attempts),
+			Difficulty::Easy => minetacs::puzzle::generate_easy(seed, attempts),
+			Difficulty::Medium => minetacs::puzzle::generate_medium(seed, attempts),
+			Difficulty::Hard => minetacs::puzzle::generate_hard(seed, attempts),
+			Difficulty::Expert => minetacs::puzzle::generate_expert(seed, attempts),
+			Difficulty::Mit => minetacs::puzzle::generate_mit::<100>(seed, attempts),
 		}
 	}
 }
@@ -88,7 +89,7 @@ fn hidden_truth(state: &minetacs::GameState, cell: u8, x: i8, y: i8) -> String {
 	format!(r#"<span class="truth clue-{clue}">{text}</span>"#)
 }
 
-fn write_cell(out: &mut impl Write, puzzle: &minetacs::Puzzle, cell: u8, x: i8, y: i8) -> io::Result<()> {
+fn write_cell(out: &mut impl Write, puzzle: &minetacs::puzzle::Puzzle, cell: u8, x: i8, y: i8) -> io::Result<()> {
 	let bit = 1u64 << (y as u32 * 8 + x as u32);
 	let state = &puzzle.state;
 
@@ -120,13 +121,14 @@ fn write_cell(out: &mut impl Write, puzzle: &minetacs::Puzzle, cell: u8, x: i8, 
 	}
 }
 
-fn write_puzzle(out: &mut impl Write, index: usize, puzzle: &minetacs::Puzzle) -> io::Result<()> {
+fn write_puzzle(out: &mut impl Write, index: usize, puzzle: &minetacs::puzzle::Puzzle) -> io::Result<()> {
 	let cells = puzzle.cells();
 	let frontier = puzzle.state.active().count_ones();
 	let known = puzzle.forced.count();
+	let payload = puzzle.encode();
 
 	writeln!(out, r#"<article class="puzzle">"#)?;
-	writeln!(out, r#"<header><strong>#{index}</strong><span>seed {}, attempts {}</span></header>"#, puzzle.seed, puzzle.attempts)?;
+	writeln!(out, r#"<header><strong>#{index}</strong><span>seed {}, attempts {}</span><a href="{PUBLIC_URL}?p={payload}" target="_blank" rel="noopener">play</a></header>"#, puzzle.seed, puzzle.attempts)?;
 	writeln!(out, r#"<div class="board" role="img" aria-label="Puzzle {index}">"#)?;
 	for y in 0..8 {
 		for x in 0..8 {
@@ -163,6 +165,8 @@ h1 {{ margin: 0 0 8px; font: 700 28px/1.2 system-ui, sans-serif; }}
 .puzzle {{ border: 1px solid #2b3542; border-radius: 7px; background: #181e27; overflow: hidden; box-shadow: 0 5px 18px #0005; }}
 .puzzle header, .puzzle footer {{ display: flex; justify-content: space-between; gap: 9px; padding: 8px 10px; color: #8998a8; font-size: 11px; }}
 .puzzle header strong {{ color: #dce5ef; font-size: 13px; }}
+.puzzle header a {{ color: #7bb8ff; font-weight: 700; text-decoration: none; }}
+.puzzle header a:hover {{ text-decoration: underline; }}
 .puzzle footer {{ border-top: 1px solid #2b3542; }}
 .board {{ display: grid; grid-template-columns: repeat(8, 1fr); aspect-ratio: 1; margin: 0 10px 10px; border: 2px solid #707983; background: #242b34; }}
 .cell {{ display: grid; place-items: center; min-width: 0; aspect-ratio: 1; font-weight: 800; font-size: clamp(13px, 1.6vw, 19px); line-height: 1; user-select: none; }}
