@@ -153,19 +153,19 @@ const EASY_DIFFICULTY = {
 	key: 'easy',
 	label: 'Easy',
 	generator: 'randomEasyPuzzle',
-	description: 'Start with a wide-open board and use the nearby clues. Each safe square or mine takes only a short chain of reasoning to find.',
+	description: 'Recognize familiar patterns on a mostly open board.',
 };
 const MEDIUM_DIFFICULTY = {
 	key: 'medium',
 	label: 'Medium',
 	generator: 'randomMediumPuzzle',
-	description: 'Compare clues across more of the board. You may need to connect several deductions before a square is certain.',
+	description: 'Recognize patterns on a denser board that requires more scanning.',
 };
 const HARD_DIFFICULTY = {
 	key: 'hard',
 	label: 'Hard',
 	generator: 'randomHardPuzzle',
-	description: 'Use basic deductions on a denser board where the answers may be farther apart and require more scanning.',
+	description: 'Follow deeper chains of logic before a square is certain.',
 };
 const EXPERT_DIFFICULTY = {
 	key: 'expert',

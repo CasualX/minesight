@@ -71,9 +71,9 @@ fn title(difficulty: Difficulty) -> &'static str {
 
 fn intro(difficulty: Difficulty) -> &'static str {
 	match difficulty {
-		Difficulty::Easy => "Start from a wide-open board and find squares that must be safe or contain a mine using local deductions from nearby clues. Highlighted squares show the answers, while faded squares are outside the puzzle.",
-		Difficulty::Medium => "Find squares that must be safe or contain a mine by comparing clues across a wider part of the board. Highlighted squares show the answers, while faded squares are outside the puzzle.",
-		Difficulty::Hard => "Find widely separated squares using only local deductions from nearby clues. These denser boards require more scanning despite using basic rules.",
+		Difficulty::Easy => "Recognize familiar patterns on a mostly open board to find squares that must be safe or contain a mine. Highlighted squares show the answers, while faded squares are outside the puzzle.",
+		Difficulty::Medium => "Recognize patterns on a denser board where finding squares that must be safe or contain a mine requires more scanning. Highlighted squares show the answers, while faded squares are outside the puzzle.",
+		Difficulty::Hard => "Follow deeper chains of logic to find squares that must be safe or contain a mine. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Expert => "Find squares that must be safe or contain a mine in a broader, more tangled position where several clues and possibilities must be tracked together. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Mit => "Determine the entire mine layout from a minimal set of clues. Every covered square has one logically forced answer.",
 	}

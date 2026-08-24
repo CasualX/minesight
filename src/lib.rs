@@ -758,8 +758,7 @@ impl GameState {
 		};
 		state.solve_subset().map(Into::into).unwrap_or_default()
 	}
-	/// Computes deductions from every geometrically adjacent pair of frontier
-	/// clues using their remaining mine counts.
+	/// Computes deductions by subtracting overlapping frontier-clue constraints.
 	///
 	/// For constraints `A` and `B`, their shared cells cancel:
 	///
@@ -769,8 +768,13 @@ impl GameState {
 	///
 	/// If this difference reaches either possible extreme, every cell in both
 	/// exclusive groups is determined. Only clues touching the current unflagged
-	/// frontier are considered, and each clue has at most eight candidate partners.
-	pub fn solve_overlap(&self) -> Deductions {
+	/// frontier are considered.
+	///
+	/// When `extended_vision` is false, each clue is compared with its geometrically
+	/// adjacent clues. When it is true, clues up to two squares apart are compared
+	/// by also searching the neighbours of each neighbouring cell. The extended
+	/// search includes every pair considered by the adjacent-only search.
+	pub fn solve_overlap(&self, extended_vision: bool) -> Deductions {
 		let active = self.active();
 		if active == 0 {
 			return Deductions::default();
@@ -788,7 +792,13 @@ impl GameState {
 				return Deductions::default();
 			}
 
-			for b_index in enumerate(NEIGHBOURS[a_index] & clues) {
+			let partners = if extended_vision {
+				neighbours(NEIGHBOURS[a_index])
+			}
+			else {
+				NEIGHBOURS[a_index]
+			};
+			for b_index in enumerate(partners & clues) {
 				if b_index <= a_index {
 					continue;
 				}

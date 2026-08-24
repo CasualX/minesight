@@ -119,12 +119,12 @@ impl BoardGenerator for EasyBoard {
 	}
 }
 
-/// Produces mostly cheap diagonal-gradient candidates, interspersed with dense
-/// uniform boards to keep the hard search tail short.
+/// Produces mostly cheap diagonal-gradient candidates,
+/// interspersed with dense uniform boards to keep the search tail short.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-struct HardBoard;
+struct MediumBoard;
 
-impl BoardGenerator for HardBoard {
+impl BoardGenerator for MediumBoard {
 	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64> {
 		// Uniform half-density boards pass relatively often, while steep gradients
 		// are much cheaper to reject. The blend performs better than either alone.
@@ -413,16 +413,14 @@ fn apply_cleanup(state: &mut GameState, solver: Solver) {
 	}
 }
 
-/// Easy puzzles start with most of the board open, use local cleanup, and
-/// advertise overlap deductions only when SAT solving finds nothing
-/// left after those answers are applied.
+/// Easy puzzles focus on pattern recognition across mostly open boards.
 pub fn generate_easy(seed: u64, attempts: u32) -> Option<Puzzle> {
 	Generator {
 		board: EasyBoard,
 		explorer: InitialRevealExplorer { max_steps: 0, walk_threshold: 0 },
 		solvers: SolverConfig {
 			cleanup: GameState::solve_local,
-			test: |state| state.solve_subset() | state.solve_overlap() | state.solve_clue_cover(),
+			test: |state| state.solve_subset() | state.solve_overlap(false) | state.solve_clue_cover(),
 			reject: GameState::solve_sat,
 		},
 		criteria: Criteria {
@@ -435,34 +433,14 @@ pub fn generate_easy(seed: u64, attempts: u32) -> Option<Puzzle> {
 	}.search(seed, attempts)
 }
 
-/// Medium puzzles advertise short chains of derived-constraint deductions.
+/// Medium puzzles focus on pattern recognition across denser boards.
 pub fn generate_medium(seed: u64, attempts: u32) -> Option<Puzzle> {
 	Generator {
-		board: Gradient::new(4, 4, Gradient::DENOMINATOR * 35 / 100, Gradient::DENOMINATOR / 16, 0),
-		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
-		solvers: SolverConfig {
-			cleanup: |state| state.solve_local(),
-			test: |state| state.solve_derived() | state.solve_clue_cover(),
-			reject: GameState::solve_sat,
-		},
-		criteria: Criteria {
-			min_forced: 4,
-			min_forced_area: 16,
-			min_ambiguous: 3,
-			min_revealed: 0,
-			allow_empty: true,
-		},
-	}.search(seed, attempts)
-}
-
-/// Hard puzzles use basic deductions on dense boards with widely separated answers.
-pub fn generate_hard(seed: u64, attempts: u32) -> Option<Puzzle> {
-	Generator {
-		board: HardBoard,
+		board: MediumBoard,
 		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
 		solvers: SolverConfig {
 			cleanup: GameState::solve_local,
-			test: |state| state.solve_subset() | state.solve_overlap() | state.solve_clue_cover(),
+			test: |state| state.solve_subset() | state.solve_overlap(true) | state.solve_clue_cover(),
 			reject: GameState::solve_sat,
 		},
 		criteria: Criteria {
@@ -471,6 +449,26 @@ pub fn generate_hard(seed: u64, attempts: u32) -> Option<Puzzle> {
 			min_ambiguous: 3,
 			min_revealed: 0,
 			allow_empty: false,
+		},
+	}.search(seed, attempts)
+}
+
+/// Hard puzzles require deeper chains of logical deductions.
+pub fn generate_hard(seed: u64, attempts: u32) -> Option<Puzzle> {
+	Generator {
+		board: Gradient::new(4, 4, Gradient::DENOMINATOR * 35 / 100, Gradient::DENOMINATOR / 16, 0),
+		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
+		solvers: SolverConfig {
+			cleanup: |state| state.solve_local() | state.solve_overlap(true) | state.solve_clue_cover(),
+			test: |state| state.solve_derived(),
+			reject: GameState::solve_sat,
+		},
+		criteria: Criteria {
+			min_forced: 4,
+			min_forced_area: 16,
+			min_ambiguous: 3,
+			min_revealed: 0,
+			allow_empty: true,
 		},
 	}.search(seed, attempts)
 }
@@ -544,7 +542,7 @@ fn minimize_mit_clues<R: urandom::Rng>(mines: u64, rng: &mut urandom::Random<R>)
 /// minimizes the number of deductions available to the local solver.
 pub fn generate_mit<const REFINEMENTS: usize>(seed: u64, attempts: u32) -> Option<Puzzle> {
 	fn cleanup(state: &GameState) -> Deductions {
-		state.solve_local() | state.solve_overlap() | state.solve_clue_cover()
+		state.solve_local() | state.solve_overlap(true) | state.solve_clue_cover()
 	}
 	fn random(rng: &mut urandom::Random<impl urandom::Rng>) -> u64 {
 		// Since we only ever open clues, balance the unrevealed cells between mines and safe cells

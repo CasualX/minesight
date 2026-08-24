@@ -313,6 +313,76 @@ fn test_clue_cover() {
 }
 
 #[test]
+fn test_overlap() {
+	let mines_equal_clues = cell(0, 1);
+	let revealed_equal_clues = cell(0, 0) | cell(1, 0);
+	let expected_equal_clues = Deductions {
+		always_mine: 0,
+		always_safe: cell(2, 0) | cell(2, 1),
+	};
+
+	let mines_121 = cell(3, 1) | cell(5, 1);
+	let revealed_121 = cell(3, 0) | cell(4, 0) | cell(5, 0);
+	let expected_121 = Deductions {
+		always_mine: mines_121,
+		always_safe: cell(2, 0) | cell(2, 1) | cell(6, 0) | cell(6, 1),
+	};
+
+	let mines_differing_clues = cell(5, 6) | cell(6, 6) | cell(5, 7);
+	let revealed_differing_clues = cell(6, 7) | cell(7, 7);
+	let expected_differing_clues = Deductions {
+		always_mine: cell(5, 6) | cell(5, 7),
+		always_safe: 0,
+	};
+
+	let mut state = GameState {
+		mines: mines_equal_clues | mines_121 | mines_differing_clues,
+		revealed: revealed_equal_clues | revealed_121 | revealed_differing_clues,
+		flagged: 0,
+	};
+	println!("{state}");
+
+	let expected = expected_equal_clues | expected_121 | expected_differing_clues;
+	let actual = state.solve_overlap(false);
+	state.apply(actual);
+	println!("{state}");
+
+	assert_eq!(actual, expected);
+}
+
+#[test]
+fn test_overlap2() {
+	let mines_left = cell(0, 1);
+	let revealed_left = cell(0, 0) | cell(2, 0);
+	let expected_left = Deductions {
+		always_mine: mines_left,
+		always_safe: cell(3, 0) | cell(2, 1) | cell(3, 1),
+	};
+
+	let mines_right = cell(7, 6);
+	let revealed_right = cell(5, 7) | cell(7, 7);
+	let expected_right = Deductions {
+		always_mine: mines_right,
+		always_safe: cell(4, 6) | cell(5, 6) | cell(4, 7),
+	};
+
+	let mut state = GameState {
+		mines: mines_left | mines_right,
+		revealed: revealed_left | revealed_right,
+		flagged: 0,
+	};
+	println!("{state}");
+
+	let expected = expected_left | expected_right;
+	assert_eq!(state.solve_overlap(false), Deductions::default());
+	let actual = state.solve_overlap(true);
+	state.apply(actual);
+	println!("{state}");
+
+	assert_eq!(actual, expected);
+}
+
+#[test]
 fn test_flood_fill() {
 	let mut state = GameState {
 		mines: 0x0808_0808_0808_0808,
