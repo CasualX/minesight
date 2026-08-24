@@ -244,7 +244,7 @@ function resolveUrlGame(url) {
 	}
 
 	if (url.searchParams.has(TUTORIAL_PARAMETER)) return { mode: 'tutorial' };
-	return { mode: 'stored' };
+	return { mode: 'home' };
 }
 
 /**
@@ -497,7 +497,7 @@ function sortChallengeTiers(puzzles, route) {
 	}
 }
 
-/** @typedef {'tutorial' | 'study' | 'challenge' | 'shared'} GameMode */
+/** @typedef {'home' | 'tutorial' | 'study' | 'challenge' | 'shared'} GameMode */
 /** @typedef {'playing' | 'cleared' | 'failed' | 'gave-up' | 'complete'} GameResult */
 /** @typedef {'cleared' | 'failed'} ChallengeResult */
 /** @typedef {{ field: MineField, seed: bigint, result: GameResult, hintUsed: boolean, streak: number, ready: boolean }} StudyState */
@@ -527,7 +527,6 @@ function createMinesight() {
 		let streak = storedStudy.difficulties?.[key]?.streak;
 		return [key, Math.max(0, Number.parseInt(streak) || 0)];
 	}));
-	let storedMode = ['study', 'challenge'].includes(stored.mode) ? stored.mode : 'tutorial';
 	let savedChallengeModeKey = stored.challengeModeKey ?? 'expert';
 	let challengeModeKey = CHALLENGE_MODES.some(({ key }) => key === savedChallengeModeKey) ? savedChallengeModeKey : CHALLENGE_MODES[0].key;
 	if (urlGame.mode === 'challenge') challengeModeKey = urlGame.modeKey;
@@ -555,7 +554,7 @@ function createMinesight() {
 		/** @type {GameMode} */
 		mode: urlGame.mode === 'shared' ? 'shared'
 			: urlGame.mode === 'challenge' ? 'challenge'
-				: urlGame.mode === 'tutorial' ? 'tutorial' : storedMode,
+				: urlGame.mode === 'tutorial' ? 'tutorial' : 'home',
 		soundEnabled: gameSounds.enabled,
 		actionsInverted: false,
 		/** @type {GameResult} */
@@ -658,6 +657,7 @@ function createMinesight() {
 				void this.prepareChallenge();
 				return;
 			}
+			if (this.mode === 'home') return;
 			if (!this.restoreStudyState() && !this.engineError) this.newStudyBoard();
 		},
 
@@ -683,10 +683,6 @@ function createMinesight() {
 			return STUDY_DIFFICULTIES.find((difficulty) => difficulty.key === this.difficultyKey) ?? STUDY_DIFFICULTIES[0];
 		},
 
-		get studyModeTitle() {
-			return this.challengeRunActive ? 'End your challenge before switching to Study' : '';
-		},
-
 		get soundToggleClass() {
 			return this.soundEnabled ? '' : 'muted';
 		},
@@ -695,23 +691,15 @@ function createMinesight() {
 			return this.soundEnabled ? 'Mute sound effects' : 'Enable sound effects';
 		},
 
-		get headingTitle() {
-			if (this.mode === 'tutorial') return 'Introduction';
-			if (this.mode === 'study') return 'Study';
-			if (this.mode === 'challenge') return 'Challenge';
-			return 'Shared puzzle';
+		get headerModeTitle() {
+			if (this.mode === 'home') return '';
+			if (this.mode === 'tutorial') return 'How to play';
+			if (this.mode === 'shared') return 'Shared puzzle';
+			return this.mode[0].toUpperCase() + this.mode.slice(1);
 		},
 
-		get headingSubtitle() {
-			if (this.mode === 'tutorial') {
-				return 'Welcome to Minesight, a Minesweeper tactics game where you identify which covered squares must be safe and which must contain mines. ' +
-					'Minesight uses Minesweeper clues, but you are not trying to clear the board. Find every covered square that must be safe or must contain a mine. Leave any square that could be either alone.';
-			}
-			if (this.mode === 'shared') return 'A puzzle sent to you';
-			if (this.mode === 'challenge' && this.challengeStarted) {
-				return `${this.currentDifficulty.label} · ${this.challengeIndex + 1} / ${this.challengeTotal}`;
-			}
-			return '';
+		get pageTitle() {
+			return this.headerModeTitle ? `Minesight / ${this.headerModeTitle}` : 'Minesight';
 		},
 
 		get showChallengeTimer() {
@@ -834,6 +822,7 @@ function createMinesight() {
 		},
 
 		get showBoard() {
+			if (this.mode === 'home') return false;
 			if (this.mode === 'shared' && this.sharedPuzzleError) return false;
 			if (this.mode === 'study') return this.studyBoardReady || this.boardPreparing;
 			return this.mode !== 'challenge' || (this.challengeStarted && this.result !== 'complete');
@@ -947,6 +936,13 @@ function createMinesight() {
 
 		get challengeRunActive() {
 			return this.mode === 'challenge' && this.challengeStarted && !['gave-up', 'complete'].includes(this.result);
+		},
+
+		/** @param {BeforeUnloadEvent} event */
+		protectChallengeNavigation(event) {
+			if (!this.challengeRunActive) return;
+			event.preventDefault();
+			event.returnValue = '';
 		},
 
 		get challengeClearedCount() {
@@ -1438,10 +1434,7 @@ function createMinesight() {
 
 		finishTutorial() {
 			if (this.mode !== 'tutorial') return;
-			this.removeTutorialFromUrl();
-			saveMinesightData('mode', 'study');
-			this.mode = 'study';
-			if (!this.restoreStudyState()) void this.newStudyBoard();
+			this.switchMode('study');
 		},
 
 		removeTutorialFromUrl() {
@@ -1468,8 +1461,27 @@ function createMinesight() {
 		/** @param {GameMode} nextMode */
 		switchMode(nextMode) {
 			if (this.mode === nextMode) return;
-			if (nextMode === 'study' && this.challengeRunActive) return;
 			this.removeTutorialFromUrl();
+			if (nextMode === 'home' || nextMode === 'tutorial') {
+				if (this.mode === 'study') {
+					this.snapshotStudyState();
+					this.saveStudyData();
+				}
+				this.removeSharedPuzzleFromUrl();
+				this.removeChallengeFromUrl();
+				this.challengePreparationId += 1;
+				this.studyPreparationId += 1;
+				this.challengePreparing = false;
+				this.boardPreparing = false;
+				this.clearStudySearchingDelay();
+				this.challengeStarted = false;
+				this.challengePuzzles = [];
+				this.challengeResults = [];
+				this.stopTimer();
+				if (nextMode === 'tutorial') this.startTutorial();
+				else this.mode = 'home';
+				return;
+			}
 			if (nextMode === 'challenge') {
 				if (this.mode === 'study') {
 					this.snapshotStudyState();
@@ -1482,7 +1494,6 @@ function createMinesight() {
 				this.mode = nextMode;
 				this.challengeTargetMs = undefined;
 				this.challengeSeed = randomChallengeSeed();
-				saveMinesightData('mode', nextMode);
 				void this.prepareChallenge();
 			}
 			else {
@@ -1495,9 +1506,13 @@ function createMinesight() {
 				this.challengeResults = [];
 				this.stopTimer();
 				this.mode = nextMode;
-				saveMinesightData('mode', nextMode);
 				if (!this.restoreStudyState()) void this.newStudyBoard();
 			}
+		},
+
+		goHome() {
+			if (this.challengeRunActive) return;
+			this.switchMode('home');
 		},
 
 		removeSharedPuzzleFromUrl() {
@@ -2242,7 +2257,7 @@ function createMinesight() {
 	};
 }
 
-// Preload the generator without keeping the tutorial or a shared puzzle behind
+// Preload the generator without keeping the home screen, tutorial, or a shared puzzle behind
 // a blank, x-cloaked page. A failed preload is retried when a board is requested.
 void ensurePuzzleGenerator().catch(() => {});
 

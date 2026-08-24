@@ -13,22 +13,27 @@
 	<script type="module" src="./index.js"></script>
 	<script src="./alpine.min.js" defer></script>
 </head>
-<body x-data="minesight" x-cloak>
+<body x-data="minesight" x-cloak @beforeunload.window="protectChallengeNavigation($event)">
 	<header class="site-header">
-		<a class="brand" href="./">Minesight</a>
+		<div class="header-title">
+			<a class="site-permalink" href="" aria-label="Permalink to this page" title="Permalink to this page">
+				<img src="./header-icon.svg" alt="">
+			</a>
+			<span class="brand">Minesight</span>
+			<template x-if="headerModeTitle">
+				<span class="header-mode"><span aria-hidden="true">/</span> <span x-text="headerModeTitle"></span></span>
+			</template>
+			<button
+				type="button"
+				class="header-back"
+				x-show="mode !== 'home' && !challengeRunActive"
+				aria-label="Back to main menu"
+				title="Back to main menu"
+				@click="goHome()"
+			>&#8617;</button>
+		</div>
 
 		<div class="header-actions">
-			<nav class="mode-switcher" aria-label="Game mode" x-show="mode !== 'tutorial'">
-				<button
-					type="button"
-					:class="{ active: mode === 'study' }"
-					:aria-pressed="mode === 'study'"
-					:disabled="challengeRunActive"
-					:title="studyModeTitle"
-					@click="switchMode('study')"
-				>Study</button>
-				<button type="button" :class="{ active: mode === 'challenge' }" :aria-pressed="mode === 'challenge'" @click="switchMode('challenge')">Challenge</button>
-			</nav>
 			<button
 				type="button"
 				class="sound-toggle"
@@ -50,34 +55,40 @@
 		</div>
 	</header>
 
-	<main class="app-shell">
-		<section class="game-heading">
-			<div class="heading-copy">
-				<h1 x-text="headingTitle"></h1>
-				<p x-show="headingSubtitle" x-text="headingSubtitle"></p>
+	<main class="app-shell" x-effect="document.title = pageTitle">
+		<section class="home-screen" x-show="mode === 'home'">
+			<div class="home-intro">
+				<h1>Read the board. Prove each move.</h1>
+				<p>Short Minesweeper logic puzzles with no guessing required.</p>
 			</div>
-			<button
-				type="button"
-				class="share-puzzle heading-share"
-				x-show="showChallengeIntro || showChallengeFinish"
-				aria-label="Share this challenge"
-				title="Share this challenge"
-				@click="shareChallenge()"
-			>
-				<svg viewBox="0 0 24 24" aria-hidden="true">
-					<circle cx="18" cy="5" r="2.5"></circle>
-					<circle cx="6" cy="12" r="2.5"></circle>
-					<circle cx="18" cy="19" r="2.5"></circle>
-					<path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5"></path>
-				</svg>
-			</button>
-			<div class="timer" x-show="showChallengeTimer" aria-label="Elapsed time">
+			<div class="home-modes" aria-label="Choose a mode">
+				<button type="button" class="home-mode home-mode-tutorial" @click="switchMode('tutorial')">
+					<span class="home-mode-number" aria-hidden="true">?</span>
+					<span><strong>How to play</strong><small>Learn how Minesight differs from regular Minesweeper.</small></span>
+					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
+				</button>
+				<button type="button" class="home-mode" @click="switchMode('study')">
+					<span class="home-mode-number" aria-hidden="true">01</span>
+					<span><strong>Study</strong><small>Practice one puzzle at a time. Pick a difficulty, use hints, and build a streak.</small></span>
+					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
+				</button>
+				<button type="button" class="home-mode" @click="switchMode('challenge')">
+					<span class="home-mode-number" aria-hidden="true">02</span>
+					<span><strong>Challenge</strong><small>Race through a fixed set of puzzles, then invite someone to beat your time.</small></span>
+					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
+				</button>
+			</div>
+		</section>
+
+		<section class="challenge-run-heading" x-show="showChallengeTimer">
+			<span x-text="`${currentDifficulty.label} · ${challengeIndex + 1} / ${challengeTotal}`"></span>
+			<div class="timer" aria-label="Elapsed time">
 				<span>Time</span>
 				<strong x-text="challengeTimerTime"></strong>
 			</div>
 		</section>
-		<p class="engine-error" x-show="sharedPuzzleError" x-text="sharedPuzzleError" role="alert"></p>
-		<p class="engine-error" x-show="engineError" x-text="engineErrorMessage" role="alert"></p>
+		<p class="engine-error" x-show="mode !== 'home' && sharedPuzzleError" x-text="sharedPuzzleError" role="alert"></p>
+		<p class="engine-error" x-show="mode !== 'home' && engineError" x-text="engineErrorMessage" role="alert"></p>
 
 		<section class="difficulty-picker" x-show="mode === 'study'">
 			<div class="study-toolbar">
@@ -135,13 +146,13 @@
 				</template>
 			</div>
 			<p>Solve the puzzles. Each mistake marks that puzzle failed, but you can keep solving it. Mark every covered square the clues prove safe or mined. The clock starts when you press Start.</p>
-			<button
-				type="button"
-				class="challenge-start"
-				:disabled="challengePreparing"
-				@click="activateChallengeStart()"
-				x-text="challengeStartLabel"
-			></button>
+			<div class="challenge-intro-actions">
+				<button type="button" class="challenge-start" :disabled="challengePreparing" @click="activateChallengeStart()" x-text="challengeStartLabel"></button>
+				<button type="button" class="challenge-invite" @click="shareChallenge()">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.5"></circle><circle cx="6" cy="12" r="2.5"></circle><circle cx="18" cy="19" r="2.5"></circle><path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5"></path></svg>
+					<span>Invite a friend</span>
+				</button>
+			</div>
 		</section>
 
 		<section class="challenge-finish" x-show="showChallengeFinish" x-transition.opacity role="status" aria-live="polite">
@@ -164,7 +175,13 @@
 					</div>
 				</div>
 			</div>
-			<button type="button" class="challenge-start" @click="restartChallenge()">Play again</button>
+			<div class="challenge-finish-actions">
+				<button type="button" class="challenge-start" @click="restartChallenge()">Play again</button>
+				<button type="button" class="challenge-invite" @click="shareChallenge()">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.5"></circle><circle cx="6" cy="12" r="2.5"></circle><circle cx="18" cy="19" r="2.5"></circle><path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5"></path></svg>
+					<span>Challenge a friend</span>
+				</button>
+			</div>
 		</section>
 
 		<section
