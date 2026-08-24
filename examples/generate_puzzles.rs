@@ -1,6 +1,7 @@
+use rayon::prelude::*;
 use std::io::{self, Write};
 
-const DEFAULT_PUZZLES: usize = 100;
+const DEFAULT_PUZZLES: u64 = 100;
 const DEFAULT_ATTEMPTS: u32 = 1000;
 const PUBLIC_URL: &str = "https://casualhacks.net/minesight/";
 
@@ -24,15 +25,20 @@ fn parse_difficulty(value: &str) -> Option<Difficulty> {
 	}
 }
 
-fn parse_count(value: &str) -> Result<usize, String> {
-	match value.parse() {
+fn parse_count(value: &str) -> Result<u64, String> {
+	let count = match value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+		Some(value) => u64::from_str_radix(value, 16),
+		None => value.parse(),
+	};
+
+	match count {
 		Ok(0) => Err("count must be greater than zero".to_owned()),
 		Ok(count) => Ok(count),
 		Err(error) => Err(format!("invalid count: {error}")),
 	}
 }
 
-fn parse_args() -> (Difficulty, usize, u32) {
+fn parse_args() -> (Difficulty, u64, u32) {
 	let matches = clap::Command::new("generate_puzzles")
 		.about("Generate an HTML gallery of Minesight puzzles")
 		.arg(clap::Arg::new("difficulty").required(true).value_parser(["easy", "medium", "hard", "expert", "mit"]))
@@ -42,7 +48,7 @@ fn parse_args() -> (Difficulty, usize, u32) {
 		.get_matches();
 
 	let difficulty = parse_difficulty(matches.get_one::<String>("difficulty").unwrap()).unwrap();
-	let count = matches.get_one::<usize>("count").or_else(|| matches.get_one::<usize>("positional_count")).copied().unwrap_or(DEFAULT_PUZZLES);
+	let count = matches.get_one::<u64>("count").or_else(|| matches.get_one::<u64>("positional_count")).copied().unwrap_or(DEFAULT_PUZZLES);
 	let attempts = matches.get_one::<u32>("attempts").copied().unwrap_or(DEFAULT_ATTEMPTS);
 	(difficulty, count, attempts)
 }
@@ -144,8 +150,8 @@ fn main() -> io::Result<()> {
 	let (difficulty, count, attempts) = parse_args();
 
 	let stdout = io::stdout();
-	let mut out = io::BufWriter::new(stdout.lock());
-	writeln!(out, r#"<!doctype html>
+	let mut stream = io::BufWriter::new(stdout.lock());
+	writeln!(stream, r#"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -207,26 +213,26 @@ h1 {{ margin: 0 0 8px; font: 700 28px/1.2 system-ui, sans-serif; }}
 	)?;
 
 	let mut found = 0;
-	let mut seed = 0;
 	let mut exhausted = 0u64;
-	let mut total_attempts = 0u64;
-	while found < count {
-		match difficulty.generate(seed, attempts) {
+	let puzzles: Vec<_> = (0..count)
+		.into_par_iter()
+		.map(|seed| (seed, difficulty.generate(seed, attempts)))
+		.collect();
+
+	for (seed, puzzle) in puzzles {
+		match puzzle {
 			Some(puzzle) => {
 				found += 1;
-				total_attempts += puzzle.attempts as u64;
-				write_puzzle(&mut out, found, &puzzle)?;
+				write_puzzle(&mut stream, found, &puzzle)?;
 				eprintln!("seed {seed}: accepted as {found}/{count} after {} attempts", puzzle.attempts);
 			}
 			None => {
 				exhausted += 1;
-				total_attempts += attempts as u64;
 				eprintln!("seed {seed}: exhausted after {attempts} attempts");
 			}
 		}
-		seed = seed.checked_add(1).expect("ran out of seeds");
 	}
-	eprintln!("searched {seed} seeds: accepted {found}, exhausted {exhausted}, total attempts {total_attempts}");
+	eprintln!("searched {count} seeds: accepted {found}, exhausted {exhausted}");
 
-	writeln!(out, "</section>\n</main>\n</body>\n</html>")
+	writeln!(stream, "</section>\n</main>\n</body>\n</html>")
 }
