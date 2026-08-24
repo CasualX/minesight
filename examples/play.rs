@@ -147,10 +147,13 @@ fn read_action() -> std::io::Result<Option<Action>> {
 	}
 }
 
-fn apply_solver(state: &mut minetacs::GameState, name: &str, solver: impl Fn(&minetacs::GameState) -> minetacs::Deductions) {
+fn apply_solver(state: &mut minetacs::GameState, name: &str, solver: impl Fn(&minetacs::GameState) -> Option<minetacs::Deductions>) {
 	let mut deductions = 0;
 	loop {
-		let result = solver(state);
+		let Some(result) = solver(state) else {
+			println!("The {name} solver found a contradiction.");
+			return;
+		};
 		if result.is_empty() {
 			break;
 		}
@@ -166,12 +169,11 @@ fn apply_solver(state: &mut minetacs::GameState, name: &str, solver: impl Fn(&mi
 	}
 }
 
-fn check_solver(state: &minetacs::GameState, name: &str, solver: impl Fn(&minetacs::GameState) -> minetacs::Deductions) {
-	if solver(state).is_empty() {
-		println!("The {name} solver cannot make progress.");
-	}
-	else {
-		println!("The {name} solver can make progress.");
+fn check_solver(state: &minetacs::GameState, name: &str, solver: impl Fn(&minetacs::GameState) -> Option<minetacs::Deductions>) {
+	match solver(state) {
+		None => println!("The {name} solver found a contradiction."),
+		Some(result) if result.is_empty() => println!("The {name} solver cannot make progress."),
+		Some(_) => println!("The {name} solver can make progress."),
 	}
 }
 
@@ -197,15 +199,14 @@ fn generate_board() -> minetacs::GameState {
 		let state = minetacs::GameState::random(&mut rng, &gradient);
 		let mut subset_state = state;
 
-		loop {
-			let deductions = subset_state.solve_subset();
+		while let Some(deductions) = subset_state.solve_subset() {
 			if deductions.is_empty() {
 				break;
 			}
 			subset_state.apply(deductions);
 		}
 
-		if !subset_state.solve_sat().is_empty() {
+		if subset_state.solve_sat().is_some_and(|deductions| !deductions.is_empty()) {
 			return state;
 		}
 	}

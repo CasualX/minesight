@@ -6,6 +6,7 @@ mod wasm32;
 pub mod puzzle;
 
 mod sat;
+mod solve;
 
 /// Width and height of every generated puzzle.
 pub const BOARD_SIZE: usize = 8;
@@ -689,225 +690,13 @@ impl GameState {
 
 		Some((state, indices))
 	}
-	/// Computes deductions implied by the total number of mines on the board.
-	///
-	/// If every mine has been flagged, all remaining squares are safe. If the
-	/// number of remaining mines equals the number of unknown squares, all of
-	/// those squares are mines.
-	pub fn solve_total(&self) -> Deductions {
-		let unknown = !(self.revealed | self.flagged);
-		let Some(remaining_mines) = self.count_mines().checked_sub(self.flagged.count_ones()) else {
-			return Deductions::default();
-		};
-
-		if remaining_mines == 0 {
-			Deductions {
-				always_mine: 0,
-				always_safe: unknown,
-			}
-		}
-		else if remaining_mines == unknown.count_ones() {
-			Deductions {
-				always_mine: unknown,
-				always_safe: 0,
-			}
-		}
-		else {
-			Deductions::default()
-		}
-	}
 	/// Computes all exact deductions implied by the revealed clues.
 	///
 	/// The board's total mine count is intentionally not used. Callers must apply
 	/// the result and call this method again to continue solving.
-	pub fn solve(&self) -> Deductions {
+	/// Returns `None` if the visible clues and flags contradict each other.
+	pub fn solve(&self) -> Option<Deductions> {
 		self.solve_sat()
-	}
-	/// Computes mines and safe cells implied directly by revealed clues.
-	pub fn solve_local(&self) -> Deductions {
-		let mut always_mine = 0;
-		let mut always_safe = 0;
-
-		for i in enumerate(self.revealed) {
-			let n_mask = NEIGHBOURS[i];
-
-			let unknown = n_mask & !self.revealed & !self.flagged;
-			let clue = (self.mines & n_mask).count_ones();
-			let flagged = (self.flagged & n_mask).count_ones();
-
-			if flagged == clue {
-				always_safe |= unknown;
-			}
-			else if flagged < clue && clue - flagged == unknown.count_ones() {
-				always_mine |= unknown;
-			}
-		}
-
-		Deductions {
-			always_mine,
-			always_safe,
-		}
-	}
-	/// Computes deductions obtained by subtracting overlapping clue constraints.
-	///
-	/// For example, if one clue requires one mine in `{a, b}` and another requires one mine in `{a, b, c}`, then `c` is safe.
-	/// Direct local deductions are included, making this solver strictly more capable than [`GameState::solve_local`].
-	pub fn solve_subset(&self) -> Deductions {
-		let Some((state, _)) = self.constraint_state(self.revealed) else {
-			return Deductions::default();
-		};
-		state.solve_subset().map(Into::into).unwrap_or_default()
-	}
-	/// Computes deductions by subtracting overlapping frontier-clue constraints.
-	///
-	/// For constraints `A` and `B`, their shared cells cancel:
-	///
-	/// ```text
-	/// mines(B-only) - mines(A-only) = remaining(B) - remaining(A)
-	/// ```
-	///
-	/// If this difference reaches either possible extreme, every cell in both
-	/// exclusive groups is determined. Only clues touching the current unflagged
-	/// frontier are considered.
-	///
-	/// When `extended_vision` is false, each clue is compared with its geometrically
-	/// adjacent clues. When it is true, clues up to two squares apart are compared
-	/// by also searching the neighbours of each neighbouring cell. The extended
-	/// search includes every pair considered by the adjacent-only search.
-	pub fn solve_overlap(&self, extended_vision: bool) -> Deductions {
-		let active = self.active();
-		if active == 0 {
-			return Deductions::default();
-		}
-
-		let clues = neighbours(active) & self.revealed;
-		let mut result = Deductions::default();
-
-		for a_index in enumerate(clues) {
-			let a_neighbours = NEIGHBOURS[a_index];
-			let a_unrevealed = a_neighbours & !self.revealed & !self.flagged;
-			let a_clue = (self.mines & a_neighbours).count_ones();
-			let a_flags = (self.flagged & a_neighbours).count_ones();
-			if a_clue < a_flags || a_clue > a_flags + a_unrevealed.count_ones() {
-				return Deductions::default();
-			}
-
-			let partners = if extended_vision {
-				neighbours(NEIGHBOURS[a_index])
-			}
-			else {
-				NEIGHBOURS[a_index]
-			};
-			for b_index in enumerate(partners & clues) {
-				if b_index <= a_index {
-					continue;
-				}
-
-				let b_neighbours = NEIGHBOURS[b_index];
-				let b_unrevealed = b_neighbours & !self.revealed & !self.flagged;
-				let b_clue = (self.mines & b_neighbours).count_ones();
-				let b_flags = (self.flagged & b_neighbours).count_ones();
-				if b_clue < b_flags || b_clue > b_flags + b_unrevealed.count_ones() {
-					return Deductions::default();
-				}
-
-				let a_only = a_unrevealed & !b_unrevealed;
-				let b_only = b_unrevealed & !a_unrevealed;
-
-				if b_clue + a_flags == a_clue + b_flags + b_only.count_ones() {
-					result.always_mine |= b_only;
-					result.always_safe |= a_only;
-				}
-				else if a_clue + b_flags == b_clue + a_flags + a_only.count_ones() {
-					result.always_mine |= a_only;
-					result.always_safe |= b_only;
-				}
-			}
-		}
-
-		if result.always_mine & result.always_safe != 0 {
-			return Deductions::default();
-		}
-
-		result
-	}
-	/// Computes deductions by covering one clue with one or more adjacent clues.
-	///
-	/// Subtracting the focus constraint from the sum of the covering constraints
-	/// gives negative weight to uncovered focus cells and positive weight to cells
-	/// covered outside the focus or more than once inside it. When this difference
-	/// reaches either possible extreme, all cells in both groups are determined.
-	pub fn solve_clue_cover(&self) -> Deductions {
-		let active = self.active();
-		if active == 0 {
-			return Deductions::default();
-		}
-
-		let clues = neighbours(active) & self.revealed;
-		let mut result = Deductions::default();
-
-		for focus_index in enumerate(clues) {
-			let focus_neighbours = NEIGHBOURS[focus_index];
-			let focus_cells = focus_neighbours & !self.revealed & !self.flagged;
-			let focus_clue = (self.mines & focus_neighbours).count_ones();
-			let Some(focus_mines) = focus_clue.checked_sub((self.flagged & focus_neighbours).count_ones()) else {
-				return Deductions::default();
-			};
-			if focus_mines > focus_cells.count_ones() {
-				return Deductions::default();
-			}
-
-			let adjacent_clues = NEIGHBOURS[focus_index] & clues;
-			let mut cover = adjacent_clues;
-			while cover != 0 {
-				let mut covered = 0;
-				let mut covered_twice = 0;
-				let mut covering_mines = 0;
-				let mut covering_cells = 0;
-
-				for cover_index in enumerate(cover) {
-					let cover_neighbours = NEIGHBOURS[cover_index];
-					let cover_cells = cover_neighbours & !self.revealed & !self.flagged;
-					let cover_clue = (self.mines & cover_neighbours).count_ones();
-					let Some(remaining) = cover_clue.checked_sub((self.flagged & cover_neighbours).count_ones()) else {
-						return Deductions::default();
-					};
-					if remaining > cover_cells.count_ones() {
-						return Deductions::default();
-					}
-
-					covered_twice |= covered & cover_cells;
-					covered |= cover_cells;
-					covering_mines += remaining;
-					covering_cells += cover_cells.count_ones();
-				}
-
-				let uncovered = focus_cells & !covered;
-				let positive = (covered & !focus_cells) | (covered_twice & focus_cells);
-				let negative_capacity = uncovered.count_ones();
-				let positive_capacity = covering_cells - (covered & focus_cells).count_ones();
-
-				if focus_mines > covering_mines + negative_capacity || covering_mines > focus_mines + positive_capacity {
-					return Deductions::default();
-				}
-				if focus_mines == covering_mines + negative_capacity {
-					result.always_mine |= uncovered;
-					result.always_safe |= positive;
-				}
-				if covering_mines == focus_mines + positive_capacity {
-					result.always_mine |= positive;
-					result.always_safe |= uncovered;
-				}
-
-				cover = (cover - 1) & adjacent_clues;
-			}
-		}
-
-		if result.always_mine & result.always_safe != 0 {
-			return Deductions::default();
-		}
-
-		result
 	}
 	/// Computes deductions from a small, temporary set of derived frontier constraints.
 	///
@@ -915,27 +704,24 @@ impl GameState {
 	/// cells. Those constraints participate in the local, subset, and overlap
 	/// rules for at most [`DERIVED_CONSTRAINT_DEPTH`] generations. This models a
 	/// short chain of human-scale inferences without becoming an exact solver.
-	pub fn solve_derived(&self) -> Deductions {
+	/// Returns `None` if the considered clues and flags contradict each other.
+	pub fn solve_derived(&self) -> Option<Deductions> {
 		let active = self.active();
 		if active == 0 {
-			return Deductions::default();
+			return Some(Deductions::default());
 		}
 
 		let clues = neighbours(active) & self.revealed;
-		let Some((state, _)) = self.constraint_state(clues) else {
-			return Deductions::default();
-		};
+		let (state, _) = self.constraint_state(clues)?;
 		state
 			.solve_derived::<MAX_DERIVED_CONSTRAINTS>(DERIVED_CONSTRAINT_DEPTH)
 			.map(Into::into)
-			.unwrap_or_default()
 	}
 	/// Computes exact deductions from the revealed clues using the SAT solver.
-	pub fn solve_sat(&self) -> Deductions {
-		let Some((state, _)) = self.constraint_state(self.revealed) else {
-			return Deductions::default();
-		};
-		state.solve().map(Into::into).unwrap_or_default()
+	/// Returns `None` if the visible clues and flags contradict each other.
+	pub fn solve_sat(&self) -> Option<Deductions> {
+		let (state, _) = self.constraint_state(self.revealed)?;
+		state.solve().map(Into::into)
 	}
 }
 

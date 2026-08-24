@@ -186,7 +186,7 @@ impl Explorer for InitialRevealExplorer {
 		candidate_score: &mut dyn FnMut(&GameState) -> Option<(u32, u32)>,
 	) -> Option<GameState> {
 		let mut state = GameState { mines, revealed: initial_reveal(mines), flagged: 0 };
-		apply_cleanup(&mut state, cleanup);
+		apply_cleanup(&mut state, cleanup)?;
 
 		let initial = state;
 		let original_frontier = state.frontier();
@@ -204,7 +204,7 @@ impl Explorer for InitialRevealExplorer {
 		let start = deposit(1u64 << rng.uniform(0..safe_starts.count_ones()), safe_starts);
 		let start_index = start.trailing_zeros();
 		state.reveal((start_index & 7) as i8, (start_index >> 3) as i8);
-		apply_cleanup(&mut state, cleanup);
+		apply_cleanup(&mut state, cleanup)?;
 		let mut walk_revealed = state.revealed & !initial.revealed;
 
 		for step in 0..self.max_steps {
@@ -236,7 +236,7 @@ impl Explorer for InitialRevealExplorer {
 			let square = deposit(1u64 << rng.uniform(0..safe_squares.count_ones()), safe_squares);
 			let square_index = square.trailing_zeros();
 			state.reveal((square_index & 7) as i8, (square_index >> 3) as i8);
-			apply_cleanup(&mut state, cleanup);
+			apply_cleanup(&mut state, cleanup)?;
 			walk_revealed |= state.revealed & !initial.revealed;
 		}
 
@@ -287,7 +287,7 @@ impl Explorer for RandomWalkExplorer {
 			let square = deposit(1u64 << rng.uniform(0..safe_squares.count_ones()), safe_squares);
 			let square_index = square.trailing_zeros();
 			state.reveal((square_index & 7) as i8, (square_index >> 3) as i8);
-			apply_cleanup(&mut state, cleanup);
+			apply_cleanup(&mut state, cleanup)?;
 
 			let Some(score) = candidate_score(&state) else {
 				continue;
@@ -303,7 +303,8 @@ impl Explorer for RandomWalkExplorer {
 }
 
 /// Solver function used by cleanup, test, and reject roles.
-pub type Solver = fn(&GameState) -> Deductions;
+/// Returns `None` when the input state is contradictory.
+pub type Solver = fn(&GameState) -> Option<Deductions>;
 
 fn same_solver(left: Solver, right: Solver) -> bool {
 	std::ptr::fn_addr_eq(left, right)
@@ -384,7 +385,7 @@ impl<B: BoardGenerator, E: Explorer> Generator<B, E> {
 }
 
 fn analyze_candidate(seed: u64, attempts: u32, state: GameState, solvers: SolverConfig, criteria: Criteria) -> Option<Puzzle> {
-	let deductions = (solvers.test)(&state);
+	let deductions = (solvers.test)(&state)?;
 	let puzzle = make_puzzle(seed, attempts, state, deductions);
 
 	// Count checks are cheap and can avoid a stronger reject solver.
@@ -395,7 +396,7 @@ fn analyze_candidate(seed: u64, attempts: u32, state: GameState, solvers: Solver
 	if !same_solver(solvers.test, solvers.reject) {
 		let mut remainder = state;
 		remainder.apply(puzzle.forced);
-		if !(solvers.reject)(&remainder).is_empty() {
+		if !(solvers.reject)(&remainder)?.is_empty() {
 			return None;
 		}
 	}
@@ -403,11 +404,11 @@ fn analyze_candidate(seed: u64, attempts: u32, state: GameState, solvers: Solver
 	Some(puzzle)
 }
 
-fn apply_cleanup(state: &mut GameState, solver: Solver) {
+fn apply_cleanup(state: &mut GameState, solver: Solver) -> Option<()> {
 	loop {
-		let deductions = solver(state);
+		let deductions = solver(state)?;
 		if deductions.is_empty() {
-			return;
+			return Some(());
 		}
 		state.apply(deductions);
 	}
@@ -420,7 +421,7 @@ pub fn generate_easy(seed: u64, attempts: u32) -> Option<Puzzle> {
 		explorer: InitialRevealExplorer { max_steps: 0, walk_threshold: 0 },
 		solvers: SolverConfig {
 			cleanup: GameState::solve_local,
-			test: |state| state.solve_subset() | state.solve_overlap(false) | state.solve_clue_cover(),
+			test: |state| Some(state.solve_subset()? | state.solve_overlap(false)? | state.solve_clue_cover()?),
 			reject: GameState::solve_sat,
 		},
 		criteria: Criteria {
@@ -440,7 +441,7 @@ pub fn generate_medium(seed: u64, attempts: u32) -> Option<Puzzle> {
 		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
 		solvers: SolverConfig {
 			cleanup: GameState::solve_local,
-			test: |state| state.solve_subset() | state.solve_overlap(true) | state.solve_clue_cover(),
+			test: |state| Some(state.solve_subset()? | state.solve_overlap(true)? | state.solve_clue_cover()?),
 			reject: GameState::solve_sat,
 		},
 		criteria: Criteria {
@@ -459,8 +460,8 @@ pub fn generate_hard(seed: u64, attempts: u32) -> Option<Puzzle> {
 		board: Gradient::new(4, 4, Gradient::DENOMINATOR * 35 / 100, Gradient::DENOMINATOR / 16, 0),
 		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
 		solvers: SolverConfig {
-			cleanup: |state| state.solve_local() | state.solve_overlap(true) | state.solve_clue_cover(),
-			test: |state| state.solve_derived(),
+			cleanup: |state| Some(state.solve_local()? | state.solve_overlap(true)? | state.solve_clue_cover()?),
+			test: GameState::solve_derived,
 			reject: GameState::solve_sat,
 		},
 		criteria: Criteria {
@@ -479,7 +480,7 @@ pub fn generate_expert(seed: u64, attempts: u32) -> Option<Puzzle> {
 		board: ExpertBoard,
 		explorer: RandomWalkExplorer { max_steps: 16 },
 		solvers: SolverConfig {
-			cleanup: |state| state.solve_subset() | state.solve_derived() | state.solve_clue_cover(),
+			cleanup: |state| Some(state.solve_subset()? | state.solve_derived()? | state.solve_clue_cover()?),
 			test: GameState::solve_sat,
 			reject: GameState::solve_sat,
 		},
@@ -506,7 +507,7 @@ fn minimize_mit_clues<R: urandom::Rng>(mines: u64, rng: &mut urandom::Random<R>)
 	};
 
 	// Even with every safe clue visible, some mine layouts are not uniquely determined.
-	if state.solve_sat().always_mine != mines {
+	if state.solve_sat()?.always_mine != mines {
 		return None;
 	}
 
@@ -524,7 +525,7 @@ fn minimize_mit_clues<R: urandom::Rng>(mines: u64, rng: &mut urandom::Random<R>)
 			}
 
 			state.revealed &= !cell;
-			if state.solve_sat().always_mine == mines {
+			if state.solve_sat()?.always_mine == mines {
 				removed_any = true;
 			}
 			else {
@@ -541,8 +542,8 @@ fn minimize_mit_clues<R: urandom::Rng>(mines: u64, rng: &mut urandom::Random<R>)
 /// Generates an MIT-style puzzle with a uniquely determined mine layout and
 /// minimizes the number of deductions available to the local solver.
 pub fn generate_mit<const REFINEMENTS: usize>(seed: u64, attempts: u32) -> Option<Puzzle> {
-	fn cleanup(state: &GameState) -> Deductions {
-		state.solve_local() | state.solve_overlap(true) | state.solve_clue_cover()
+	fn cleanup(state: &GameState) -> Option<Deductions> {
+		Some(state.solve_local()? | state.solve_overlap(true)? | state.solve_clue_cover()?)
 	}
 	fn random(rng: &mut urandom::Random<impl urandom::Rng>) -> u64 {
 		// Since we only ever open clues, balance the unrevealed cells between mines and safe cells
@@ -564,10 +565,10 @@ pub fn generate_mit<const REFINEMENTS: usize>(seed: u64, attempts: u32) -> Optio
 		};
 
 		let mut best = current;
-		let mut best_local_count = cleanup(&best).count();
+		let mut best_local_count = cleanup(&best)?.count();
 
 		for _ in 0..REFINEMENTS {
-			let local = cleanup(&current);
+			let local = cleanup(&current)?;
 			let forced = local.always_mine | local.always_safe;
 			if forced == 0 {
 				break;
@@ -582,14 +583,14 @@ pub fn generate_mit<const REFINEMENTS: usize>(seed: u64, attempts: u32) -> Optio
 			};
 
 			current = candidate;
-			let local_count = cleanup(&current).count();
+			let local_count = cleanup(&current)?.count();
 			if local_count < best_local_count {
 				best = current;
 				best_local_count = local_count;
 			}
 		}
 
-		let deductions = best.solve_sat();
+		let deductions = best.solve_sat()?;
 		return Some(make_puzzle(seed, attempt + 1, best, deductions));
 	}
 	None

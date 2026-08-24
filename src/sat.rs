@@ -216,6 +216,7 @@ impl<const N: usize> State<N> {
 	}
 
 	/// Applies direct and subset-subtraction deductions to all constraints.
+	#[allow(dead_code)]
 	pub fn solve_subset(&self) -> Option<Forced> {
 		let mut result = Forced::default();
 		for a_index in 0..self.len {
