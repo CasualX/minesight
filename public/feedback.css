@@ -131,13 +131,13 @@
 }
 
 .feedback-mark {
-	--mark-color: #55713d;
-	--mark-soft: #dfd39f;
+	--mark-color: var(--marked-safe-ink);
+	--mark-soft: var(--marked-safe-line);
 }
 
 .feedback-mark.is-mine {
-	--mark-color: #9a504a;
-	--mark-soft: #e2aaa5;
+	--mark-color: var(--marked-mine-ink);
+	--mark-soft: var(--marked-mine-line);
 }
 
 .feedback-mark-ring {
@@ -153,7 +153,8 @@
 	width: 4px;
 	height: 4px;
 	border-radius: 50%;
-	background: var(--mark-soft);
+	background: var(--mark-color);
+	box-shadow: 0 0 4px var(--mark-soft);
 	animation: feedback-mark-spark 480ms ease-out var(--spark-delay) both;
 }
 

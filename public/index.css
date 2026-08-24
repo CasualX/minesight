@@ -4,17 +4,17 @@
 	font-synthesis: none;
 	--background: #fafafa;
 	--paper: #fff;
-	--revealed: var(--paper);
+	--revealed: #eceee9;
 	--ink: #111;
 	--muted: #737373;
 	--line: #d1d1d1;
-	--grid-line: var(--ink);
+	--revealed-line: #a5a8a1;
 	--focus: #2457a6;
-	--covered: #dededb;
-	--covered-hover: #d4d4d0;
-	--covered-raised-light: rgb(255 255 255 / 65%);
-	--covered-raised-shadow: rgb(0 0 0 / 22%);
-	--inactive: #b8b8b4;
+	--covered: #d4d5d0;
+	--covered-hover: #c9cbc5;
+	--covered-raised-light: rgb(255 255 255 / 58%);
+	--covered-raised-shadow: rgb(0 0 0 / 28%);
+	--inactive: #aaaca6;
 	--loading-overlay: rgb(250 250 250 / 90%);
 	--path-pending: #ddd;
 	--path-current: #888;
@@ -28,10 +28,10 @@
 	--danger-soft: #f8e3e1;
 	--success: #55713d;
 	--success-effect: #9bad8b;
-	--marked-safe: #edf4ee;
-	--marked-safe-hover: #e2ede4;
+	--marked-safe: #dce9de;
+	--marked-safe-hover: #d1e0d4;
 	--marked-safe-ink: #23472c;
-	--marked-safe-line: #9db5a1;
+	--marked-safe-line: #879f8c;
 	--marked-mine: #d2a4a0;
 	--marked-mine-hover: #c99590;
 	--marked-mine-ink: #5d2925;
@@ -70,7 +70,7 @@
 		--ink: #d2d2cc;
 		--muted: #aaa9a2;
 		--line: #4b4d49;
-		--grid-line: #747770;
+		--revealed-line: #747770;
 		--focus: #8bb7ff;
 		--covered: #343733;
 		--covered-hover: #3e423d;
@@ -874,7 +874,7 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	background: var(--inactive);
 }
 .cell.revealed {
-	border: 1px solid var(--grid-line);
+	border: 1px solid var(--revealed-line);
 	background: var(--revealed);
 	cursor: default;
 }
