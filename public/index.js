@@ -177,7 +177,7 @@ const MIT_DIFFICULTY = {
 	key: 'mit',
 	label: 'MIT-style',
 	generator: 'randomMitPuzzle',
-	description: 'Determine the entire mine layout from a minimal set of clues. Every covered square has one logically forced answer.',
+	description: 'Determine the unique mine layout from a minimal set of clues. Every active square has one logically forced answer.',
 };
 const STUDY_DIFFICULTIES = [
 	EASY_DIFFICULTY,
@@ -962,7 +962,6 @@ function createMinesight() {
 		},
 
 		get inputHelp() {
-			if (this.scratchActive && this.scratchTool === 'eraser') return 'Swipe over a line to erase that whole stroke. Select a color to draw again.';
 			if (this.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
 			return `Tap or left-click to mark ${this.tapActionLabel}. Long-press or right-click to mark ${this.holdActionLabel}.`;
 		},
