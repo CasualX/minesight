@@ -250,6 +250,7 @@
 						@pointermove="continueScratchStroke($event)"
 						@pointerup="endScratchStroke($event)"
 						@pointercancel="endScratchStroke($event)"
+						@wheel.prevent="cycleScratchTool($event)"
 						@contextmenu.prevent="contextMenuScratch($event)"
 					></canvas>
 					<div class="board-loading" x-show="studySearchingVisible" x-transition.opacity role="status" aria-live="polite">

@@ -1300,6 +1300,23 @@ function createMinesight() {
 			this.renderScratchPad();
 		},
 
+		/** @param {WheelEvent} event */
+		cycleScratchTool(event) {
+			if (!this.scratchActive) return;
+			let delta = event.deltaY || event.deltaX;
+			if (delta === 0) return;
+			let tools = [...this.scratchColors.map((color) => color.key), 'eraser'];
+			let current = this.scratchTool === 'eraser' ? tools.length - 1 : tools.indexOf(this.scratchColor);
+			let next = (current + (delta > 0 ? 1 : -1) + tools.length) % tools.length;
+			if (tools[next] === 'eraser') {
+				this.scratchTool = 'eraser';
+			}
+			else {
+				this.scratchTool = 'pencil';
+				this.scratchColor = tools[next];
+			}
+		},
+
 		/** @param {MouseEvent | PointerEvent} event */
 		scratchPoint(event) {
 			let rect = event.currentTarget.getBoundingClientRect();
