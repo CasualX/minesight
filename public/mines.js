@@ -19,7 +19,7 @@ const BASE64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345678
 
 // This is only meant to make shared puzzles less visually recognizable, not to
 // provide encryption. Keep it stable so links using format version 2 remain valid.
-const SHARED_PUZZLE_MASK = (() => {
+const PUZZLE_MASK = (() => {
 	let state = 0x6d2b79f5;
 	return Uint8Array.from({ length: 64 }, () => {
 		state ^= state << 13;
@@ -91,35 +91,35 @@ export class MineField {
 	static decode(payload) {
 		let [version, encoded, extra] = payload.split('.');
 		if (!['1', '2'].includes(version) || extra !== undefined || encoded?.length !== 64) {
-			throw new Error('unsupported shared puzzle format');
+			throw new Error('unsupported puzzle format');
 		}
 
 		let cells = Uint8Array.from(encoded, (character) => BASE64URL.indexOf(character));
 		if (cells.some((cell) => cell === 255)) {
-			throw new Error('invalid shared puzzle data');
+			throw new Error('invalid puzzle data');
 		}
 		if (version === '2') {
-			cells = cells.map((cell, index) => cell ^ SHARED_PUZZLE_MASK[index]);
+			cells = cells.map((cell, index) => cell ^ PUZZLE_MASK[index]);
 		}
 		if (!cells.some((cell) => (cell & ACTIVE) !== 0)) {
-			throw new Error('shared board is not a puzzle');
+			throw new Error('invalid puzzle');
 		}
 		if (!cells.some((cell) => (cell & (FORCED_MINE | FORCED_SAFE)) !== 0)) {
-			throw new Error('shared puzzle has no provable moves');
+			throw new Error('puzzle has no provable moves');
 		}
 		for (let cell of cells) {
 			let forced = cell & (FORCED_MINE | FORCED_SAFE);
 			if (forced !== 0 && (cell & ACTIVE) === 0) {
-				throw new Error('shared puzzle has an invalid answer');
+				throw new Error('puzzle has an invalid answer');
 			}
 			if (forced === (FORCED_MINE | FORCED_SAFE)) {
-				throw new Error('shared puzzle has conflicting answers');
+				throw new Error('puzzle has conflicting answers');
 			}
 			if ((cell & FORCED_MINE) !== 0 && (cell & MINE) === 0) {
-				throw new Error('shared puzzle has an invalid mine answer');
+				throw new Error('puzzle has an invalid mine answer');
 			}
 			if ((cell & FORCED_SAFE) !== 0 && (cell & MINE) !== 0) {
-				throw new Error('shared puzzle has an invalid safe answer');
+				throw new Error('puzzle has an invalid safe answer');
 			}
 		}
 		return new MineField(8, 8, cells);
@@ -201,7 +201,7 @@ export class MineField {
 	 */
 	encode() {
 		let encoded = Array.from(this.state, (cell, index) => {
-			return BASE64URL[(cell & 0x3f) ^ SHARED_PUZZLE_MASK[index]];
+			return BASE64URL[(cell & 0x3f) ^ PUZZLE_MASK[index]];
 		}).join('');
 		return `2.${encoded}`;
 	}

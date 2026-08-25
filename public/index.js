@@ -15,7 +15,7 @@ const SCRATCH_ERASER_RADIUS = .025;
 const SCRATCH_MARK_SIZE = .04125;
 const SCRATCH_MARK_ANIMATION_MS = 220;
 const MINESIGHT_STORAGE_KEY = 'minesight';
-const SHARED_PUZZLE_PARAMETER = 'p';
+const LEGACY_PUZZLE_PARAMETER = 'p';
 const TUTORIAL_PARAMETER = 'tutorial';
 const CHALLENGE_MODE_PARAMETER = 'challenge';
 const CHALLENGE_SEED_PARAMETER = 'seed';
@@ -229,22 +229,75 @@ function parseChallengeTime(value) {
 
 /** @param {URL} url */
 function resolveUrlGame(url) {
-	if (url.searchParams.has(SHARED_PUZZLE_PARAMETER)) return { mode: 'shared' };
+	let [path, query = ''] = url.hash.slice(1).split('?');
+	let routeSearchParams = new URLSearchParams(query);
+	if (path.startsWith('/puzzle/')) return { mode: 'puzzle', payload: path.slice('/puzzle/'.length) };
 
-	let modeKey = url.searchParams.get(CHALLENGE_MODE_PARAMETER);
-	if (modeKey !== null && CHALLENGE_MODES.some(({ key }) => key === modeKey)) {
-		let seedText = url.searchParams.get(CHALLENGE_SEED_PARAMETER);
-		let timeText = url.searchParams.get(CHALLENGE_TIME_PARAMETER);
+	let studyMatch = path.match(/^\/study(?:\/([^/]+))?$/);
+	if (studyMatch) {
+		let difficultyKey = studyMatch[1];
+		if (difficultyKey === undefined || STUDY_DIFFICULTIES.some(({ key }) => key === difficultyKey)) {
+			return { mode: 'study', difficultyKey };
+		}
+	}
+
+	let challengeMatch = path.match(/^\/challenge\/([^/]+)$/);
+	let modeKey = challengeMatch?.[1];
+	if (modeKey !== undefined && CHALLENGE_MODES.some(({ key }) => key === modeKey)) {
+		let seedText = routeSearchParams.get(CHALLENGE_SEED_PARAMETER);
+		let timeText = routeSearchParams.get(CHALLENGE_TIME_PARAMETER);
 		return {
 			mode: 'challenge',
 			modeKey,
+			received: seedText !== null || timeText !== null,
 			seed: seedText === null ? undefined : parseChallengeSeed(seedText),
 			time: timeText === null ? undefined : parseChallengeTime(timeText),
 		};
 	}
 
-	if (url.searchParams.has(TUTORIAL_PARAMETER)) return { mode: 'tutorial' };
+	if (path === '/tutorial') return { mode: 'tutorial' };
 	return { mode: 'home' };
+}
+
+/** @param {URL} url */
+function redirectLegacyUrl(url) {
+	let hasLegacyRoute = [LEGACY_PUZZLE_PARAMETER, TUTORIAL_PARAMETER, CHALLENGE_MODE_PARAMETER]
+		.some((parameter) => url.searchParams.has(parameter));
+	if (!hasLegacyRoute) return url;
+
+	let route = '/';
+	let puzzlePayload = url.searchParams.get(LEGACY_PUZZLE_PARAMETER);
+	let modeKey = url.searchParams.get(CHALLENGE_MODE_PARAMETER);
+	if (puzzlePayload !== null) route = `/puzzle/${puzzlePayload}`;
+	else if (modeKey !== null && CHALLENGE_MODES.some(({ key }) => key === modeKey)) {
+		let routeSearchParams = new URLSearchParams();
+		let seed = url.searchParams.get(CHALLENGE_SEED_PARAMETER);
+		let time = url.searchParams.get(CHALLENGE_TIME_PARAMETER);
+		if (seed !== null) routeSearchParams.set(CHALLENGE_SEED_PARAMETER, seed);
+		if (time !== null) routeSearchParams.set(CHALLENGE_TIME_PARAMETER, time);
+		route = `/challenge/${modeKey}${routeSearchParams.size > 0 ? `?${routeSearchParams}` : ''}`;
+	}
+	else if (url.searchParams.has(TUTORIAL_PARAMETER)) route = '/tutorial';
+
+	for (let parameter of [LEGACY_PUZZLE_PARAMETER, TUTORIAL_PARAMETER, CHALLENGE_MODE_PARAMETER, CHALLENGE_SEED_PARAMETER, CHALLENGE_TIME_PARAMETER]) {
+		url.searchParams.delete(parameter);
+	}
+	url.hash = route;
+	window.history.replaceState(null, '', url);
+	return url;
+}
+
+/**
+ * @param {string | URL} source
+ * @param {string} route
+ */
+function createRouteUrl(source, route) {
+	let url = new URL(source);
+	for (let parameter of [LEGACY_PUZZLE_PARAMETER, TUTORIAL_PARAMETER, CHALLENGE_MODE_PARAMETER, CHALLENGE_SEED_PARAMETER, CHALLENGE_TIME_PARAMETER]) {
+		url.searchParams.delete(parameter);
+	}
+	url.hash = route;
+	return url;
 }
 
 /**
@@ -254,14 +307,9 @@ function resolveUrlGame(url) {
  * @param {number | undefined} elapsedMs
  */
 function createChallengeShareUrl(source, modeKey, seed, elapsedMs) {
-	let url = new URL(source);
-	url.searchParams.delete(SHARED_PUZZLE_PARAMETER);
-	url.searchParams.delete(TUTORIAL_PARAMETER);
-	url.searchParams.set(CHALLENGE_MODE_PARAMETER, modeKey);
-	url.searchParams.set(CHALLENGE_SEED_PARAMETER, seed.toString(16));
-	if (elapsedMs === undefined) url.searchParams.delete(CHALLENGE_TIME_PARAMETER);
-	else url.searchParams.set(CHALLENGE_TIME_PARAMETER, String(elapsedMs));
-	return url;
+	let routeSearchParams = new URLSearchParams({ [CHALLENGE_SEED_PARAMETER]: seed.toString(16) });
+	if (elapsedMs !== undefined) routeSearchParams.set(CHALLENGE_TIME_PARAMETER, String(elapsedMs));
+	return createRouteUrl(source, `/challenge/${modeKey}?${routeSearchParams}`);
 }
 
 function loadMinesightData() {
@@ -497,7 +545,7 @@ function sortChallengeTiers(puzzles, route) {
 	}
 }
 
-/** @typedef {'home' | 'tutorial' | 'study' | 'challenge' | 'shared'} GameMode */
+/** @typedef {'home' | 'tutorial' | 'study' | 'challenge' | 'puzzle'} GameMode */
 /** @typedef {'playing' | 'cleared' | 'failed' | 'gave-up' | 'complete'} GameResult */
 /** @typedef {'cleared' | 'failed'} ChallengeResult */
 /** @typedef {{ field: MineField, seed: bigint, result: GameResult, hintUsed: boolean, streak: number, ready: boolean }} StudyState */
@@ -507,22 +555,26 @@ function createMinesight() {
 	/** @type {ResizeObserver | undefined} */
 	let scratchResizeObserver;
 	/** @type {MineField | undefined} */
-	let sharedPuzzle;
-	let sharedPuzzleError = '';
-	let initialUrl = new URL(window.location.href);
-	let sharedPayload = initialUrl.searchParams.get(SHARED_PUZZLE_PARAMETER);
+	let puzzle;
+	let puzzleError = '';
+	let initialUrl = redirectLegacyUrl(new URL(window.location.href));
+	if (initialUrl.hash === '') {
+		initialUrl.hash = '/';
+		window.history.replaceState(null, '', initialUrl);
+	}
 	let urlGame = resolveUrlGame(initialUrl);
-	if (sharedPayload !== null) {
+	if (urlGame.mode === 'puzzle') {
 		try {
-			sharedPuzzle = MineField.decode(sharedPayload);
+			puzzle = MineField.decode(urlGame.payload);
 		}
 		catch {
-			sharedPuzzleError = 'This shared puzzle link is invalid.';
+			puzzleError = 'This puzzle link is invalid.';
 		}
 	}
 	gameSounds.setEnabled(stored.soundEnabled !== false);
 	let storedStudy = stored?.study ?? {};
 	let difficultyKey = STUDY_DIFFICULTIES.some(({ key }) => key === storedStudy.difficultyKey) ? storedStudy.difficultyKey : 'easy';
+	if (urlGame.mode === 'study' && urlGame.difficultyKey !== undefined) difficultyKey = urlGame.difficultyKey;
 	let studyStreaks = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
 		let streak = storedStudy.difficulties?.[key]?.streak;
 		return [key, Math.max(0, Number.parseInt(streak) || 0)];
@@ -552,9 +604,10 @@ function createMinesight() {
 	}));
 	return {
 		/** @type {GameMode} */
-		mode: urlGame.mode === 'shared' ? 'shared'
+		mode: urlGame.mode === 'puzzle' ? 'puzzle'
 			: urlGame.mode === 'challenge' ? 'challenge'
-				: urlGame.mode === 'tutorial' ? 'tutorial' : 'home',
+				: urlGame.mode === 'tutorial' ? 'tutorial'
+					: urlGame.mode === 'study' ? 'study' : 'home',
 		soundEnabled: gameSounds.enabled,
 		actionsInverted: false,
 		/** @type {GameResult} */
@@ -564,7 +617,7 @@ function createMinesight() {
 		challengeModes: CHALLENGE_MODES,
 		challengeModeKey,
 		challengeSeed,
-		challengeReceived: urlGame.mode === 'challenge',
+		challengeReceived: urlGame.mode === 'challenge' && urlGame.received,
 		challengeTargetMs: urlGame.mode === 'challenge' ? urlGame.time : undefined,
 		challengeIndex: 0,
 		challengeStarted: false,
@@ -592,7 +645,7 @@ function createMinesight() {
 		incorrectCellIndex: -1,
 		incorrectFeedbackMessage: '',
 		shareFeedback: '',
-		sharedPuzzleError,
+		puzzleError,
 		engineError: '',
 		/** @type {MineField} */
 		field: new MineField(BOARD_SIZE, BOARD_SIZE),
@@ -619,6 +672,9 @@ function createMinesight() {
 		giveUpTimerId: undefined,
 		giveUpHolding: false,
 		giveUpHoldDuration: GIVE_UP_HOLD_MS,
+		activeRouteUrl: window.location.href,
+		/** @type {(() => void) | undefined} */
+		routeListener: undefined,
 		scratchActive: false,
 		scratchTool: 'pencil',
 		scratchColor: 'graphite',
@@ -641,9 +697,15 @@ function createMinesight() {
 			}
 			this.$watch('boardNumber', () => this.resetScratchPad());
 			this.$nextTick(() => this.setupScratchPad());
-			if (sharedPuzzleError) return;
-			if (sharedPuzzle) {
-				this.field = sharedPuzzle;
+			this.routeListener = () => {
+				if (this.activeRouteUrl === window.location.href) return;
+				this.applyCurrentRoute();
+			};
+			window.addEventListener('popstate', this.routeListener);
+			window.addEventListener('hashchange', this.routeListener);
+			if (puzzleError) return;
+			if (puzzle) {
+				this.field = puzzle;
 				this.engineError = '';
 				this.boardNumber += 1;
 				this.revision += 1;
@@ -672,6 +734,8 @@ function createMinesight() {
 			this.cancelCellGesture();
 			this.cancelGiveUpGesture();
 			scratchResizeObserver?.disconnect();
+			if (this.routeListener) window.removeEventListener('popstate', this.routeListener);
+			if (this.routeListener) window.removeEventListener('hashchange', this.routeListener);
 		},
 
 		get currentDifficulty() {
@@ -694,7 +758,7 @@ function createMinesight() {
 		get headerModeTitle() {
 			if (this.mode === 'home') return '';
 			if (this.mode === 'tutorial') return 'How to play';
-			if (this.mode === 'shared') return 'Shared puzzle';
+			if (this.mode === 'puzzle') return 'Puzzle';
 			return this.mode[0].toUpperCase() + this.mode.slice(1);
 		},
 
@@ -823,7 +887,7 @@ function createMinesight() {
 
 		get showBoard() {
 			if (this.mode === 'home') return false;
-			if (this.mode === 'shared' && this.sharedPuzzleError) return false;
+			if (this.mode === 'puzzle' && this.puzzleError) return false;
 			if (this.mode === 'study') return this.studyBoardReady || this.boardPreparing;
 			return this.mode !== 'challenge' || (this.challengeStarted && this.result !== 'complete');
 		},
@@ -834,7 +898,7 @@ function createMinesight() {
 
 		get boardAriaLabel() {
 			if (this.mode === 'tutorial') return 'Introduction minefield';
-			return this.mode === 'shared' ? 'Shared minefield' : `${this.currentDifficulty.label} minefield`;
+			return this.mode === 'puzzle' ? 'Puzzle minefield' : `${this.currentDifficulty.label} minefield`;
 		},
 
 		get minefieldStyle() {
@@ -847,7 +911,7 @@ function createMinesight() {
 		},
 
 		get showPuzzleStatus() {
-			return this.mode === 'study' || this.mode === 'shared';
+			return this.mode === 'study' || this.mode === 'puzzle';
 		},
 
 		get statusTitle() {
@@ -1286,7 +1350,7 @@ function createMinesight() {
 		get cells() {
 			this.revision;
 			let cells = [];
-			let showHints = ['study', 'shared'].includes(this.mode) && this.hintUsed && this.result === 'playing';
+			let showHints = ['study', 'puzzle'].includes(this.mode) && this.hintUsed && this.result === 'playing';
 			let showSolution = this.mode === 'challenge' && this.result === 'gave-up';
 			for (let y = 0; y < this.field.height; y += 1) {
 				for (let x = 0; x < this.field.width; x += 1) {
@@ -1364,7 +1428,7 @@ function createMinesight() {
 
 		get resultTitle() {
 			if (this.result === 'cleared') {
-				if (this.mode === 'shared') return 'Shared puzzle solved';
+				if (this.mode === 'puzzle') return 'Puzzle solved';
 				if (this.mode === 'challenge' && this.challengeResults[this.challengeIndex] === 'failed') {
 					return 'Puzzle completed';
 				}
@@ -1381,7 +1445,7 @@ function createMinesight() {
 				}
 				return 'Good solve. Ready for the next one?';
 			}
-			if (this.result === 'cleared' && this.mode === 'shared') return 'Nice solve. Open the link again for a fresh board.';
+			if (this.result === 'cleared' && this.mode === 'puzzle') return 'Nice solve. Open the link again for a fresh board.';
 			if (this.result === 'cleared') return 'Good solve. Keep the streak going.';
 			if (this.result === 'complete') return `${this.challengeClearedCount} completed cleanly and ${this.challengeFailedCount} failed in ${this.formattedTime}.`;
 			if (this.result === 'gave-up') return `You gave up on puzzle ${this.challengeIndex + 1} of ${this.challengeTotal}.`;
@@ -1406,6 +1470,8 @@ function createMinesight() {
 			this.challengeModeKey = modeKey;
 			this.challengeSeed = randomChallengeSeed();
 			saveMinesightData('challengeModeKey', modeKey);
+			window.history.pushState(null, '', createRouteUrl(window.location.href, `/challenge/${modeKey}`));
+			this.activeRouteUrl = window.location.href;
 			void this.prepareChallenge();
 		},
 
@@ -1436,90 +1502,81 @@ function createMinesight() {
 			this.switchMode('study');
 		},
 
-		removeTutorialFromUrl() {
-			let url = new URL(window.location.href);
-			if (!url.searchParams.has(TUTORIAL_PARAMETER)) return;
-			url.searchParams.delete(TUTORIAL_PARAMETER);
-			window.history.replaceState(null, '', url);
+		/** @param {string} route */
+		navigate(route) {
+			let url = createRouteUrl(window.location.href, route);
+			if (url.href === window.location.href) return;
+			window.history.pushState(null, '', url);
+			this.applyCurrentRoute();
 		},
 
-		removeChallengeFromUrl() {
+		applyCurrentRoute() {
+			this.activeRouteUrl = window.location.href;
+			let route = resolveUrlGame(new URL(window.location.href));
+			if (this.mode === 'study') {
+				this.snapshotStudyState();
+				this.saveStudyData();
+			}
+			this.challengePreparationId += 1;
+			this.studyPreparationId += 1;
+			this.challengePreparing = false;
+			this.boardPreparing = false;
+			this.clearStudySearchingDelay();
+			this.challengeStarted = false;
+			this.challengePuzzles = [];
+			this.challengeResults = [];
+			this.stopTimer();
+			this.puzzleError = '';
 			this.challengeReceived = false;
-			let url = new URL(window.location.href);
-			if (
-				!url.searchParams.has(CHALLENGE_MODE_PARAMETER) &&
-				!url.searchParams.has(CHALLENGE_SEED_PARAMETER) &&
-				!url.searchParams.has(CHALLENGE_TIME_PARAMETER)
-			) return;
-			url.searchParams.delete(CHALLENGE_MODE_PARAMETER);
-			url.searchParams.delete(CHALLENGE_SEED_PARAMETER);
-			url.searchParams.delete(CHALLENGE_TIME_PARAMETER);
-			window.history.replaceState(null, '', url);
+
+			if (route.mode === 'home') {
+				this.mode = 'home';
+				return;
+			}
+			if (route.mode === 'tutorial') {
+				this.startTutorial();
+				return;
+			}
+			if (route.mode === 'puzzle') {
+				this.mode = 'puzzle';
+				this.result = 'playing';
+				try {
+					this.field = MineField.decode(route.payload);
+					this.engineError = '';
+					this.boardNumber += 1;
+					this.revision += 1;
+				}
+				catch {
+					this.puzzleError = 'This puzzle link is invalid.';
+				}
+				return;
+			}
+			if (route.mode === 'challenge') {
+				this.mode = 'challenge';
+				this.challengeModeKey = route.modeKey;
+				this.challengeReceived = route.received;
+				this.challengeTargetMs = route.time;
+				this.challengeSeed = route.seed ?? randomChallengeSeed();
+				void this.prepareChallenge();
+				return;
+			}
+
+			this.mode = 'study';
+			if (route.difficultyKey !== undefined) this.difficultyKey = route.difficultyKey;
+			if (!this.restoreStudyState()) void this.newStudyBoard();
 		},
 
 		/** @param {GameMode} nextMode */
 		switchMode(nextMode) {
-			if (this.mode === nextMode) return;
-			this.removeTutorialFromUrl();
-			if (nextMode === 'home' || nextMode === 'tutorial') {
-				if (this.mode === 'study') {
-					this.snapshotStudyState();
-					this.saveStudyData();
-				}
-				this.removeSharedPuzzleFromUrl();
-				this.removeChallengeFromUrl();
-				this.challengePreparationId += 1;
-				this.studyPreparationId += 1;
-				this.challengePreparing = false;
-				this.boardPreparing = false;
-				this.clearStudySearchingDelay();
-				this.challengeStarted = false;
-				this.challengePuzzles = [];
-				this.challengeResults = [];
-				this.stopTimer();
-				if (nextMode === 'tutorial') this.startTutorial();
-				else this.mode = 'home';
-				return;
-			}
-			if (nextMode === 'challenge') {
-				if (this.mode === 'study') {
-					this.snapshotStudyState();
-					this.saveStudyData();
-				}
-				this.removeSharedPuzzleFromUrl();
-				this.studyPreparationId += 1;
-				this.boardPreparing = false;
-				this.clearStudySearchingDelay();
-				this.mode = nextMode;
-				this.challengeTargetMs = undefined;
-				this.challengeSeed = randomChallengeSeed();
-				void this.prepareChallenge();
-			}
-			else {
-				this.removeSharedPuzzleFromUrl();
-				this.removeChallengeFromUrl();
-				this.challengePreparationId += 1;
-				this.challengePreparing = false;
-				this.challengeStarted = false;
-				this.challengePuzzles = [];
-				this.challengeResults = [];
-				this.stopTimer();
-				this.mode = nextMode;
-				if (!this.restoreStudyState()) void this.newStudyBoard();
-			}
+			if (nextMode === 'home') this.navigate('/');
+			else if (nextMode === 'tutorial') this.navigate('/tutorial');
+			else if (nextMode === 'study') this.navigate(`/study/${this.difficultyKey}`);
+			else if (nextMode === 'challenge') this.navigate(`/challenge/${this.challengeModeKey}`);
 		},
 
 		goHome() {
 			if (this.challengeRunActive) return;
 			this.switchMode('home');
-		},
-
-		removeSharedPuzzleFromUrl() {
-			this.sharedPuzzleError = '';
-			let url = new URL(window.location.href);
-			if (!url.searchParams.has(SHARED_PUZZLE_PARAMETER)) return;
-			url.searchParams.delete(SHARED_PUZZLE_PARAMETER);
-			window.history.replaceState(null, '', url);
 		},
 
 		async sharePuzzle() {
@@ -1528,12 +1585,7 @@ function createMinesight() {
 				return;
 			}
 			if (this.sharePuzzleDisabled || !this.showBoard) return;
-			let url = new URL(window.location.href);
-			url.searchParams.delete(TUTORIAL_PARAMETER);
-			url.searchParams.delete(CHALLENGE_MODE_PARAMETER);
-			url.searchParams.delete(CHALLENGE_SEED_PARAMETER);
-			url.searchParams.delete(CHALLENGE_TIME_PARAMETER);
-			url.searchParams.set(SHARED_PUZZLE_PARAMETER, this.field.encode());
+			let url = createRouteUrl(window.location.href, `/puzzle/${this.field.encode()}`);
 			let shareData = {
 				title: 'Minesight puzzle',
 				text: 'Can you solve this Minesight puzzle?',
@@ -1631,6 +1683,8 @@ function createMinesight() {
 			this.boardPreparing = false;
 			this.clearStudySearchingDelay();
 			this.difficultyKey = key;
+			window.history.pushState(null, '', createRouteUrl(window.location.href, `/study/${key}`));
+			this.activeRouteUrl = window.location.href;
 			let restored = this.restoreStudyState();
 			this.saveStudyData();
 			if (!restored) void this.newStudyBoard();
@@ -1757,7 +1811,9 @@ function createMinesight() {
 
 		startChallenge() {
 			if (!this.challengeReady) return;
-			this.removeChallengeFromUrl();
+			this.challengeReceived = false;
+			window.history.replaceState(null, '', createRouteUrl(window.location.href, `/challenge/${this.challengeModeKey}`));
+			this.activeRouteUrl = window.location.href;
 			this.stopTimer();
 			this.challengeStarted = true;
 			this.challengeIndex = 0;
@@ -1939,7 +1995,7 @@ function createMinesight() {
 		},
 
 		useHint() {
-			if (!['study', 'shared'].includes(this.mode) || this.result !== 'playing') return;
+			if (!['study', 'puzzle'].includes(this.mode) || this.result !== 'playing') return;
 			if (this.mode === 'study' && !this.studyBoardReady) return;
 			this.hintUsed = !this.hintUsed;
 			this.revision += 1;
@@ -2256,7 +2312,7 @@ function createMinesight() {
 	};
 }
 
-// Preload the generator without keeping the home screen, tutorial, or a shared puzzle behind
+// Preload the generator without keeping the home screen, tutorial, or a puzzle behind
 // a blank, x-cloaked page. A failed preload is retried when a board is requested.
 void ensurePuzzleGenerator().catch(() => {});
 

@@ -1155,7 +1155,7 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 	gap: 8px;
 }
 .board-actions.challenge-actions { grid-template-columns: 1fr; }
-.board-actions.shared-actions { grid-template-columns: 1fr; }
+.board-actions.puzzle-actions { grid-template-columns: 1fr; }
 .board-actions.tutorial-actions { grid-template-columns: 1fr; }
 .action-switch,
 .board-actions button {

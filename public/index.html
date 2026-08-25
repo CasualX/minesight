@@ -87,7 +87,7 @@
 				<strong x-text="challengeTimerTime"></strong>
 			</div>
 		</section>
-		<p class="engine-error" x-show="mode !== 'home' && sharedPuzzleError" x-text="sharedPuzzleError" role="alert"></p>
+		<p class="engine-error" x-show="mode !== 'home' && puzzleError" x-text="puzzleError" role="alert"></p>
 		<p class="engine-error" x-show="mode !== 'home' && engineError" x-text="engineErrorMessage" role="alert"></p>
 
 		<section class="difficulty-picker" x-show="mode === 'study'">
@@ -348,8 +348,8 @@
 			</div>
 		</section>
 
-		<section class="game-controls" x-show="mode === 'shared' && !sharedPuzzleError" aria-label="Shared puzzle controls">
-			<div class="board-actions shared-actions">
+		<section class="game-controls" x-show="mode === 'puzzle' && !puzzleError" aria-label="Puzzle">
+			<div class="board-actions puzzle-actions">
 				<button
 					type="button"
 					class="secondary"

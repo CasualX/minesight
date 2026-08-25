@@ -220,7 +220,7 @@ function testPuzzleChordCompletesDirectClueDeductions() {
 	assertEqual(mineChord.isMarkedMine(1, 0), true, 'mine chording should annotate every unknown neighbour');
 }
 
-function testSharedPuzzleCodecUsesSixBitsPerCell() {
+function testPuzzleCodecUsesSixBitsPerCell() {
 	let puzzle = new Uint8Array(64);
 	puzzle[0] = MineField.MINE | MineField.REVEALED;
 	puzzle[1] = MineField.MINE | MineField.ACTIVE | MineField.FORCED_MINE | MineField.MARKED_MINE;
@@ -230,13 +230,13 @@ function testSharedPuzzleCodecUsesSixBitsPerCell() {
 	assert(/^2\.[A-Za-z0-9_-]{64}$/.test(payload), 'each masked six-bit cell should encode to one base64url character');
 	assert(payload !== `2.DZo${'A'.repeat(61)}`, 'the encoded data should not expose the raw cell pattern');
 	let decoded = MineField.decode(payload);
-	assert(decoded.state.every((cell, index) => cell === (puzzle[index] & 0x3f)), 'a shared puzzle round trip should preserve its six puzzle bits and remove player annotations');
+	assert(decoded.state.every((cell, index) => cell === (puzzle[index] & 0x3f)), 'a puzzle round trip should preserve its six puzzle bits and remove player annotations');
 
 	let legacy = MineField.decode(`1.DZo${'A'.repeat(61)}`);
 	assert(legacy.state.every((cell, index) => cell === (puzzle[index] & 0x3f)), 'links created with the unmasked version 1 format should remain valid');
 }
 
-function testSharedPuzzleCodecRejectsInvalidPayloads() {
+function testPuzzleCodecRejectsInvalidPayloads() {
 	let invalidPayloads = [
 		'1.short',
 		`3.${'A'.repeat(64)}`,
@@ -254,7 +254,7 @@ function testSharedPuzzleCodecRejectsInvalidPayloads() {
 		catch {
 			threw = true;
 		}
-		assert(threw, `invalid shared puzzle payload should be rejected: ${payload.slice(0, 10)}`);
+		assert(threw, `invalid puzzle payload should be rejected: ${payload.slice(0, 10)}`);
 	}
 }
 
@@ -292,6 +292,6 @@ await runTests([
 	testPuzzleRejectsUnforcedAndInactiveMoves,
 	testPuzzleAnnotationsAreDistinctFromNormalBoardActions,
 	testPuzzleChordCompletesDirectClueDeductions,
-	testSharedPuzzleCodecUsesSixBitsPerCell,
-	testSharedPuzzleCodecRejectsInvalidPayloads,
+	testPuzzleCodecUsesSixBitsPerCell,
+	testPuzzleCodecRejectsInvalidPayloads,
 ]);

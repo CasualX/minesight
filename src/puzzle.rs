@@ -1,10 +1,10 @@
 use super::*;
 
-const SHARE_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 // This mask is part of the public `2.` shared-puzzle format in public/mines.js.
 // It only obscures the answer pattern at a glance; it is not encryption.
-const SHARE_MASK: [u8; BOARD_CELLS] = {
+const PUZZLE_MASK: [u8; BOARD_CELLS] = {
 	let mut mask = [0; BOARD_CELLS];
 	let mut state = 0x6d2b79f5u32;
 	let mut index = 0;
@@ -72,8 +72,8 @@ impl Puzzle {
 		let mut payload = String::with_capacity(2 + BOARD_CELLS);
 		payload.push_str("2.");
 		for (index, cell) in cells.into_iter().enumerate() {
-			let encoded = (cell & 0x3f) ^ SHARE_MASK[index];
-			payload.push(SHARE_ALPHABET[encoded as usize] as char);
+			let encoded = (cell & 0x3f) ^ PUZZLE_MASK[index];
+			payload.push(BASE64[encoded as usize] as char);
 		}
 		payload
 	}
