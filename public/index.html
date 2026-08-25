@@ -4,8 +4,7 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<meta name="color-scheme" content="light dark">
-	<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
-	<meta name="theme-color" content="#171817" media="(prefers-color-scheme: dark)">
+	<meta name="theme-color" content="#fafafa">
 	<title>Minesight</title>
 	<link rel="icon" href="./favicon.svg" type="image/svg+xml">
 	<link rel="stylesheet" href="./index.css">
@@ -13,8 +12,8 @@
 	<script type="module" src="./index.js"></script>
 	<script src="./alpine.min.js" defer></script>
 </head>
-<body x-data="minesight" x-cloak @beforeunload.window="protectChallengeNavigation($event)">
-	<header class="site-header">
+<body x-data="minesight" x-cloak @beforeunload.window="protectChallengeNavigation($event)" @keydown.escape.window="closeSettings()">
+	<header class="site-header" :inert="settingsOpen">
 		<div class="header-title">
 			<a class="site-permalink" href="" aria-label="Permalink to this page" title="Permalink to this page">
 				<img src="./header-icon.svg" alt="">
@@ -36,26 +35,23 @@
 		<div class="header-actions">
 			<button
 				type="button"
-				class="sound-toggle"
-				:class="soundToggleClass"
-				:aria-label="soundToggleText"
-				:title="soundToggleText"
-				:aria-pressed="soundEnabled"
-				@click="toggleSound()"
+				class="settings-toggle"
+				aria-label="Open settings"
+				title="Settings"
+				aria-controls="settings-dialog"
+				:aria-expanded="settingsOpen"
+				x-ref="settingsButton"
+				@click="openSettings()"
 			>
-				<svg x-show="soundEnabled" viewBox="0 0 24 24" aria-hidden="true">
-					<path d="M11 5 6.7 8.5H3.5v7h3.2L11 19V5Z"></path>
-					<path d="M15 9a4 4 0 0 1 0 6M17.8 6.5a7.4 7.4 0 0 1 0 11"></path>
-				</svg>
-				<svg x-show="!soundEnabled" viewBox="0 0 24 24" aria-hidden="true">
-					<path d="M11 5 6.7 8.5H3.5v7h3.2L11 19V5Z"></path>
-					<path d="m15.5 10 5 5m0-5-5 5"></path>
+				<svg viewBox="0 0 24 24" aria-hidden="true">
+					<circle cx="12" cy="12" r="3"></circle>
+					<path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path>
 				</svg>
 			</button>
 		</div>
 	</header>
 
-	<main class="app-shell" x-effect="document.title = pageTitle">
+	<main class="app-shell" :inert="settingsOpen" x-effect="document.title = pageTitle">
 		<section class="home-screen" x-show="mode === 'home'">
 			<div class="home-intro">
 				<h1>Read the board. Prove each move.</h1>
@@ -423,5 +419,58 @@
 		<p class="sr-only" aria-live="polite" x-text="incorrectFeedbackMessage"></p>
 		<p class="share-feedback" x-show="shareFeedback" x-transition.opacity role="status" aria-live="polite" x-text="shareFeedback"></p>
 	</main>
+
+	<div
+		class="settings-backdrop"
+		x-show="settingsOpen"
+		x-transition:enter="settings-fade-enter"
+		x-transition:enter-start="settings-fade-start"
+		x-transition:leave="settings-fade-leave"
+		x-transition:leave-end="settings-fade-end"
+		@click.self="closeSettings()"
+	>
+		<section
+			id="settings-dialog"
+			class="settings-sheet"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="settings-title"
+			x-show="settingsOpen"
+			x-transition:enter="settings-slide-enter"
+			x-transition:enter-start="settings-slide-start"
+			x-transition:leave="settings-slide-leave"
+			x-transition:leave-end="settings-slide-end"
+			@click.stop
+		>
+			<header class="settings-heading">
+				<h2 id="settings-title">Settings</h2>
+				<button type="button" class="settings-close" aria-label="Close settings" x-ref="settingsClose" @click="closeSettings()">&#215;</button>
+			</header>
+
+			<fieldset class="settings-group">
+				<legend class="sr-only">Color scheme</legend>
+				<strong>Color scheme</strong>
+				<div class="scheme-options">
+					<label><input type="radio" name="color-scheme" value="system" :checked="colorScheme === 'system'" @change="setColorScheme('system')"><span>System</span></label>
+					<label><input type="radio" name="color-scheme" value="light" :checked="colorScheme === 'light'" @change="setColorScheme('light')"><span>Light</span></label>
+					<label><input type="radio" name="color-scheme" value="dark" :checked="colorScheme === 'dark'" @change="setColorScheme('dark')"><span>Dark</span></label>
+				</div>
+			</fieldset>
+
+			<div class="settings-group sound-setting">
+				<strong>Sound effects</strong>
+				<label class="switch">
+					<span class="sr-only">Sound effects</span>
+					<input type="checkbox" :checked="soundEnabled" @change="toggleSound()">
+					<span class="switch-track" aria-hidden="true"></span>
+				</label>
+			</div>
+
+			<footer class="settings-about">
+				<p>Minesight is free and open source.</p>
+				<a href="https://github.com/CasualX/minesight" target="_blank" rel="noopener noreferrer">CasualX/minesight on GitHub <span aria-hidden="true">&#8599;</span></a>
+			</footer>
+		</section>
+	</div>
 </body>
 </html>

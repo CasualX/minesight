@@ -335,6 +335,15 @@ function saveMinesightData(key, value) {
 	catch {}
 }
 
+/** @param {'system' | 'light' | 'dark'} colorScheme */
+function applyColorScheme(colorScheme) {
+	let dark = colorScheme === 'dark' || (colorScheme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+	let resolvedColorScheme = dark ? 'dark' : 'light';
+	document.documentElement.dataset.colorScheme = resolvedColorScheme;
+	document.documentElement.style.colorScheme = resolvedColorScheme;
+	document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#171817' : '#fafafa');
+}
+
 function isLocalDevelopment() {
 	return ['', 'localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
 }
@@ -552,6 +561,8 @@ function sortChallengeTiers(puzzles, route) {
 
 function createMinesight() {
 	let stored = loadMinesightData();
+	let colorScheme = ['system', 'light', 'dark'].includes(stored.colorScheme) ? stored.colorScheme : 'system';
+	applyColorScheme(colorScheme);
 	/** @type {ResizeObserver | undefined} */
 	let scratchResizeObserver;
 	/** @type {MineField | undefined} */
@@ -609,6 +620,8 @@ function createMinesight() {
 				: urlGame.mode === 'tutorial' ? 'tutorial'
 					: urlGame.mode === 'study' ? 'study' : 'home',
 		soundEnabled: gameSounds.enabled,
+		settingsOpen: false,
+		colorScheme,
 		actionsInverted: false,
 		/** @type {GameResult} */
 		result: 'playing',
@@ -675,6 +688,8 @@ function createMinesight() {
 		activeRouteUrl: window.location.href,
 		/** @type {(() => void) | undefined} */
 		routeListener: undefined,
+		/** @type {(() => void) | undefined} */
+		themeMediaListener: undefined,
 		scratchActive: false,
 		scratchTool: 'pencil',
 		scratchColor: 'graphite',
@@ -696,6 +711,10 @@ function createMinesight() {
 				});
 			}
 			this.$watch('boardNumber', () => this.resetScratchPad());
+			this.themeMediaListener = () => {
+				if (this.colorScheme === 'system') applyColorScheme('system');
+			};
+			window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', this.themeMediaListener);
 			this.$nextTick(() => this.setupScratchPad());
 			this.routeListener = () => {
 				if (this.activeRouteUrl === window.location.href) return;
@@ -736,6 +755,8 @@ function createMinesight() {
 			scratchResizeObserver?.disconnect();
 			if (this.routeListener) window.removeEventListener('popstate', this.routeListener);
 			if (this.routeListener) window.removeEventListener('hashchange', this.routeListener);
+			if (this.themeMediaListener) window.matchMedia('(prefers-color-scheme: dark)').removeEventListener('change', this.themeMediaListener);
+			document.body.classList.remove('settings-open');
 		},
 
 		get currentDifficulty() {
@@ -745,14 +766,6 @@ function createMinesight() {
 				))?.difficulty ?? this.challengeGroups[0].difficulty;
 			}
 			return STUDY_DIFFICULTIES.find((difficulty) => difficulty.key === this.difficultyKey) ?? STUDY_DIFFICULTIES[0];
-		},
-
-		get soundToggleClass() {
-			return this.soundEnabled ? '' : 'muted';
-		},
-
-		get soundToggleText() {
-			return this.soundEnabled ? 'Mute sound effects' : 'Enable sound effects';
 		},
 
 		get headerModeTitle() {
@@ -1472,6 +1485,26 @@ function createMinesight() {
 		toggleSound() {
 			this.soundEnabled = gameSounds.toggle();
 			saveMinesightData('soundEnabled', this.soundEnabled);
+		},
+
+		openSettings() {
+			this.settingsOpen = true;
+			document.body.classList.add('settings-open');
+			this.$nextTick(() => this.$refs.settingsClose?.focus());
+		},
+
+		closeSettings() {
+			if (!this.settingsOpen) return;
+			this.settingsOpen = false;
+			document.body.classList.remove('settings-open');
+			this.$nextTick(() => this.$refs.settingsButton?.focus());
+		},
+
+		/** @param {'system' | 'light' | 'dark'} colorScheme */
+		setColorScheme(colorScheme) {
+			this.colorScheme = colorScheme;
+			applyColorScheme(colorScheme);
+			saveMinesightData('colorScheme', colorScheme);
 		},
 
 		activateChallengeStart() {
