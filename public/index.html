@@ -73,6 +73,88 @@
 					<span><strong>Challenge</strong><small>Race through a fixed set of puzzles, then invite someone to beat your time.</small></span>
 					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
 				</button>
+				<button type="button" class="home-mode home-mode-editor" @click="switchMode('editor')">
+					<span class="home-mode-number" aria-hidden="true">03</span>
+					<span><strong>Board lab</strong><small>Create an 8×8 position, test its clues, and find every forced cell.</small></span>
+					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
+				</button>
+			</div>
+		</section>
+
+		<section
+			class="editor-screen"
+			x-show="mode === 'editor'"
+			@keydown.window="keydownEditorAtPointer($event)"
+			@pointermove.window="moveEditorPaint($event)"
+			@pointerup.window="endEditorPaint($event)"
+			@pointercancel.window="endEditorPaint($event)"
+		>
+			<header class="editor-intro">
+				<h1>Build a position</h1>
+				<p>Choose a cell state, then tap or paint the board. Flags are treated as known mines.</p>
+			</header>
+
+			<div class="editor-palette" role="toolbar" aria-label="Cell state">
+				<template x-for="tool in editorTools" :key="tool.value">
+					<button
+						type="button"
+						:class="`${editorTool === tool.value ? 'selected ' : ''}editor-tool-${tool.value}`"
+						:aria-pressed="editorTool === tool.value"
+						:title="tool.label"
+						@click="selectEditorTool(tool.value)"
+					>
+						<span aria-hidden="true" x-text="tool.text"></span>
+						<small x-text="tool.label"></small>
+					</button>
+				</template>
+			</div>
+
+			<div class="minefield editor-minefield" role="group" aria-label="8 by 8 board editor" style="--columns: 8" @pointerleave="leaveEditorBoard($event)">
+				<template x-for="cell in editorCells" :key="cell.index">
+					<button
+						type="button"
+						class="cell"
+						:class="cell.className"
+						:aria-label="cell.label"
+						aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight 0 1 2 3 4 5 6 7 8 F M U Delete Space Enter"
+						:tabindex="cell.tabIndex"
+						:data-editor-index="cell.index"
+						@focus="editorFocusIndex = cell.index"
+						@keydown="keydownEditorCell($event, cell.index)"
+						@pointerdown.prevent="beginEditorPaint($event, cell.index)"
+						@click="setEditorCell(cell.index)"
+						@contextmenu.prevent="setEditorCell(cell.index, 'flag')"
+						x-text="cell.text"
+					></button>
+				</template>
+			</div>
+
+			<div class="editor-actions">
+				<button type="button" class="secondary" :disabled="editorHistory.length === 0" @click="undoEditor()">Undo</button>
+				<button type="button" class="secondary" :disabled="editorBoard.every((cell) => cell === 'covered')" @click="clearEditor()">Clear</button>
+				<button type="button" class="primary" @click="activateEditorPrimaryAction()" x-text="editorPrimaryActionLabel"></button>
+			</div>
+
+			<div class="editor-result" :class="{ contradiction: editorAnalysis?.contradiction }" role="status" aria-live="polite">
+				<div class="editor-result-copy">
+					<strong x-text="editorStatusTitle"></strong>
+					<span x-text="editorStatusMessage"></span>
+				</div>
+				<div
+					class="editor-solution-toggle"
+					x-show="editorAnalysis && !editorAnalysis.contradiction && !editorAnalysis.unique"
+				>
+					<span>Example solution</span>
+					<label class="switch">
+						<input
+							type="checkbox"
+							aria-label="Show example solution"
+							:checked="editorShowSolution"
+							@change="editorShowSolution = $event.target.checked; editorRevision += 1"
+						>
+						<span class="switch-track" aria-hidden="true"></span>
+					</label>
+				</div>
 			</div>
 		</section>
 

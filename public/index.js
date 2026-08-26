@@ -1,6 +1,6 @@
 // @ts-check
 
-import { MineField } from './mines.js';
+import { MineField, analyzeEditorBoard, createEditorPuzzle } from './mines.js';
 import { feedbackEffects } from './feedback.js';
 import { gameSounds } from './sounds.js';
 
@@ -256,6 +256,7 @@ function resolveUrlGame(url) {
 	}
 
 	if (path === '/tutorial') return { mode: 'tutorial' };
+	if (path === '/editor') return { mode: 'editor' };
 	return { mode: 'home' };
 }
 
@@ -352,12 +353,36 @@ function isLocalDevelopment() {
 let wasm;
 /** @type {{ cells: Uint8Array, seed: bigint, attempts: number } | undefined} */
 let generatedPuzzle;
+/** @type {{ x: number, y: number, mine: boolean }[] | undefined} */
+let solveResult;
+/** @type {Error | undefined} */
+let wasmError;
 /** @type {Promise<void> | undefined} */
 let generatorLoadPromise;
 
 async function loadPuzzleGenerator() {
 	const imports = {
 		env: {
+			/** @param {number} pointer @param {number} length */
+			resultError(pointer, length) {
+				if (!wasm || !(wasm.memory instanceof WebAssembly.Memory)) {
+					throw new Error('wasm returned an error before exposing its memory');
+				}
+				let bytes = new Uint8Array(wasm.memory.buffer, pointer, length);
+				wasmError = new Error(new TextDecoder().decode(bytes));
+			},
+			/** @param {number} pointer @param {number} length */
+			resultSolve(pointer, length) {
+				if (!wasm || !(wasm.memory instanceof WebAssembly.Memory)) {
+					throw new Error('wasm returned solver results before exposing its memory');
+				}
+				let entries = new Uint8Array(wasm.memory.buffer, pointer, length * 3);
+				solveResult = Array.from({ length }, (_, index) => ({
+					x: entries[index * 3],
+					y: entries[index * 3 + 1],
+					mine: entries[index * 3 + 2] !== 0,
+				}));
+			},
 			/**
 			 * @param {number} seedLow
 			 * @param {number} seedHigh
@@ -386,6 +411,62 @@ async function loadPuzzleGenerator() {
 		result = await WebAssembly.instantiate(await response.arrayBuffer(), imports);
 	}
 	wasm = result.instance.exports;
+}
+
+/**
+ * Computes every covered cell forced by the visible Minesweeper clues.
+ * Cell values are 0..8 for clues, 9 for a revealed masked clue, 10 for a
+ * covered cell, and 11 for a flagged covered cell.
+ *
+ * @param {number} width
+ * @param {number} height
+ * @param {ArrayLike<number>} cells row-major cells
+ * @returns {Promise<{ x: number, y: number, mine: boolean }[]>}
+ */
+export async function solveBoard(width, height, cells) {
+	if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0 || width > 8 || height > 8) {
+		throw new Error('board width and height must be integers from 0 through 8');
+	}
+	if (cells.length !== width * height) {
+		throw new Error(`board has ${cells.length} cells instead of ${width * height}`);
+	}
+	for (let index = 0; index < cells.length; index += 1) {
+		if (!Number.isInteger(cells[index]) || cells[index] < 0 || cells[index] > 11) {
+			throw new Error(`board cell ${index} has invalid value ${cells[index]}`);
+		}
+	}
+
+	await ensurePuzzleGenerator();
+	let allocate = wasm?.allocate;
+	let free = wasm?.free;
+	let solve = wasm?.solve;
+	if (typeof allocate !== 'function' || typeof free !== 'function' || typeof solve !== 'function' || !(wasm?.memory instanceof WebAssembly.Memory)) {
+		throw new Error('the Rust SAT solver is not loaded');
+	}
+
+	wasmError = undefined;
+	solveResult = undefined;
+	let allocationSize = 2 + cells.length;
+	let allocationAlign = 1;
+	let pointer = Number(allocate(allocationSize, allocationAlign));
+	if (wasmError) throw wasmError;
+	if (pointer === 0) throw new Error('wasm failed to allocate a solver board');
+
+	let solved;
+	try {
+		let board = new Uint8Array(wasm.memory.buffer, pointer, allocationSize);
+		board[0] = width;
+		board[1] = height;
+		board.set(cells, 2);
+		solved = Boolean(solve(pointer));
+	}
+	finally {
+		free(pointer, allocationSize, allocationAlign);
+	}
+	if (wasmError) throw wasmError;
+	if (!solved) throw new Error('wasm SAT solver failed without returning an error');
+	if (!solveResult) throw new Error('wasm SAT solver returned without a result');
+	return solveResult;
 }
 
 async function ensurePuzzleGenerator() {
@@ -554,7 +635,7 @@ function sortChallengeTiers(puzzles, route) {
 	}
 }
 
-/** @typedef {'home' | 'tutorial' | 'study' | 'challenge' | 'puzzle'} GameMode */
+/** @typedef {'home' | 'tutorial' | 'study' | 'challenge' | 'puzzle' | 'editor'} GameMode */
 /** @typedef {'playing' | 'cleared' | 'failed' | 'gave-up' | 'complete'} GameResult */
 /** @typedef {'cleared' | 'failed'} ChallengeResult */
 /** @typedef {{ field: MineField, seed: bigint, result: GameResult, hintUsed: boolean, streak: number, ready: boolean }} StudyState */
@@ -618,6 +699,7 @@ function createMinesight() {
 		mode: urlGame.mode === 'puzzle' ? 'puzzle'
 			: urlGame.mode === 'challenge' ? 'challenge'
 				: urlGame.mode === 'tutorial' ? 'tutorial'
+					: urlGame.mode === 'editor' ? 'editor'
 					: urlGame.mode === 'study' ? 'study' : 'home',
 		soundEnabled: gameSounds.enabled,
 		settingsOpen: false,
@@ -693,6 +775,16 @@ function createMinesight() {
 		scratchActive: false,
 		scratchTool: 'pencil',
 		scratchColor: 'graphite',
+		editorTool: '1',
+		editorBoard: Array(BOARD_SIZE * BOARD_SIZE).fill('covered'),
+		editorRevision: 0,
+		editorFocusIndex: 0,
+		editorHoverIndex: -1,
+		editorPainting: false,
+		editorPointerId: undefined,
+		editorHistory: [],
+		editorAnalysis: undefined,
+		editorShowSolution: false,
 		scratchColors: [
 			{ key: 'graphite', label: 'Graphite' },
 			{ key: 'blue', label: 'Blue' },
@@ -738,7 +830,7 @@ function createMinesight() {
 				void this.prepareChallenge();
 				return;
 			}
-			if (this.mode === 'home') return;
+			if (this.mode === 'home' || this.mode === 'editor') return;
 			if (!this.restoreStudyState() && !this.engineError) this.newStudyBoard();
 		},
 
@@ -772,6 +864,7 @@ function createMinesight() {
 			if (this.mode === 'home') return '';
 			if (this.mode === 'tutorial') return 'How to play';
 			if (this.mode === 'puzzle') return 'Puzzle';
+			if (this.mode === 'editor') return 'Board lab';
 			return this.mode[0].toUpperCase() + this.mode.slice(1);
 		},
 
@@ -899,7 +992,7 @@ function createMinesight() {
 		},
 
 		get showBoard() {
-			if (this.mode === 'home') return false;
+			if (this.mode === 'home' || this.mode === 'editor') return false;
 			if (this.mode === 'puzzle' && this.puzzleError) return false;
 			if (this.mode === 'study') return this.studyBoardReady || this.boardPreparing;
 			return this.mode !== 'challenge' || (this.challengeStarted && this.result !== 'complete');
@@ -1041,6 +1134,224 @@ function createMinesight() {
 		get inputHelp() {
 			if (this.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
 			return `Tap or left-click to mark ${this.tapActionLabel}. Long-press or right-click to mark ${this.holdActionLabel}.`;
+		},
+
+		get editorTools() {
+			return [
+				{ value: 'covered', text: '□', label: 'Covered' },
+				{ value: 'masked', text: '×', label: 'Masked' },
+				{ value: 'flag', text: '⚑', label: 'Flag' },
+				...Array.from({ length: 9 }, (_, clue) => ({ value: String(clue), text: String(clue), label: `Clue ${clue}` })),
+			];
+		},
+
+		get editorCells() {
+			this.editorRevision;
+			let forcedMine = new Set(this.editorAnalysis?.forcedMine ?? []);
+			let forcedSafe = new Set(this.editorAnalysis?.forcedSafe ?? []);
+			return this.editorBoard.map((state, index) => {
+				let x = index % BOARD_SIZE;
+				let y = Math.floor(index / BOARD_SIZE);
+				let clue = /^\d$/.test(state);
+				let classes = ['editor-cell'];
+				let text = clue ? state : state === 'flag' ? '⚑' : '';
+				let description = clue ? `clue ${state}` : state === 'flag' ? 'flagged mine' : 'covered';
+				if (clue) classes.push('revealed', `clue-${state}`);
+				if (state === 'masked') {
+					classes.push('inactive', 'editor-masked');
+					description = 'masked, outside the puzzle';
+				}
+				if (state === 'flag') classes.push('flagged');
+				if (forcedMine.has(index)) {
+					classes.push('marked-mine', 'editor-forced');
+					text = '⚑';
+					description += ', forced mine';
+				}
+				else if (forcedSafe.has(index)) {
+					classes.push('marked-safe', 'editor-forced');
+					text = '✓';
+					description += ', forced safe';
+				}
+				else if (this.editorShowSolution && state === 'covered' && this.editorAnalysis && !this.editorAnalysis.contradiction) {
+					let mine = this.editorAnalysis.solution[index] === 1;
+					classes.push(mine ? 'editor-solution-mine' : 'editor-solution-safe');
+					text = mine ? '✹' : '·';
+					description += mine ? ', mine in shown solution' : ', safe in shown solution';
+				}
+				return {
+					index, x, y, text,
+					className: classes.join(' '),
+					label: `Row ${y + 1}, column ${x + 1}, ${description}`,
+					tabIndex: index === this.editorFocusIndex ? 0 : -1,
+				};
+			});
+		},
+
+		get editorStatusTitle() {
+			if (!this.editorAnalysis) return 'Ready to analyze';
+			if (this.editorAnalysis.contradiction) return 'Contradiction';
+			if (this.editorAnalysis.coveredCount === 0) return 'Nothing to solve';
+			if (this.editorAnalysis.unique) return 'Unique solution';
+			let count = this.editorAnalysis.forcedMine.length + this.editorAnalysis.forcedSafe.length;
+			return count > 0 ? `${count} forced ${count === 1 ? 'cell' : 'cells'}` : 'No forced cells';
+		},
+
+		get editorStatusMessage() {
+			if (!this.editorAnalysis) return 'Add clues or flags, then check the board.';
+			if (this.editorAnalysis.contradiction) return 'No mine layout can satisfy every clue and flag.';
+			if (this.editorAnalysis.coveredCount === 0) return 'Add at least one covered cell to create a puzzle.';
+			let mines = this.editorAnalysis.forcedMine.length;
+			let safe = this.editorAnalysis.forcedSafe.length;
+			if (this.editorAnalysis.unique) return `Every covered cell is determined: ${mines} mined and ${safe} safe.`;
+			if (mines + safe > 0) return `${mines} must be mined and ${safe} must be safe. Other covered cells remain ambiguous.`;
+			return 'The clues are consistent, but no covered cell is forced. Add more information before sharing.';
+		},
+
+		get editorCanShare() {
+			return this.editorAnalysis !== undefined
+				&& !this.editorAnalysis.contradiction
+				&& this.editorAnalysis.forcedMine.length + this.editorAnalysis.forcedSafe.length > 0;
+		},
+
+		get editorPrimaryActionLabel() {
+			return this.editorCanShare ? 'Share puzzle' : 'Analyze board';
+		},
+
+		/** @param {string} tool */
+		selectEditorTool(tool) {
+			if (this.editorTools.some(({ value }) => value === tool)) this.editorTool = tool;
+		},
+
+		/** @param {number} index @param {string} [state] */
+		setEditorCell(index, state = this.editorTool) {
+			if (this.mode !== 'editor' || index < 0 || index >= this.editorBoard.length) return;
+			if (this.editorBoard[index] === state) return;
+			this.editorHistory.push(this.editorBoard.slice());
+			if (this.editorHistory.length > 100) this.editorHistory.shift();
+			this.editorBoard[index] = state;
+			this.editorAnalysis = undefined;
+			this.editorShowSolution = false;
+			this.editorRevision += 1;
+		},
+
+		/** @param {PointerEvent} event @param {number} index */
+		beginEditorPaint(event, index) {
+			if (event.button !== 0) return;
+			this.editorPainting = true;
+			this.editorPointerId = event.pointerId;
+			this.setEditorCell(index);
+		},
+
+		/** @param {PointerEvent} event */
+		moveEditorPaint(event) {
+			let element = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.editor-cell');
+			let index = Number(element?.getAttribute('data-editor-index'));
+			if (event.pointerType === 'mouse') {
+				this.editorHoverIndex = Number.isInteger(index) ? index : -1;
+			}
+			if (!this.editorPainting || event.pointerId !== this.editorPointerId) return;
+			if (Number.isInteger(index)) this.setEditorCell(index);
+		},
+
+		/** @param {PointerEvent} event */
+		leaveEditorBoard(event) {
+			if (event.pointerType === 'mouse') this.editorHoverIndex = -1;
+		},
+
+		/** @param {PointerEvent} event */
+		endEditorPaint(event) {
+			if (event.pointerId !== this.editorPointerId) return;
+			this.editorPainting = false;
+			this.editorPointerId = undefined;
+		},
+
+		/** @param {KeyboardEvent} event @param {number} index */
+		keydownEditorCell(event, index) {
+			let direction = CELL_FOCUS_DIRECTIONS[event.key];
+			if (direction) {
+				event.preventDefault();
+				let x = index % BOARD_SIZE;
+				let y = Math.floor(index / BOARD_SIZE);
+				let nextX = Math.max(0, Math.min(BOARD_SIZE - 1, x + direction[0]));
+				let nextY = Math.max(0, Math.min(BOARD_SIZE - 1, y + direction[1]));
+				this.editorFocusIndex = nextY * BOARD_SIZE + nextX;
+				this.editorRevision += 1;
+				this.$nextTick(() => document.querySelector(`[data-editor-index="${this.editorFocusIndex}"]`)?.focus());
+				return;
+			}
+			let state;
+			if (/^[0-8]$/.test(event.key)) state = event.key;
+			else if (event.key.toLowerCase() === 'f') state = 'flag';
+			else if (event.key.toLowerCase() === 'm') state = 'masked';
+			else if (['u', 'Delete', 'Backspace'].includes(event.key)) state = 'covered';
+			else if (event.key === ' ' || event.key === 'Enter') state = this.editorTool;
+			if (state !== undefined) {
+				event.preventDefault();
+				this.setEditorCell(index, state);
+			}
+		},
+
+		/** @param {KeyboardEvent} event */
+		keydownEditorAtPointer(event) {
+			if (this.mode !== 'editor' || event.defaultPrevented || !/^[0-8]$/.test(event.key)) return;
+			if (this.editorHoverIndex < 0) return;
+			event.preventDefault();
+			this.setEditorCell(this.editorHoverIndex, event.key);
+		},
+
+		analyzeEditor() {
+			this.editorAnalysis = analyzeEditorBoard(this.editorBoard, BOARD_SIZE, BOARD_SIZE);
+			this.editorShowSolution = false;
+			this.editorRevision += 1;
+		},
+
+		async activateEditorPrimaryAction() {
+			if (!this.editorCanShare) {
+				this.analyzeEditor();
+				return;
+			}
+			let puzzle = createEditorPuzzle(this.editorBoard, this.editorAnalysis, BOARD_SIZE, BOARD_SIZE);
+			let url = createRouteUrl(window.location.href, `/puzzle/${puzzle.encode()}`);
+			let shareData = {
+				title: 'Minesight puzzle',
+				text: 'Can you solve this Minesight puzzle?',
+				url: url.href,
+			};
+			if (typeof navigator.share === 'function') {
+				try {
+					await navigator.share(shareData);
+					this.showShareFeedback('Puzzle shared');
+					return;
+				}
+				catch (error) {
+					if (error instanceof DOMException && error.name === 'AbortError') return;
+				}
+			}
+			try {
+				await this.copyShareUrl(url.href);
+				this.showShareFeedback('Share link copied');
+			}
+			catch {
+				this.showShareFeedback('Could not copy the link');
+			}
+		},
+
+		undoEditor() {
+			let previous = this.editorHistory.pop();
+			if (!previous) return;
+			this.editorBoard = previous;
+			this.editorAnalysis = undefined;
+			this.editorShowSolution = false;
+			this.editorRevision += 1;
+		},
+
+		clearEditor() {
+			if (this.editorBoard.every((cell) => cell === 'covered')) return;
+			this.editorHistory.push(this.editorBoard.slice());
+			this.editorBoard = Array(BOARD_SIZE * BOARD_SIZE).fill('covered');
+			this.editorAnalysis = undefined;
+			this.editorShowSolution = false;
+			this.editorRevision += 1;
 		},
 
 		/** @param {number} failedCount */
@@ -1587,6 +1898,10 @@ function createMinesight() {
 				this.startTutorial();
 				return;
 			}
+			if (route.mode === 'editor') {
+				this.mode = 'editor';
+				return;
+			}
 			if (route.mode === 'puzzle') {
 				this.mode = 'puzzle';
 				this.result = 'playing';
@@ -1622,6 +1937,7 @@ function createMinesight() {
 			else if (nextMode === 'tutorial') this.navigate('/tutorial');
 			else if (nextMode === 'study') this.navigate(`/study/${this.difficultyKey}`);
 			else if (nextMode === 'challenge') this.navigate(`/challenge/${this.challengeModeKey}`);
+			else if (nextMode === 'editor') this.navigate('/editor');
 		},
 
 		goHome() {

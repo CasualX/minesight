@@ -16,10 +16,10 @@ function elementCenter(element) {
 /** @param {number} cellIndex */
 function effectOrigin(cellIndex = -1) {
 	if (cellIndex >= 0) {
-		let cell = document.querySelectorAll('.minefield .cell').item(cellIndex);
+		let cell = document.querySelector(`.board-card .cell[data-cell-index="${cellIndex}"]`);
 		if (cell) return elementCenter(cell);
 	}
-	return elementCenter(document.querySelector('.minefield'));
+	return elementCenter(document.querySelector('.board-card .minefield'));
 }
 
 function feedbackLayer() {

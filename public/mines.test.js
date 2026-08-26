@@ -1,7 +1,7 @@
 // @ts-check
 // node --experimental-default-type=module public/mines.test.js
 
-import { MineField } from './mines.js';
+import { MineField, analyzeEditorBoard, createEditorPuzzle } from './mines.js';
 
 /**
  * @param {unknown} condition
@@ -258,6 +258,82 @@ function testPuzzleCodecRejectsInvalidPayloads() {
 	}
 }
 
+function testEditorBoardAnalysisAndPuzzleCreation() {
+	let board = (rows) => rows.flatMap((row) => (
+		[...row].map((cell) => cell === 'c' ? 'covered' : cell === 'f' ? 'flag' : cell)
+	));
+	let ambiguous = analyzeEditorBoard(board(['1c', 'cc']), 2, 2);
+	assert(!ambiguous.contradiction, 'a corner 1 should be consistent');
+	assertEqual(ambiguous.forcedMine.length + ambiguous.forcedSafe.length, 0, 'a corner 1 should have no forced neighbour');
+
+	let satisfied = analyzeEditorBoard(board(['1f', 'cc']), 2, 2);
+	assertEqual(satisfied.forcedSafe.length, 2, 'a satisfied clue should force its remaining neighbours safe');
+	assert(satisfied.unique, 'all covered cells should be determined');
+	assert(analyzeEditorBoard(board(['0f', 'cc']), 2, 2).contradiction, 'a flag next to zero should be a contradiction');
+
+	let masked = analyzeEditorBoard(['1', 'flag', 'masked', 'covered'], 2, 2);
+	assert(!masked.contradiction && masked.forcedSafe.length === 1, 'masked cells should be known safe without supplying clues');
+
+	let blankCells = Array(64).fill('covered');
+	let blank = analyzeEditorBoard(blankCells, 8, 8);
+	assert(!blank.contradiction && !blank.unique, 'a blank board should have many solutions');
+	assertEqual(blank.forcedMine.length + blank.forcedSafe.length, 0, 'unconstrained cells should not be forced');
+	let rejected = false;
+	try { createEditorPuzzle(blankCells, blank, 8, 8); }
+	catch { rejected = true; }
+	assert(rejected, 'a board without a provable move should not become a shared puzzle');
+
+	let shareCells = Array(64).fill('masked');
+	shareCells[0] = '1';
+	shareCells[1] = 'covered';
+	let analysis = analyzeEditorBoard(shareCells, 8, 8);
+	let decoded = MineField.decode(createEditorPuzzle(shareCells, analysis, 8, 8).encode());
+	assert(decoded.isRevealed(0, 0) && decoded.getClue(0, 0) === 1, 'a shared editor puzzle should preserve its clue');
+	assert(decoded.isMine(1, 0) && decoded.isForcedMine(1, 0), 'a shared editor puzzle should preserve its forced answer');
+	assert(!decoded.isActive(0, 1), 'a shared editor puzzle should preserve masked cells');
+}
+
+function testEditorAnalysisMatchesExhaustiveSearch() {
+	let randomState = 0x5eed1234;
+	let random = () => {
+		randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
+		return randomState / 0x1_0000_0000;
+	};
+	for (let attempt = 0; attempt < 160; attempt += 1) {
+		let cells = Array.from({ length: 9 }, () => {
+			let roll = random();
+			return roll < .16 ? 'flag' : roll < .48 ? String(Math.floor(random() * 5)) : 'covered';
+		});
+		let unknown = cells.flatMap((cell, index) => cell === 'covered' ? [index] : []);
+		let layouts = [];
+		for (let mask = 0; mask < 2 ** unknown.length; mask += 1) {
+			let mines = new Set(cells.flatMap((cell, index) => cell === 'flag' ? [index] : []));
+			unknown.forEach((cell, bit) => { if ((mask & (1 << bit)) !== 0) mines.add(cell); });
+			let valid = cells.every((cell, index) => {
+				if (!/^\d$/.test(cell)) return true;
+				let x = index % 3;
+				let y = Math.floor(index / 3);
+				let count = 0;
+				for (let neighbourY = Math.max(0, y - 1); neighbourY <= Math.min(2, y + 1); neighbourY += 1) {
+					for (let neighbourX = Math.max(0, x - 1); neighbourX <= Math.min(2, x + 1); neighbourX += 1) {
+						if ((neighbourX !== x || neighbourY !== y) && mines.has(neighbourY * 3 + neighbourX)) count += 1;
+					}
+				}
+				return count === Number(cell);
+			});
+			if (valid) layouts.push(mines);
+		}
+
+		let result = analyzeEditorBoard(cells, 3, 3);
+		assertEqual(result.contradiction, layouts.length === 0, `analysis should match exhaustive consistency for ${cells}`);
+		if (layouts.length === 0) continue;
+		let expectedMines = unknown.filter((cell) => layouts.every((layout) => layout.has(cell))).sort();
+		let expectedSafe = unknown.filter((cell) => layouts.every((layout) => !layout.has(cell))).sort();
+		assertEqual(String([...result.forcedMine].sort()), String(expectedMines), `forced mines should match exhaustive search for ${cells}`);
+		assertEqual(String([...result.forcedSafe].sort()), String(expectedSafe), `forced safe cells should match exhaustive search for ${cells}`);
+	}
+}
+
 /** @param {Array<() => void | Promise<void>>} testFunctions */
 async function runTests(testFunctions) {
 	let failures = 0;
@@ -294,4 +370,6 @@ await runTests([
 	testPuzzleChordCompletesDirectClueDeductions,
 	testPuzzleCodecUsesSixBitsPerCell,
 	testPuzzleCodecRejectsInvalidPayloads,
+	testEditorBoardAnalysisAndPuzzleCreation,
+	testEditorAnalysisMatchesExhaustiveSearch,
 ]);
