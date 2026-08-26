@@ -1608,7 +1608,6 @@ body.settings-open {
 	color: var(--muted);
 	font: 11px ui-sans-serif, system-ui, sans-serif;
 }
-.result-banner button,
 .board-actions button {
 	min-height: 44px;
 	padding: 0 16px;
@@ -1630,7 +1629,6 @@ body.settings-open {
 	grid-template-columns: repeat(2, minmax(0, 1fr));
 	gap: 8px;
 }
-.board-actions.challenge-actions { grid-template-columns: 1fr; }
 .board-actions.puzzle-actions { grid-template-columns: 1fr; }
 .board-actions.tutorial-actions { grid-template-columns: 1fr; }
 .action-switch,
@@ -1769,10 +1767,6 @@ body.settings-open {
 .board-actions.is-searching button:disabled {
 	opacity: .42;
 }
-.result-banner button {
-	width: 100%;
-}
-.result-banner button:disabled,
 .board-actions button:disabled {
 	border-color: var(--line);
 	background: var(--covered);

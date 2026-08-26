@@ -436,12 +436,6 @@
 					<strong x-text="statusTitle"></strong>
 					<span x-text="statusMessage"></span>
 				</div>
-				<button
-					type="button"
-					:disabled="challengeResultActionDisabled"
-					@click="activateChallengeResultAction()"
-					x-text="challengeResultActionLabel"
-				></button>
 			</div>
 		</section>
 
@@ -494,6 +488,13 @@
 		</section>
 		<section class="game-controls" x-show="showChallengeControls" aria-label="Challenge controls">
 			<div class="board-actions challenge-actions">
+				<button
+					type="button"
+					class="primary"
+					:disabled="challengeResultActionDisabled"
+					@click="activateChallengeResultAction()"
+					x-text="challengeResultActionLabel"
+				></button>
 				<button
 					type="button"
 					class="secondary give-up-button"
