@@ -29,6 +29,23 @@ const CELL_FOCUS_DIRECTIONS = {
 	ArrowRight: [1, 0],
 };
 
+/** @typedef {Event & { prompt: () => Promise<void>, userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }} BeforeInstallPromptEvent */
+
+function isAppInstalled() {
+	let standaloneNavigator = /** @type {Navigator & { standalone?: boolean }} */ (navigator);
+	return window.matchMedia('(display-mode: standalone)').matches || standaloneNavigator.standalone === true;
+}
+
+function appInstallInstructions() {
+	let userAgent = navigator.userAgent;
+	let isAppleMobile = /iPad|iPhone|iPod/.test(userAgent)
+		|| (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+	if (isAppleMobile) return 'In Safari, tap Share, then Add to Home Screen.';
+	let isSafari = /Safari/.test(userAgent) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS/.test(userAgent);
+	if (isSafari) return 'In Safari, choose File, then Add to Dock.';
+	return 'Open your browser menu and choose Install app or Add to Home screen.';
+}
+
 /** @param {number} elapsedMs */
 function formatElapsedTime(elapsedMs) {
 	let totalHundredths = Math.floor(elapsedMs / 10);
@@ -649,6 +666,8 @@ function createMinesight() {
 	/** @type {MineField | undefined} */
 	let puzzle;
 	let puzzleError = '';
+	/** @type {BeforeInstallPromptEvent | undefined} */
+	let installPrompt;
 	let initialUrl = redirectLegacyUrl(new URL(window.location.href));
 	if (initialUrl.hash === '') {
 		initialUrl.hash = '/';
@@ -703,6 +722,8 @@ function createMinesight() {
 					: urlGame.mode === 'study' ? 'study' : 'home',
 		soundEnabled: gameSounds.enabled,
 		settingsOpen: false,
+		appInstalled: isAppInstalled(),
+		installPromptAvailable: false,
 		colorScheme,
 		actionsInverted: false,
 		/** @type {GameResult} */
@@ -772,6 +793,10 @@ function createMinesight() {
 		routeListener: undefined,
 		/** @type {(() => void) | undefined} */
 		themeMediaListener: undefined,
+		/** @type {((event: Event) => void) | undefined} */
+		installPromptListener: undefined,
+		/** @type {(() => void) | undefined} */
+		appInstalledListener: undefined,
 		scratchActive: false,
 		scratchTool: 'pencil',
 		scratchColor: 'graphite',
@@ -807,6 +832,18 @@ function createMinesight() {
 				if (this.colorScheme === 'system') applyColorScheme('system');
 			};
 			window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', this.themeMediaListener);
+			this.installPromptListener = event => {
+				event.preventDefault();
+				installPrompt = /** @type {BeforeInstallPromptEvent} */ (event);
+				this.installPromptAvailable = true;
+			};
+			this.appInstalledListener = () => {
+				installPrompt = undefined;
+				this.installPromptAvailable = false;
+				this.appInstalled = true;
+			};
+			window.addEventListener('beforeinstallprompt', this.installPromptListener);
+			window.addEventListener('appinstalled', this.appInstalledListener);
 			this.$nextTick(() => this.setupScratchPad());
 			this.routeListener = () => {
 				if (this.activeRouteUrl === window.location.href) return;
@@ -848,6 +885,8 @@ function createMinesight() {
 			if (this.routeListener) window.removeEventListener('popstate', this.routeListener);
 			if (this.routeListener) window.removeEventListener('hashchange', this.routeListener);
 			if (this.themeMediaListener) window.matchMedia('(prefers-color-scheme: dark)').removeEventListener('change', this.themeMediaListener);
+			if (this.installPromptListener) window.removeEventListener('beforeinstallprompt', this.installPromptListener);
+			if (this.appInstalledListener) window.removeEventListener('appinstalled', this.appInstalledListener);
 			document.body.classList.remove('settings-open');
 		},
 
@@ -870,6 +909,16 @@ function createMinesight() {
 
 		get pageTitle() {
 			return this.headerModeTitle ? `Minesight / ${this.headerModeTitle}` : 'Minesight';
+		},
+
+		get canInstallApp() {
+			return !this.appInstalled && this.installPromptAvailable;
+		},
+
+		get appInstallMessage() {
+			if (this.appInstalled) return 'Minesight is installed and opens as its own app.';
+			if (this.canInstallApp) return 'Play in its own window and keep it close at hand.';
+			return appInstallInstructions();
 		},
 
 		get showChallengeTimer() {
@@ -1796,6 +1845,15 @@ function createMinesight() {
 		toggleSound() {
 			this.soundEnabled = gameSounds.toggle();
 			saveMinesightData('soundEnabled', this.soundEnabled);
+		},
+
+		async installApp() {
+			if (!installPrompt || this.appInstalled) return;
+			let prompt = installPrompt;
+			installPrompt = undefined;
+			this.installPromptAvailable = false;
+			await prompt.prompt();
+			await prompt.userChoice;
 		},
 
 		openSettings() {

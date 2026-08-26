@@ -5,8 +5,26 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<meta name="color-scheme" content="light dark">
 	<meta name="theme-color" content="#fafafa">
+	<meta name="description" content="Short Minesweeper logic puzzles with no guessing required.">
+	<meta property="og:type" content="website">
+	<meta property="og:title" content="Minesight">
+	<meta property="og:description" content="Short Minesweeper logic puzzles with no guessing required.">
+	<meta property="og:image" content="https://casualx.github.io/minesight/social-preview.png">
+	<meta property="og:image:width" content="1200">
+	<meta property="og:image:height" content="630">
+	<meta property="og:image:alt" content="A Minesight logic puzzle with colorful number clues and a flagged mine.">
+	<meta name="twitter:card" content="summary_large_image">
+	<meta name="twitter:title" content="Minesight">
+	<meta name="twitter:description" content="Short Minesweeper logic puzzles with no guessing required.">
+	<meta name="twitter:image" content="https://casualx.github.io/minesight/social-preview.png">
+	<meta name="twitter:image:alt" content="A Minesight logic puzzle with colorful number clues and a flagged mine.">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="default">
 	<title>Minesight</title>
-	<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+	<link rel="manifest" href="./manifest.webmanifest?v=20260826pwa3">
+	<link rel="icon" href="./icon/icon.svg?v=20260826pwa3" type="image/svg+xml">
+	<link rel="icon" href="./icon/icon-192.png?v=20260826pwa3" type="image/png" sizes="192x192">
+	<link rel="apple-touch-icon" href="./icon/icon-192.png?v=20260826pwa3">
 	<link rel="stylesheet" href="./index.css">
 	<link rel="stylesheet" href="./feedback.css">
 	<script type="module" src="./index.js"></script>
@@ -548,11 +566,31 @@
 				</label>
 			</div>
 
+			<div class="settings-group install-setting">
+				<div class="install-setting-copy">
+					<strong>Install Minesight</strong>
+					<p x-text="appInstallMessage" role="status"></p>
+				</div>
+				<button type="button" x-show="canInstallApp" @click="installApp()">Install</button>
+			</div>
+
 			<footer class="settings-about">
 				<p>Minesight is free and open source.</p>
 				<a href="https://github.com/CasualX/minesight" target="_blank" rel="noopener noreferrer">CasualX/minesight on GitHub <span aria-hidden="true">&#8599;</span></a>
 			</footer>
 		</section>
 	</div>
+	<script>
+	if ('serviceWorker' in navigator) {
+		window.addEventListener('load', () => {
+			navigator.serviceWorker.register('./sw.js?v=20260826pwa4', {
+				scope: './',
+				updateViaCache: 'none',
+			}).catch(error => {
+				console.error('Service worker registration failed:', error);
+			});
+		});
+	}
+	</script>
 </body>
 </html>
