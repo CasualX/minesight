@@ -359,7 +359,13 @@ function applyColorScheme(colorScheme) {
 	let resolvedColorScheme = dark ? 'dark' : 'light';
 	document.documentElement.dataset.colorScheme = resolvedColorScheme;
 	document.documentElement.style.colorScheme = resolvedColorScheme;
-	document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#171817' : '#fafafa');
+	let themeColor = document.querySelector('meta[name="theme-color"]');
+	if (!themeColor) {
+		themeColor = document.createElement('meta');
+		themeColor.setAttribute('name', 'theme-color');
+		document.head.appendChild(themeColor);
+	}
+	themeColor.setAttribute('content', dark ? '#171817' : '#fafafa');
 }
 
 function isLocalDevelopment() {
