@@ -178,7 +178,7 @@ const MEDIUM_DIFFICULTY = {
 	key: 'medium',
 	label: 'Medium',
 	generator: 'randomMediumPuzzle',
-	description: 'Recognize patterns on a denser board that requires more scanning.',
+	description: 'Recognize familiar patterns on a dense board.',
 };
 const HARD_DIFFICULTY = {
 	key: 'hard',
@@ -190,13 +190,13 @@ const EXPERT_DIFFICULTY = {
 	key: 'expert',
 	label: 'Expert',
 	generator: 'randomExpertPuzzle',
-	description: 'The clues overlap across a larger, messier area. Keep track of several possible mine layouts at once.',
+	description: 'Common patterns have been removed. Use contradiction to rule out possible mine layouts and find the forced squares.',
 };
 const MIT_DIFFICULTY = {
 	key: 'mit',
 	label: 'MIT-style',
 	generator: 'randomMitPuzzle',
-	description: 'Determine the unique mine layout from a minimal set of clues. Every active square has one logically forced answer.',
+	description: 'Solve the whole board from a minimal set of clues. Each puzzle has a unique mine layout.',
 };
 const STUDY_DIFFICULTIES = [
 	EASY_DIFFICULTY,
@@ -1202,8 +1202,8 @@ function createMinesight() {
 			return this.dailySolvedCount === this.dailyTotal;
 		},
 
-		get feedbackRuleset() {
-			return this.mode === 'daily' ? 'checked' : 'immediate';
+		get markValidation() {
+			return this.mode === 'daily' ? 'deferred' : 'immediate';
 		},
 
 		get studyActionsClass() {
@@ -2337,40 +2337,17 @@ function createMinesight() {
 			if (changed) gameSounds.play('unmark');
 		},
 
-		dailyContradictionIndex() {
-			for (let y = 0; y < this.field.height; y += 1) {
-				for (let x = 0; x < this.field.width; x += 1) {
-					if (!this.field.isRevealed(x, y)) continue;
-					let mines = 0;
-					for (let neighbourY = Math.max(0, y - 1); neighbourY <= Math.min(this.field.height - 1, y + 1); neighbourY += 1) {
-						for (let neighbourX = Math.max(0, x - 1); neighbourX <= Math.min(this.field.width - 1, x + 1); neighbourX += 1) {
-							if ((neighbourX !== x || neighbourY !== y) && (this.field.isFlagged(neighbourX, neighbourY) || this.field.isMarkedMine(neighbourX, neighbourY))) mines += 1;
-						}
-					}
-					if (mines > this.field.getClue(x, y)) return this.field.getIndex(x, y);
-				}
-			}
-			return -1;
-		},
-
 		checkDailySolution() {
 			if (this.mode !== 'daily' || !this.dailyBoardReady || this.result !== 'playing') return;
-			let contradictionIndex = this.dailyContradictionIndex();
+			let contradictionIndex = this.field.puzzleContradictionIndex();
 			if (contradictionIndex >= 0) {
-				this.dailyCheckMessage = 'There is a contradiction: a clue touches too many marked mines.';
+				this.dailyCheckMessage = 'There is a contradiction: the marked mines and safe squares cannot satisfy a clue.';
 				gameSounds.play('incorrect');
 				feedbackEffects.failure({ cellIndex: contradictionIndex, terminal: false });
 				this.revision += 1;
 				return;
 			}
-			let solved = Array.from(this.field.state).every((cell) => {
-				if ((cell & MineField.ACTIVE) === 0) return true;
-				let mineCorrect = (cell & MineField.FORCED_MINE) !== 0 && (cell & MineField.MARKED_MINE) !== 0;
-				let safeCorrect = (cell & MineField.FORCED_SAFE) !== 0 && (cell & MineField.MARKED_SAFE) !== 0;
-				let ambiguousUnmarked = (cell & (MineField.FORCED_MINE | MineField.FORCED_SAFE | MineField.MARKED_MINE | MineField.MARKED_SAFE)) === 0;
-				return mineCorrect || safeCorrect || ambiguousUnmarked;
-			});
-			if (!solved) {
+			if (!this.field.isPuzzleSolved()) {
 				this.dailyCheckMessage = 'Not complete yet. Keep going.';
 				this.revision += 1;
 				return;
@@ -2380,7 +2357,9 @@ function createMinesight() {
 			this.snapshotDailyState();
 			this.saveDailyData();
 			gameSounds.play('success');
-			feedbackEffects.success({ grand: this.dailyAllSolved });
+			let allSolved = this.dailyAllSolved;
+			feedbackEffects.success({ grand: allSolved });
+			if (allSolved) feedbackEffects.fireworks();
 			this.revision += 1;
 		},
 
@@ -2728,28 +2707,34 @@ function createMinesight() {
 			}
 			if (this.mode === 'challenge' && !this.challengeStarted) return;
 			if (this.field.isRevealed(x, y)) {
-				if (this.mode === 'daily') return;
-				let marks = this.field.actionChordMarks(x, y);
-				if (marks.length === 0) return;
+				let validate = this.markValidation === 'immediate';
+				let chord = this.field.actionChordMarks(x, y, { validate });
+				if (chord.marks.length === 0 && chord.rejectedIndex < 0) return;
+				let marks = chord.marks;
 				let [first, ...additionalMarks] = marks;
 				this.afterMove({
 					removing: false,
-					cellIndex: first.index,
-					markMine: first.mine,
+					cellIndex: first?.index ?? chord.rejectedIndex,
+					markMine: first?.mine ?? false,
 					additionalMarks,
+					rejectedIndex: chord.rejectedIndex,
 				});
 				return;
 			}
 			if (!this.field.isActive(x, y)) return;
 			let cellIndex = this.field.getIndex(x, y);
 			let markMine = invert !== this.actionsInverted;
-			let oppositeMarked = markMine ? this.field.isMarkedSafe(x, y) : this.field.isMarkedMine(x, y);
-			if (oppositeMarked) return;
-			let removing = markMine ? this.field.isMarkedMine(x, y) : this.field.isMarkedSafe(x, y);
-			let validate = this.feedbackRuleset === 'immediate';
-			if (markMine) this.field.actionMarkMine(x, y, validate);
-			else this.field.actionMarkSafe(x, y, validate);
-			this.afterMove({ removing, cellIndex, markMine });
+			let validate = this.markValidation === 'immediate';
+			let action = markMine
+				? this.field.actionMarkMine(x, y, { validate })
+				: this.field.actionMarkSafe(x, y, { validate });
+			if (action.change === 'ignored') return;
+			this.afterMove({
+				removing: action.change === 'removed',
+				cellIndex,
+				markMine,
+				rejectedIndex: action.change === 'rejected' ? cellIndex : -1,
+			});
 		},
 
 		/**
@@ -2780,7 +2765,7 @@ function createMinesight() {
 			}
 			if (step.action !== 'ambiguous') {
 				gameSounds.play('mark');
-				feedbackEffects.correctMark({
+				feedbackEffects.mark({
 					cellIndex: this.field.getIndex(x, y),
 					mine: step.action === 'mine',
 				});
@@ -2940,25 +2925,21 @@ function createMinesight() {
 			this.applyCellInput(x, y, true);
 		},
 
-		/** @param {{ removing: boolean, cellIndex: number, markMine: boolean, additionalMarks?: Array<{ index: number, mine: boolean }> }} move */
+		/** @param {{ removing: boolean, cellIndex: number, markMine: boolean, additionalMarks?: Array<{ index: number, mine: boolean }>, rejectedIndex?: number }} move */
 		afterMove(move) {
-			if (this.mode === 'daily') {
-				this.dailyCheckMessage = '';
-				gameSounds.play(move.removing ? 'unmark' : 'mark');
-				this.revision += 1;
-				this.snapshotDailyState();
-				this.saveDailyData();
-				return;
-			}
 			let showMarkEffects = () => {
-				feedbackEffects.correctMark({ cellIndex: move.cellIndex, mine: move.markMine });
+				feedbackEffects.mark({ cellIndex: move.cellIndex, mine: move.markMine });
 				for (let mark of move.additionalMarks ?? []) {
-					feedbackEffects.correctMark({ cellIndex: mark.index, mine: mark.mine });
+					feedbackEffects.mark({ cellIndex: mark.index, mine: mark.mine });
 				}
 			};
-			let gameOver = this.field.gameOverReason();
+			if (this.mode === 'daily') this.dailyCheckMessage = '';
+			let rejectedIndex = move.rejectedIndex ?? -1;
+			let gameOver = this.markValidation === 'deferred'
+				? MineField.GAME_OVER_FALSE
+				: rejectedIndex >= 0 ? MineField.GAME_OVER_DETONATION : this.field.gameOverReason();
 			if (gameOver === MineField.GAME_OVER_DETONATION) {
-				let feedbackCellIndex = this.field.incorrectIndex;
+				let feedbackCellIndex = rejectedIndex >= 0 ? rejectedIndex : this.field.incorrectIndex;
 				if (this.mode === 'challenge') {
 					this.markChallengeFailed(feedbackCellIndex);
 					return;
@@ -3009,6 +2990,10 @@ function createMinesight() {
 			if (this.mode === 'study') {
 				this.snapshotStudyState();
 				this.saveStudyData();
+			}
+			else if (this.mode === 'daily') {
+				this.snapshotDailyState();
+				this.saveDailyData();
 			}
 		},
 

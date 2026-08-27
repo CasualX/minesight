@@ -202,8 +202,8 @@ function testPuzzleAnnotationsCanUseExplicitValidation() {
 		MineField.ACTIVE | MineField.FORCED_SAFE,
 		MineField.MINE | MineField.ACTIVE | MineField.FORCED_MINE,
 	]));
-	field.actionMarkMine(0, 0, false);
-	field.actionMarkSafe(1, 0, false);
+	field.actionMarkMine(0, 0, { validate: false });
+	field.actionMarkSafe(1, 0, { validate: false });
 	assertEqual(field.isMarkedMine(0, 0), true, 'checked-feedback rules should retain an unchecked mine annotation');
 	assertEqual(field.isMarkedSafe(1, 0), true, 'checked-feedback rules should retain an unchecked safe annotation');
 	assertEqual(field.consumeIncorrect(), -1, 'unchecked annotations should not trigger immediate incorrect feedback');
@@ -228,7 +228,7 @@ function testPuzzleChordCompletesDirectClueDeductions() {
 		MineField.REVEALED, MineField.REVEALED, MineField.ACTIVE | MineField.FORCED_SAFE,
 	]));
 	safeChord.actionMarkMine(1, 0);
-	let safeMarks = safeChord.actionChordMarks(1, 1);
+	let safeMarks = safeChord.actionChordMarks(1, 1).marks;
 	assertEqual(safeMarks.length, 2, 'a satisfied clue should mark every remaining active neighbour safe');
 	assertEqual(safeChord.isMarkedSafe(2, 0), true, 'safe chording should annotate the first remaining neighbour');
 	assertEqual(safeChord.isMarkedSafe(2, 1), true, 'safe chording should annotate every remaining neighbour');
@@ -239,10 +239,69 @@ function testPuzzleChordCompletesDirectClueDeductions() {
 	]));
 	mineChord.actionMarkSafe(2, 0);
 	mineChord.actionMarkSafe(2, 1);
-	let mineMarks = mineChord.actionChordMarks(1, 1);
+	let mineMarks = mineChord.actionChordMarks(1, 1).marks;
 	assertEqual(mineMarks.length, 2, 'a clue with only enough unknown cells for its mines should mark them all as mines');
 	assertEqual(mineChord.isMarkedMine(0, 0), true, 'mine chording should annotate the first unknown neighbour');
 	assertEqual(mineChord.isMarkedMine(1, 0), true, 'mine chording should annotate every unknown neighbour');
+}
+
+function testPuzzleChordCanUseCheckedValidation() {
+	let field = new MineField(3, 2, new Uint8Array([
+		MineField.MINE | MineField.ACTIVE | MineField.FORCED_MINE, MineField.ACTIVE | MineField.FORCED_SAFE, MineField.ACTIVE | MineField.FORCED_SAFE,
+		MineField.REVEALED, MineField.REVEALED, MineField.ACTIVE | MineField.FORCED_SAFE,
+	]));
+	field.actionMarkMine(1, 0, { validate: false });
+	let marks = field.actionChordMarks(1, 1, { validate: false }).marks;
+	assertEqual(marks.length, 3, 'checked-feedback chording should retain every deduction until the solution is checked');
+	assertEqual(field.isMarkedSafe(0, 0), true, 'checked-feedback chording should not reveal that a deduced safe mark is incorrect');
+	assertEqual(field.consumeIncorrect(), -1, 'checked-feedback chording should not trigger immediate incorrect feedback');
+}
+
+function testPuzzleCompletionIncludesUncheckedAnnotations() {
+	let field = new MineField(3, 1, new Uint8Array([
+		MineField.ACTIVE | MineField.FORCED_SAFE,
+		MineField.MINE | MineField.ACTIVE | MineField.FORCED_MINE,
+		MineField.ACTIVE,
+	]));
+	field.actionMarkSafe(0, 0);
+	field.actionMarkMine(1, 0);
+	field.actionMarkMine(2, 0, { validate: false });
+	assertEqual(field.isPuzzleSolved(), false, 'an unchecked annotation on an ambiguous cell should keep the puzzle unsolved');
+	assertEqual(field.gameOverReason(), MineField.GAME_OVER_FALSE, 'shared completion logic should not assume every stored annotation was validated');
+	field.actionMarkMine(2, 0, { validate: false });
+	assertEqual(field.isPuzzleSolved(), true, 'removing the unchecked annotation should restore the solved state');
+	assertEqual(field.gameOverReason(), MineField.GAME_OVER_CLEARED, 'immediate modes should use the same complete-answer check');
+}
+
+function testPuzzleFindsMineAndSafeContradictions() {
+	let tooManyMines = new MineField(3, 2, new Uint8Array([
+		MineField.MINE | MineField.ACTIVE, MineField.ACTIVE, MineField.ACTIVE,
+		0, MineField.REVEALED, 0,
+	]));
+	tooManyMines.actionMarkMine(0, 0, { validate: false });
+	tooManyMines.actionMarkMine(1, 0, { validate: false });
+	assertEqual(tooManyMines.puzzleContradictionIndex(), 4, 'too many annotated mines should contradict the clue');
+
+	let tooManySafe = new MineField(3, 2, new Uint8Array([
+		MineField.MINE | MineField.ACTIVE, MineField.MINE | MineField.ACTIVE, MineField.ACTIVE,
+		0, MineField.REVEALED, 0,
+	]));
+	tooManySafe.actionMarkSafe(0, 0, { validate: false });
+	tooManySafe.actionMarkSafe(1, 0, { validate: false });
+	assertEqual(tooManySafe.puzzleContradictionIndex(), 4, 'too many annotated safe cells should also contradict the clue');
+}
+
+function testPuzzleChordReportsRejectedDeductions() {
+	let field = new MineField(3, 2, new Uint8Array([
+		MineField.MINE | MineField.ACTIVE | MineField.FORCED_MINE, MineField.ACTIVE | MineField.FORCED_SAFE, MineField.ACTIVE | MineField.FORCED_SAFE,
+		0, MineField.REVEALED, MineField.ACTIVE | MineField.FORCED_SAFE,
+	]));
+	field.actionMarkMine(1, 0, { validate: false });
+	field.actionMarkSafe(2, 0);
+	field.actionMarkSafe(2, 1);
+	let chord = field.actionChordMarks(1, 1);
+	assertEqual(chord.marks.length, 0, 'a chord with no valid deductions should not apply a mark');
+	assertEqual(chord.rejectedIndex, 0, 'a rejected chord should report the cell that needs immediate feedback');
 }
 
 function testPuzzleCodecUsesSixBitsPerCell() {
@@ -395,6 +454,10 @@ await runTests([
 	testPuzzleAnnotationsCanUseExplicitValidation,
 	testPuzzleMarksCanBeCleared,
 	testPuzzleChordCompletesDirectClueDeductions,
+	testPuzzleChordCanUseCheckedValidation,
+	testPuzzleCompletionIncludesUncheckedAnnotations,
+	testPuzzleFindsMineAndSafeContradictions,
+	testPuzzleChordReportsRejectedDeductions,
 	testPuzzleCodecUsesSixBitsPerCell,
 	testPuzzleCodecRejectsInvalidPayloads,
 	testEditorBoardAnalysisAndPuzzleCreation,

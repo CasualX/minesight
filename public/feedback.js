@@ -144,7 +144,7 @@ class FeedbackEffects {
 	}
 
 	/** @param {{ cellIndex: number, mine: boolean }} options */
-	correctMark({ cellIndex, mine }) {
+	mark({ cellIndex, mine }) {
 		let origin = effectOrigin(cellIndex);
 		let sequence = this.createSequence('mark', origin, 720);
 		if (mine) sequence.classList.add('is-mine');

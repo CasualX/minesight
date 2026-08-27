@@ -209,7 +209,6 @@ export class MineField {
 	/** @returns {GameOverReason} The board's current completion state. */
 	gameOverReason() {
 		let revealedMine = false;
-		let forcedMovePending = false;
 		let mineCount = 0;
 		let revealedCount = 0;
 
@@ -225,19 +224,54 @@ export class MineField {
 				if ((cell & REVEALED) !== 0) {
 					revealedCount += 1;
 				}
-				if ((cell & FORCED_SAFE) !== 0 && (cell & MARKED_SAFE) === 0) {
-					forcedMovePending = true;
-				}
-				if ((cell & FORCED_MINE) !== 0 && (cell & MARKED_MINE) === 0) {
-					forcedMovePending = true;
-				}
 			}
 		}
 
 		if (revealedMine || this.incorrectIndex >= 0) return GAME_OVER_DETONATION;
-		if (this.isPuzzle) return forcedMovePending ? GAME_OVER_FALSE : GAME_OVER_CLEARED;
+		if (this.isPuzzle) return this.isPuzzleSolved() ? GAME_OVER_CLEARED : GAME_OVER_FALSE;
 		if (this.width * this.height === mineCount + revealedCount) return GAME_OVER_CLEARED;
 		return GAME_OVER_FALSE;
+	}
+
+	/**
+	 * Returns whether every puzzle annotation matches the complete hidden answer.
+	 * This is independent of whether incorrect annotations were rejected eagerly.
+	 * @returns {boolean}
+	 */
+	isPuzzleSolved() {
+		if (!this.isPuzzle) return false;
+		return this.state.every((cell) => {
+			if ((cell & ACTIVE) === 0) return true;
+			let expected = cell & (FORCED_MINE | FORCED_SAFE);
+			let marked = cell & (MARKED_MINE | MARKED_SAFE);
+			if (expected === FORCED_MINE) return marked === MARKED_MINE;
+			if (expected === FORCED_SAFE) return marked === MARKED_SAFE;
+			return marked === 0;
+		});
+	}
+
+	/**
+	 * Finds a revealed clue that cannot be satisfied by the current annotations.
+	 * @returns {number} The contradictory clue index, or -1 when there is none.
+	 */
+	puzzleContradictionIndex() {
+		if (!this.isPuzzle) return -1;
+		for (let y = 0; y < this.height; y += 1) {
+			for (let x = 0; x < this.width; x += 1) {
+				let clueIndex = this.getIndex(x, y);
+				if ((this.state[clueIndex] & REVEALED) === 0 || (this.state[clueIndex] & MINE) !== 0) continue;
+				let knownMines = 0;
+				let unknown = 0;
+				forEachNeighbour(x, y, this.width, this.height, (neighbourX, neighbourY) => {
+					let neighbour = this.state[this.getIndex(neighbourX, neighbourY)];
+					if ((neighbour & (FLAG | MARKED_MINE)) !== 0) knownMines += 1;
+					else if ((neighbour & ACTIVE) !== 0 && (neighbour & MARKED_SAFE) === 0) unknown += 1;
+				});
+				let clue = this.clues[clueIndex];
+				if (knownMines > clue || knownMines + unknown < clue) return clueIndex;
+			}
+		}
+		return -1;
 	}
 
 	/**
@@ -441,43 +475,46 @@ export class MineField {
 	 * @param {number} y
 	 * @param {number} mark
 	 * @param {number} expected
-	 * @param {boolean} [validate] Whether to reject annotations that do not match the hidden answer.
+	 * @param {{ validate?: boolean }} [options]
+	 * @returns {{ change: 'added' | 'removed' | 'rejected' | 'ignored', index: number, mine: boolean }}
 	 */
-	_actionMark(x, y, mark, expected, validate = true) {
+	_actionMark(x, y, mark, expected, { validate = true } = {}) {
 		let index = this.getIndex(x, y);
 		let cell = this.state[index];
-		if (!this.isPuzzle || (cell & ACTIVE) === 0) return;
+		let mine = mark === MARKED_MINE;
+		if (!this.isPuzzle || (cell & ACTIVE) === 0) return { change: 'ignored', index, mine };
 
 		let previous = cell & (MARKED_MINE | MARKED_SAFE);
 		// An opposite gesture on an annotated cell is most likely an input slip.
 		// Only the gesture that created a mark may remove it.
-		if (previous !== 0 && previous !== mark) return;
+		if (previous !== 0 && previous !== mark) return { change: 'ignored', index, mine };
 		let next = previous === mark ? 0 : mark;
 		if (validate && next !== 0 && (cell & expected) === 0) {
 			this.incorrectIndex = index;
-			return;
+			return { change: 'rejected', index, mine };
 		}
 		this.state[index] = (cell & ~(MARKED_MINE | MARKED_SAFE)) | next;
+		return { change: next === 0 ? 'removed' : 'added', index, mine };
 	}
 
 	/**
 	 * Marks a frontier cell as logically safe without revealing it.
 	 * @param {number} x
 	 * @param {number} y
-	 * @param {boolean} [validate]
+	 * @param {{ validate?: boolean }} [options]
 	 */
-	actionMarkSafe(x, y, validate = true) {
-		this._actionMark(x, y, MARKED_SAFE, FORCED_SAFE, validate);
+	actionMarkSafe(x, y, options) {
+		return this._actionMark(x, y, MARKED_SAFE, FORCED_SAFE, options);
 	}
 
 	/**
 	 * Marks a frontier cell as a logically forced mine without flagging it.
 	 * @param {number} x
 	 * @param {number} y
-	 * @param {boolean} [validate]
+	 * @param {{ validate?: boolean }} [options]
 	 */
-	actionMarkMine(x, y, validate = true) {
-		this._actionMark(x, y, MARKED_MINE, FORCED_MINE, validate);
+	actionMarkMine(x, y, options) {
+		return this._actionMark(x, y, MARKED_MINE, FORCED_MINE, options);
 	}
 
 	/**
@@ -502,12 +539,15 @@ export class MineField {
 	 * Existing board flags and player mine marks both count as known mines.
 	 * @param {number} x
 	 * @param {number} y
-	 * @returns {Array<{ index: number, mine: boolean }>} Newly applied marks.
+	 * @param {{ validate?: boolean }} [options]
+	 * @returns {{ marks: Array<{ index: number, mine: boolean }>, rejectedIndex: number }}
 	 */
-	actionChordMarks(x, y) {
+	actionChordMarks(x, y, { validate = true } = {}) {
 		let index = this.getIndex(x, y);
 		let cell = this.state[index];
-		if (!this.isPuzzle || (cell & REVEALED) === 0 || (cell & MINE) !== 0) return [];
+		if (!this.isPuzzle || (cell & REVEALED) === 0 || (cell & MINE) !== 0) {
+			return { marks: [], rejectedIndex: -1 };
+		}
 
 		let knownMines = 0;
 		/** @type {Array<[number, number]>} */
@@ -521,19 +561,21 @@ export class MineField {
 		});
 
 		let clue = this.clues[index];
-		if (knownMines !== clue && knownMines + unknown.length !== clue) return [];
+		if (knownMines !== clue && knownMines + unknown.length !== clue) {
+			return { marks: [], rejectedIndex: -1 };
+		}
 		let markMine = knownMines !== clue;
 
 		let changed = [];
+		let rejectedIndex = -1;
 		for (let [neighbourX, neighbourY] of unknown) {
-			let neighbourIndex = this.getIndex(neighbourX, neighbourY);
-			if (markMine) this.actionMarkMine(neighbourX, neighbourY);
-			else this.actionMarkSafe(neighbourX, neighbourY);
-			if ((this.state[neighbourIndex] & (markMine ? MARKED_MINE : MARKED_SAFE)) !== 0) {
-				changed.push({ index: neighbourIndex, mine: markMine });
-			}
+			let result = markMine
+				? this.actionMarkMine(neighbourX, neighbourY, { validate })
+				: this.actionMarkSafe(neighbourX, neighbourY, { validate });
+			if (result.change === 'added') changed.push({ index: result.index, mine: result.mine });
+			else if (result.change === 'rejected' && rejectedIndex < 0) rejectedIndex = result.index;
 		}
-		return changed;
+		return { marks: changed, rejectedIndex };
 	}
 }
 
@@ -558,6 +600,7 @@ export function analyzeEditorBoard(cells, width, height) {
 		if (!/^\d$/.test(cells[index])) continue;
 		let x = index % width;
 		let y = Math.floor(index / width);
+		/** @type {number[]} */
 		let variables = [];
 		let flagged = 0;
 		forEachNeighbour(x, y, width, height, (neighbourX, neighbourY) => {
@@ -634,7 +677,9 @@ export function analyzeEditorBoard(cells, width, height) {
 	let solution = new Uint8Array(cells.length);
 	for (let index = 0; index < cells.length; index += 1) solution[index] = cells[index] === 'flag' ? 1 : 0;
 	frontierCells.forEach((cell, position) => { solution[cell] = first[position] < 0 ? 0 : first[position]; });
+	/** @type {number[]} */
 	let forcedMine = [];
+	/** @type {number[]} */
 	let forcedSafe = [];
 	for (let position = 0; position < frontierCells.length; position += 1) {
 		let value = /** @type {0 | 1} */ (first[position]);
