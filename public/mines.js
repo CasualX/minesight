@@ -441,8 +441,9 @@ export class MineField {
 	 * @param {number} y
 	 * @param {number} mark
 	 * @param {number} expected
+	 * @param {boolean} [validate] Whether to reject annotations that do not match the hidden answer.
 	 */
-	_actionMark(x, y, mark, expected) {
+	_actionMark(x, y, mark, expected, validate = true) {
 		let index = this.getIndex(x, y);
 		let cell = this.state[index];
 		if (!this.isPuzzle || (cell & ACTIVE) === 0) return;
@@ -452,7 +453,7 @@ export class MineField {
 		// Only the gesture that created a mark may remove it.
 		if (previous !== 0 && previous !== mark) return;
 		let next = previous === mark ? 0 : mark;
-		if (next !== 0 && (cell & expected) === 0) {
+		if (validate && next !== 0 && (cell & expected) === 0) {
 			this.incorrectIndex = index;
 			return;
 		}
@@ -463,18 +464,37 @@ export class MineField {
 	 * Marks a frontier cell as logically safe without revealing it.
 	 * @param {number} x
 	 * @param {number} y
+	 * @param {boolean} [validate]
 	 */
-	actionMarkSafe(x, y) {
-		this._actionMark(x, y, MARKED_SAFE, FORCED_SAFE);
+	actionMarkSafe(x, y, validate = true) {
+		this._actionMark(x, y, MARKED_SAFE, FORCED_SAFE, validate);
 	}
 
 	/**
 	 * Marks a frontier cell as a logically forced mine without flagging it.
 	 * @param {number} x
 	 * @param {number} y
+	 * @param {boolean} [validate]
 	 */
-	actionMarkMine(x, y) {
-		this._actionMark(x, y, MARKED_MINE, FORCED_MINE);
+	actionMarkMine(x, y, validate = true) {
+		this._actionMark(x, y, MARKED_MINE, FORCED_MINE, validate);
+	}
+
+	/**
+	 * Removes every player annotation while preserving the generated puzzle.
+	 * @returns {boolean} Whether any annotation was removed.
+	 */
+	clearPuzzleMarks() {
+		if (!this.isPuzzle) return false;
+		let changed = false;
+		for (let index = 0; index < this.state.length; index += 1) {
+			let cell = this.state[index];
+			if ((cell & (MARKED_MINE | MARKED_SAFE)) === 0) continue;
+			this.state[index] = cell & ~(MARKED_MINE | MARKED_SAFE);
+			changed = true;
+		}
+		this.incorrectIndex = -1;
+		return changed;
 	}
 
 	/**

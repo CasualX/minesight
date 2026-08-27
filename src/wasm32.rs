@@ -242,7 +242,7 @@ pub extern "C" fn random_mit_puzzle_wasm(seed_low: u32, seed_high: u32, attempts
 }
 
 /// The raw ABI keeps the full search in Rust without requiring `wasm-bindgen`.
-/// `attempts` is the number of jump-separated candidates to try.
+/// `attempts` is the number of candidates to try.
 /// The seed is passed as two 32-bit halves because JavaScript numbers cannot represent all `u64` values exactly.
 /// Returns false without invoking the callback if no matching puzzle is found.
 fn generate_puzzle(generator: fn(u64, u32) -> Option<Puzzle>, seed_low: u32, seed_high: u32, attempts: u32) -> bool {

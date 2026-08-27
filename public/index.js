@@ -21,6 +21,8 @@ const CHALLENGE_MODE_PARAMETER = 'challenge';
 const CHALLENGE_SEED_PARAMETER = 'seed';
 const CHALLENGE_TIME_PARAMETER = 'time';
 const MAX_CHALLENGE_SEED = 0xffff_ffff_ffff_ffffn;
+const DAILY_SEED_OFFSET = 0xcbf29ce484222325n;
+const DAILY_SEED_PRIME = 0x100000001b3n;
 /** @type {Record<string, [number, number]>} */
 const CELL_FOCUS_DIRECTIONS = {
 	ArrowUp: [0, -1],
@@ -203,6 +205,24 @@ const STUDY_DIFFICULTIES = [
 	EXPERT_DIFFICULTY,
 	MIT_DIFFICULTY,
 ];
+
+/** Returns YYYY-MM-DD using the user's local calendar, not UTC. */
+function localDateKey(date = new Date()) {
+	let year = date.getFullYear();
+	let month = String(date.getMonth() + 1).padStart(2, '0');
+	let day = String(date.getDate()).padStart(2, '0');
+	return `${year}-${month}-${day}`;
+}
+
+/** Stable 64-bit seed for one local calendar day. Rust applies a difficulty-specific XOR salt. */
+function dailyPuzzleSeed(dateKey) {
+	let seed = DAILY_SEED_OFFSET;
+	for (let byte of new TextEncoder().encode(`minesight-daily\0${dateKey}`)) {
+		seed ^= BigInt(byte);
+		seed = BigInt.asUintN(64, seed * DAILY_SEED_PRIME);
+	}
+	return seed;
+}
 const CHALLENGE_MODES = [
 	{
 		key: 'hard',
@@ -249,6 +269,14 @@ function resolveUrlGame(url) {
 	let [path, query = ''] = url.hash.slice(1).split('?');
 	let routeSearchParams = new URLSearchParams(query);
 	if (path.startsWith('/puzzle/')) return { mode: 'puzzle', payload: path.slice('/puzzle/'.length) };
+
+	let dailyMatch = path.match(/^\/daily(?:\/([^/]+))?$/);
+	if (dailyMatch) {
+		let difficultyKey = dailyMatch[1];
+		if (difficultyKey === undefined || STUDY_DIFFICULTIES.some(({ key }) => key === difficultyKey)) {
+			return { mode: 'daily', difficultyKey };
+		}
+	}
 
 	let studyMatch = path.match(/^\/study(?:\/([^/]+))?$/);
 	if (studyMatch) {
@@ -658,10 +686,11 @@ function sortChallengeTiers(puzzles, route) {
 	}
 }
 
-/** @typedef {'home' | 'tutorial' | 'study' | 'challenge' | 'puzzle' | 'editor'} GameMode */
+/** @typedef {'home' | 'tutorial' | 'study' | 'daily' | 'challenge' | 'puzzle' | 'editor'} GameMode */
 /** @typedef {'playing' | 'cleared' | 'failed' | 'gave-up' | 'complete'} GameResult */
 /** @typedef {'cleared' | 'failed'} ChallengeResult */
 /** @typedef {{ field: MineField, seed: bigint, result: GameResult, hintUsed: boolean, streak: number, ready: boolean }} StudyState */
+/** @typedef {{ field: MineField, seed: bigint, result: GameResult, completed: boolean, ready: boolean }} DailyState */
 
 function createMinesight() {
 	let stored = loadMinesightData();
@@ -690,8 +719,13 @@ function createMinesight() {
 	}
 	gameSounds.setEnabled(stored.soundEnabled !== false);
 	let storedStudy = stored?.study ?? {};
+	let today = localDateKey();
+	let storedDaily = stored?.daily?.lastSeenDate === today ? stored.daily : { lastSeenDate: today };
 	let difficultyKey = STUDY_DIFFICULTIES.some(({ key }) => key === storedStudy.difficultyKey) ? storedStudy.difficultyKey : 'easy';
 	if (urlGame.mode === 'study' && urlGame.difficultyKey !== undefined) difficultyKey = urlGame.difficultyKey;
+	let dailyDifficultyKey = STUDY_DIFFICULTIES.some(({ key }) => key === storedDaily.difficultyKey)
+		? storedDaily.difficultyKey : STUDY_DIFFICULTIES[0].key;
+	if (urlGame.mode === 'daily' && urlGame.difficultyKey !== undefined) dailyDifficultyKey = urlGame.difficultyKey;
 	let studyStreaks = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
 		let streak = storedStudy.difficulties?.[key]?.streak;
 		return [key, Math.max(0, Number.parseInt(streak) || 0)];
@@ -719,10 +753,29 @@ function createMinesight() {
 			return [key, undefined];
 		}
 	}));
+	/** @type {Record<string, DailyState | undefined>} */
+	let dailyStates = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
+		let saved = storedDaily.difficulties?.[key];
+		if (!Array.isArray(saved?.cells) || saved.difficultyKey !== key) return [key, undefined];
+		try {
+			return [key, {
+				field: new MineField(BOARD_SIZE, BOARD_SIZE, Uint8Array.from(saved.cells)),
+				seed: BigInt(saved.seed),
+				result: saved.result === 'cleared' ? 'cleared' : 'playing',
+				completed: Boolean(saved.completed || saved.result === 'cleared'),
+				ready: true,
+			}];
+		}
+		catch {
+			return [key, undefined];
+		}
+	}));
+	if (stored?.daily?.lastSeenDate !== today) saveMinesightData('daily', storedDaily);
 	return {
 		/** @type {GameMode} */
 		mode: urlGame.mode === 'puzzle' ? 'puzzle'
 			: urlGame.mode === 'challenge' ? 'challenge'
+				: urlGame.mode === 'daily' ? 'daily'
 				: urlGame.mode === 'tutorial' ? 'tutorial'
 					: urlGame.mode === 'editor' ? 'editor'
 					: urlGame.mode === 'study' ? 'study' : 'home',
@@ -735,6 +788,13 @@ function createMinesight() {
 		/** @type {GameResult} */
 		result: 'playing',
 		difficultyKey,
+		dailyDate: today,
+		dailyDifficultyKey,
+		dailyCheckMessage: '',
+		dailyBoardReady: false,
+		dailyPreparationId: 0,
+		/** @type {Record<string, DailyState | undefined>} */
+		dailyStates,
 		difficulties: STUDY_DIFFICULTIES,
 		challengeModes: CHALLENGE_MODES,
 		challengeModeKey,
@@ -803,6 +863,8 @@ function createMinesight() {
 		installPromptListener: undefined,
 		/** @type {(() => void) | undefined} */
 		appInstalledListener: undefined,
+		/** @type {(() => void) | undefined} */
+		dailyDateListener: undefined,
 		scratchActive: false,
 		scratchTool: 'pencil',
 		scratchColor: 'graphite',
@@ -850,6 +912,9 @@ function createMinesight() {
 			};
 			window.addEventListener('beforeinstallprompt', this.installPromptListener);
 			window.addEventListener('appinstalled', this.appInstalledListener);
+			this.dailyDateListener = () => this.refreshDailyDate();
+			window.addEventListener('focus', this.dailyDateListener);
+			document.addEventListener('visibilitychange', this.dailyDateListener);
 			this.$nextTick(() => this.setupScratchPad());
 			this.routeListener = () => {
 				if (this.activeRouteUrl === window.location.href) return;
@@ -873,6 +938,10 @@ function createMinesight() {
 				void this.prepareChallenge();
 				return;
 			}
+			if (this.mode === 'daily') {
+				this.openDailyDifficulty(this.dailyDifficultyKey, false);
+				return;
+			}
 			if (this.mode === 'home' || this.mode === 'editor') return;
 			if (!this.restoreStudyState() && !this.engineError) this.newStudyBoard();
 		},
@@ -880,6 +949,7 @@ function createMinesight() {
 		destroy() {
 			this.challengePreparationId += 1;
 			this.studyPreparationId += 1;
+			this.dailyPreparationId += 1;
 			this.boardPreparing = false;
 			this.stopTimer();
 			this.clearIncorrectFeedback();
@@ -893,6 +963,8 @@ function createMinesight() {
 			if (this.themeMediaListener) window.matchMedia('(prefers-color-scheme: dark)').removeEventListener('change', this.themeMediaListener);
 			if (this.installPromptListener) window.removeEventListener('beforeinstallprompt', this.installPromptListener);
 			if (this.appInstalledListener) window.removeEventListener('appinstalled', this.appInstalledListener);
+			if (this.dailyDateListener) window.removeEventListener('focus', this.dailyDateListener);
+			if (this.dailyDateListener) document.removeEventListener('visibilitychange', this.dailyDateListener);
 			document.body.classList.remove('settings-open');
 		},
 
@@ -901,6 +973,9 @@ function createMinesight() {
 				return this.challengeGroups.find(({ start, puzzleCount }) => (
 					this.challengeIndex >= start && this.challengeIndex < start + puzzleCount
 				))?.difficulty ?? this.challengeGroups[0].difficulty;
+			}
+			if (this.mode === 'daily') {
+				return STUDY_DIFFICULTIES.find(({ key }) => key === this.dailyDifficultyKey) ?? STUDY_DIFFICULTIES[0];
 			}
 			return STUDY_DIFFICULTIES.find((difficulty) => difficulty.key === this.difficultyKey) ?? STUDY_DIFFICULTIES[0];
 		},
@@ -997,7 +1072,9 @@ function createMinesight() {
 		},
 
 		get shareButtonLabel() {
-			return this.mode === 'challenge' ? 'Share this challenge' : 'Share this puzzle';
+			if (this.mode === 'challenge') return 'Share this challenge';
+			if (this.mode === 'daily') return `Share today's ${this.currentDifficulty.label} daily puzzle`;
+			return 'Share this puzzle';
 		},
 
 		get showChallengeFinish() {
@@ -1050,6 +1127,7 @@ function createMinesight() {
 			if (this.mode === 'home' || this.mode === 'editor') return false;
 			if (this.mode === 'puzzle' && this.puzzleError) return false;
 			if (this.mode === 'study') return this.studyBoardReady || this.boardPreparing;
+			if (this.mode === 'daily') return this.dailyBoardReady || this.boardPreparing;
 			return this.mode !== 'challenge' || (this.challengeStarted && this.result !== 'complete');
 		},
 
@@ -1068,18 +1146,22 @@ function createMinesight() {
 
 		get sharePuzzleDisabled() {
 			if (this.mode === 'challenge') return this.challengeShareDisabled;
-			return this.boardPreparing || (this.mode === 'study' && !this.studyBoardReady);
+			return this.boardPreparing || (this.mode === 'study' && !this.studyBoardReady) || (this.mode === 'daily' && !this.dailyBoardReady);
 		},
 
 		get showPuzzleStatus() {
-			return this.mode === 'study' || this.mode === 'puzzle';
+			return this.mode === 'study' || this.mode === 'puzzle' || this.mode === 'daily';
 		},
 
 		get statusTitle() {
+			if (this.mode === 'daily' && this.result === 'playing' && this.dailyCheckMessage) return 'Solution checked';
 			return this.result === 'playing' ? 'What can you prove?' : this.resultTitle;
 		},
 
 		get statusMessage() {
+			if (this.mode === 'daily' && this.result === 'playing') {
+				return this.dailyCheckMessage || 'Mark the squares, then check your solution when you are ready.';
+			}
 			return this.result === 'playing'
 				? 'Mark every covered square that must be safe or mined.'
 				: this.resultMessage;
@@ -1102,6 +1184,26 @@ function createMinesight() {
 			return this.boardPreparing || this.result !== 'playing' || (
 				this.mode === 'study' && !this.studyBoardReady
 			);
+		},
+
+		get dailySolvedCount() {
+			return STUDY_DIFFICULTIES.filter(({ key }) => this.dailyStates[key]?.completed).length;
+		},
+
+		get dailyTotal() {
+			return STUDY_DIFFICULTIES.length;
+		},
+
+		get dailyHomeProgress() {
+			return `${this.dailySolvedCount}/${this.dailyTotal} complete today`;
+		},
+
+		get dailyAllSolved() {
+			return this.dailySolvedCount === this.dailyTotal;
+		},
+
+		get feedbackRuleset() {
+			return this.mode === 'daily' ? 'checked' : 'immediate';
 		},
 
 		get studyActionsClass() {
@@ -1372,23 +1474,7 @@ function createMinesight() {
 				text: 'Can you solve this Minesight puzzle?',
 				url: url.href,
 			};
-			if (typeof navigator.share === 'function') {
-				try {
-					await navigator.share(shareData);
-					this.showShareFeedback('Puzzle shared');
-					return;
-				}
-				catch (error) {
-					if (error instanceof DOMException && error.name === 'AbortError') return;
-				}
-			}
-			try {
-				await this.copyShareUrl(url.href);
-				this.showShareFeedback('Share link copied');
-			}
-			catch {
-				this.showShareFeedback('Could not copy the link');
-			}
+			await this.shareLink(shareData, 'Puzzle shared', 'Share link copied');
 		},
 
 		undoEditor() {
@@ -1824,6 +1910,7 @@ function createMinesight() {
 
 		get resultTitle() {
 			if (this.result === 'cleared') {
+				if (this.mode === 'daily') return 'Daily solved';
 				if (this.mode === 'puzzle') return 'Puzzle solved';
 				if (this.mode === 'challenge' && this.challengeResults[this.challengeIndex] === 'failed') {
 					return 'Puzzle completed';
@@ -1835,6 +1922,9 @@ function createMinesight() {
 		},
 
 		get resultMessage() {
+			if (this.result === 'cleared' && this.mode === 'daily') {
+				return this.dailyAllSolved ? 'Today\'s set is complete. Come back tomorrow.' : `${this.dailySolvedCount} of ${this.dailyTotal} complete today.`;
+			}
 			if (this.result === 'cleared' && this.mode === 'challenge') {
 				if (this.challengeResults[this.challengeIndex] === 'failed') {
 					return 'You finished it, but this puzzle counts as failed. Ready for the next one?';
@@ -1942,8 +2032,14 @@ function createMinesight() {
 				this.snapshotStudyState();
 				this.saveStudyData();
 			}
+			if (this.mode === 'daily') {
+				this.snapshotDailyState();
+				this.saveDailyData();
+				this.dailyBoardReady = false;
+			}
 			this.challengePreparationId += 1;
 			this.studyPreparationId += 1;
+			this.dailyPreparationId += 1;
 			this.challengePreparing = false;
 			this.boardPreparing = false;
 			this.clearStudySearchingDelay();
@@ -1989,6 +2085,12 @@ function createMinesight() {
 				void this.prepareChallenge();
 				return;
 			}
+			if (route.mode === 'daily') {
+				this.mode = 'daily';
+				this.refreshDailyDate();
+				this.openDailyDifficulty(route.difficultyKey ?? this.dailyDifficultyKey, false);
+				return;
+			}
 
 			this.mode = 'study';
 			if (route.difficultyKey !== undefined) this.difficultyKey = route.difficultyKey;
@@ -2000,6 +2102,7 @@ function createMinesight() {
 			if (nextMode === 'home') this.navigate('/');
 			else if (nextMode === 'tutorial') this.navigate('/tutorial');
 			else if (nextMode === 'study') this.navigate(`/study/${this.difficultyKey}`);
+			else if (nextMode === 'daily') this.navigate(`/daily/${this.dailyDifficultyKey}`);
 			else if (nextMode === 'challenge') this.navigate(`/challenge/${this.challengeModeKey}`);
 			else if (nextMode === 'editor') this.navigate('/editor');
 		},
@@ -2009,37 +2112,34 @@ function createMinesight() {
 			this.switchMode('home');
 		},
 
+		async share() {
+			if (this.mode === 'challenge') await this.shareChallenge();
+			else if (this.mode === 'daily') await this.shareDaily();
+			else await this.sharePuzzle();
+		},
+
 		async sharePuzzle() {
-			if (this.mode === 'challenge') {
-				await this.shareChallenge();
-				return;
-			}
 			if (this.sharePuzzleDisabled || !this.showBoard) return;
 			let url = createRouteUrl(window.location.href, `/puzzle/${this.field.encode()}`);
 			let shareData = {
-				title: 'Minesight puzzle',
+				title: 'Minesight Puzzle',
 				text: 'Can you solve this Minesight puzzle?',
 				url: url.href,
 			};
+			await this.shareLink(shareData, 'Puzzle shared', 'Share link copied');
+		},
 
-			if (typeof navigator.share === 'function') {
-				try {
-					await navigator.share(shareData);
-					this.showShareFeedback('Puzzle shared');
-					return;
-				}
-				catch (error) {
-					if (error instanceof DOMException && error.name === 'AbortError') return;
-				}
-			}
-
-			try {
-				await this.copyShareUrl(url.href);
-				this.showShareFeedback('Share link copied');
-			}
-			catch {
-				this.showShareFeedback('Could not copy the link');
-			}
+		async shareDaily() {
+			if (this.sharePuzzleDisabled || !this.showBoard) return;
+			let difficulty = this.currentDifficulty.label;
+			let url = createRouteUrl(window.location.href, `/daily/${this.dailyDifficultyKey}`);
+			let text = `Play today's Minesight ${difficulty} daily puzzle!`;
+			let shareData = {
+				title: `Minesight Daily`,
+				text: text,
+				url: url.href,
+			};
+			await this.shareLink(shareData, 'Daily puzzle shared', 'Daily puzzle link copied');
 		},
 
 		async shareChallenge() {
@@ -2055,11 +2155,19 @@ function createMinesight() {
 				text: text,
 				url: url.href,
 			};
+			await this.shareLink(shareData, 'Challenge shared', 'Challenge link copied');
+		},
 
+		/**
+		 * @param {{ title: string, text: string, url: string }} shareData
+		 * @param {string} sharedMessage
+		 * @param {string} copiedMessage
+		 */
+		async shareLink(shareData, sharedMessage, copiedMessage) {
 			if (typeof navigator.share === 'function') {
 				try {
 					await navigator.share(shareData);
-					this.showShareFeedback('Challenge shared');
+					this.showShareFeedback(sharedMessage);
 					return;
 				}
 				catch (error) {
@@ -2068,8 +2176,8 @@ function createMinesight() {
 			}
 
 			try {
-				await this.copyShareUrl(url.href);
-				this.showShareFeedback('Challenge link copied');
+				await this.copyShareUrl(shareData.url);
+				this.showShareFeedback(copiedMessage);
 			}
 			catch {
 				this.showShareFeedback('Could not copy the link');
@@ -2102,6 +2210,178 @@ function createMinesight() {
 				this.shareFeedback = '';
 				this.shareFeedbackTimerId = undefined;
 			}, 2200);
+		},
+
+		refreshDailyDate() {
+			let today = localDateKey();
+			if (today === this.dailyDate) return false;
+			this.dailyDate = today;
+			this.dailyStates = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => [key, undefined]));
+			this.dailyDifficultyKey = STUDY_DIFFICULTIES[0].key;
+			this.dailyBoardReady = false;
+			this.dailyCheckMessage = '';
+			this.dailyPreparationId += 1;
+			this.boardPreparing = false;
+			this.saveDailyData();
+			if (this.mode === 'daily') this.openDailyDifficulty(this.dailyDifficultyKey, true);
+			return true;
+		},
+
+		/** @param {string} key @param {boolean} [navigate] */
+		openDailyDifficulty(key, navigate = true) {
+			if (!STUDY_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
+			if (this.mode === 'daily' && this.dailyBoardReady) this.snapshotDailyState();
+			this.dailyPreparationId += 1;
+			this.boardPreparing = false;
+			this.dailyDifficultyKey = key;
+			this.dailyCheckMessage = '';
+			if (navigate) {
+				window.history.pushState(null, '', createRouteUrl(window.location.href, `/daily/${key}`));
+				this.activeRouteUrl = window.location.href;
+			}
+			if (!this.restoreDailyState()) void this.prepareDailyBoard();
+			this.saveDailyData();
+		},
+
+		snapshotDailyState() {
+			if (!this.dailyBoardReady) return;
+			let completed = Boolean(this.dailyStates[this.dailyDifficultyKey]?.completed || this.result === 'cleared');
+			this.dailyStates[this.dailyDifficultyKey] = {
+				field: this.field,
+				seed: this.boardSeed,
+				result: this.result,
+				completed,
+				ready: true,
+			};
+		},
+
+		restoreDailyState() {
+			let state = this.dailyStates[this.dailyDifficultyKey];
+			if (!state?.ready) {
+				this.dailyBoardReady = false;
+				return false;
+			}
+			this.clearIncorrectFeedback();
+			this.field = state.field;
+			this.boardSeed = state.seed;
+			this.result = state.result;
+			this.hintUsed = false;
+			this.dailyBoardReady = true;
+			this.engineError = '';
+			this.boardNumber += 1;
+			this.revision += 1;
+			return true;
+		},
+
+		saveDailyData() {
+			let difficulties = Object.fromEntries(STUDY_DIFFICULTIES.flatMap(({ key }) => {
+				let state = this.dailyStates[key];
+				if (!state?.ready) return [];
+				return [[key, {
+					difficultyKey: key,
+					cells: Array.from(state.field.state),
+					seed: String(state.seed),
+					result: state.result,
+					completed: state.completed,
+				}]];
+			}));
+			saveMinesightData('daily', {
+				lastSeenDate: this.dailyDate,
+				difficultyKey: this.dailyDifficultyKey,
+				difficulties,
+			});
+		},
+
+		async prepareDailyBoard() {
+			let preparationId = this.dailyPreparationId + 1;
+			this.dailyPreparationId = preparationId;
+			this.dailyBoardReady = false;
+			this.boardPreparing = true;
+			this.result = 'playing';
+			this.engineError = '';
+			let difficultyKey = this.dailyDifficultyKey;
+			let difficulty = STUDY_DIFFICULTIES.find(({ key }) => key === difficultyKey) ?? STUDY_DIFFICULTIES[0];
+			try {
+				let puzzle = await generateSeededField(
+					difficulty,
+					dailyPuzzleSeed(this.dailyDate),
+					() => this.mode === 'daily' && this.dailyDifficultyKey === difficultyKey && preparationId === this.dailyPreparationId,
+				);
+				if (!puzzle || this.mode !== 'daily' || this.dailyDifficultyKey !== difficultyKey || preparationId !== this.dailyPreparationId) return;
+				this.field = puzzle.field;
+				this.boardSeed = puzzle.seed;
+				this.dailyBoardReady = true;
+				this.boardNumber += 1;
+				this.revision += 1;
+				this.snapshotDailyState();
+				this.saveDailyData();
+			}
+			catch (error) {
+				if (preparationId === this.dailyPreparationId) this.engineError = error instanceof Error ? error.message : String(error);
+			}
+			finally {
+				if (preparationId === this.dailyPreparationId) this.boardPreparing = false;
+			}
+		},
+
+		clearDailyBoard() {
+			if (this.mode !== 'daily' || !this.dailyBoardReady || this.boardPreparing) return;
+			let changed = this.field.clearPuzzleMarks();
+			this.clearIncorrectFeedback();
+			this.dailyCheckMessage = '';
+			this.result = 'playing';
+			this.boardNumber += 1;
+			this.revision += 1;
+			this.snapshotDailyState();
+			this.saveDailyData();
+			if (changed) gameSounds.play('unmark');
+		},
+
+		dailyContradictionIndex() {
+			for (let y = 0; y < this.field.height; y += 1) {
+				for (let x = 0; x < this.field.width; x += 1) {
+					if (!this.field.isRevealed(x, y)) continue;
+					let mines = 0;
+					for (let neighbourY = Math.max(0, y - 1); neighbourY <= Math.min(this.field.height - 1, y + 1); neighbourY += 1) {
+						for (let neighbourX = Math.max(0, x - 1); neighbourX <= Math.min(this.field.width - 1, x + 1); neighbourX += 1) {
+							if ((neighbourX !== x || neighbourY !== y) && (this.field.isFlagged(neighbourX, neighbourY) || this.field.isMarkedMine(neighbourX, neighbourY))) mines += 1;
+						}
+					}
+					if (mines > this.field.getClue(x, y)) return this.field.getIndex(x, y);
+				}
+			}
+			return -1;
+		},
+
+		checkDailySolution() {
+			if (this.mode !== 'daily' || !this.dailyBoardReady || this.result !== 'playing') return;
+			let contradictionIndex = this.dailyContradictionIndex();
+			if (contradictionIndex >= 0) {
+				this.dailyCheckMessage = 'There is a contradiction: a clue touches too many marked mines.';
+				gameSounds.play('incorrect');
+				feedbackEffects.failure({ cellIndex: contradictionIndex, terminal: false });
+				this.revision += 1;
+				return;
+			}
+			let solved = Array.from(this.field.state).every((cell) => {
+				if ((cell & MineField.ACTIVE) === 0) return true;
+				let mineCorrect = (cell & MineField.FORCED_MINE) !== 0 && (cell & MineField.MARKED_MINE) !== 0;
+				let safeCorrect = (cell & MineField.FORCED_SAFE) !== 0 && (cell & MineField.MARKED_SAFE) !== 0;
+				let ambiguousUnmarked = (cell & (MineField.FORCED_MINE | MineField.FORCED_SAFE | MineField.MARKED_MINE | MineField.MARKED_SAFE)) === 0;
+				return mineCorrect || safeCorrect || ambiguousUnmarked;
+			});
+			if (!solved) {
+				this.dailyCheckMessage = 'Not complete yet. Keep going.';
+				this.revision += 1;
+				return;
+			}
+			this.dailyCheckMessage = '';
+			this.result = 'cleared';
+			this.snapshotDailyState();
+			this.saveDailyData();
+			gameSounds.play('success');
+			feedbackEffects.success({ grand: this.dailyAllSolved });
+			this.revision += 1;
 		},
 
 		/** @param {string} key */
@@ -2448,6 +2728,7 @@ function createMinesight() {
 			}
 			if (this.mode === 'challenge' && !this.challengeStarted) return;
 			if (this.field.isRevealed(x, y)) {
+				if (this.mode === 'daily') return;
 				let marks = this.field.actionChordMarks(x, y);
 				if (marks.length === 0) return;
 				let [first, ...additionalMarks] = marks;
@@ -2465,8 +2746,9 @@ function createMinesight() {
 			let oppositeMarked = markMine ? this.field.isMarkedSafe(x, y) : this.field.isMarkedMine(x, y);
 			if (oppositeMarked) return;
 			let removing = markMine ? this.field.isMarkedMine(x, y) : this.field.isMarkedSafe(x, y);
-			if (markMine) this.field.actionMarkMine(x, y);
-			else this.field.actionMarkSafe(x, y);
+			let validate = this.feedbackRuleset === 'immediate';
+			if (markMine) this.field.actionMarkMine(x, y, validate);
+			else this.field.actionMarkSafe(x, y, validate);
 			this.afterMove({ removing, cellIndex, markMine });
 		},
 
@@ -2660,6 +2942,14 @@ function createMinesight() {
 
 		/** @param {{ removing: boolean, cellIndex: number, markMine: boolean, additionalMarks?: Array<{ index: number, mine: boolean }> }} move */
 		afterMove(move) {
+			if (this.mode === 'daily') {
+				this.dailyCheckMessage = '';
+				gameSounds.play(move.removing ? 'unmark' : 'mark');
+				this.revision += 1;
+				this.snapshotDailyState();
+				this.saveDailyData();
+				return;
+			}
 			let showMarkEffects = () => {
 				feedbackEffects.correctMark({ cellIndex: move.cellIndex, mine: move.markMine });
 				for (let mark of move.additionalMarks ?? []) {

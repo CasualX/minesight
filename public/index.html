@@ -80,22 +80,42 @@
 					<span><strong>How to play</strong><small>Learn how Minesight differs from regular Minesweeper.</small></span>
 					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
 				</button>
-				<button type="button" class="home-mode" @click="switchMode('study')">
+				<button type="button" class="home-mode home-mode-daily" @click="switchMode('daily')">
 					<span class="home-mode-number" aria-hidden="true">01</span>
+					<span><strong>Daily</strong><small>One puzzle at every difficulty. A fresh set returns every day.</small><em x-text="dailyHomeProgress"></em></span>
+					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
+				</button>
+				<button type="button" class="home-mode" @click="switchMode('study')">
+					<span class="home-mode-number" aria-hidden="true">02</span>
 					<span><strong>Study</strong><small>Practice one puzzle at a time. Pick a difficulty, use hints, and build a streak.</small></span>
 					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
 				</button>
 				<button type="button" class="home-mode" @click="switchMode('challenge')">
-					<span class="home-mode-number" aria-hidden="true">02</span>
+					<span class="home-mode-number" aria-hidden="true">03</span>
 					<span><strong>Challenge</strong><small>Race through a fixed set of puzzles, then invite someone to beat your time.</small></span>
 					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
 				</button>
 				<button type="button" class="home-mode home-mode-editor" @click="switchMode('editor')">
-					<span class="home-mode-number" aria-hidden="true">03</span>
+					<span class="home-mode-number" aria-hidden="true">04</span>
 					<span><strong>Board lab</strong><small>Create an 8×8 position, test its clues, and find every forced cell.</small></span>
 					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
 				</button>
 			</div>
+		</section>
+
+		<section class="daily-heading" x-show="mode === 'daily'">
+			<div class="daily-heading-copy">
+				<span>Today's set</span>
+				<strong x-text="`${dailySolvedCount} / ${dailyTotal} complete`"></strong>
+			</div>
+			<div class="daily-levels" role="tablist" aria-label="Daily difficulties">
+				<template x-for="difficulty in difficulties" :key="difficulty.key">
+					<button type="button" role="tab" :class="{ active: dailyDifficultyKey === difficulty.key, solved: dailyStates[difficulty.key]?.completed }" :aria-selected="dailyDifficultyKey === difficulty.key" :aria-label="`${difficulty.label}, ${dailyStates[difficulty.key]?.completed ? 'solved' : 'not solved'}`" @click="openDailyDifficulty(difficulty.key)">
+						<span x-text="difficulty.label"></span><b aria-hidden="true" x-text="dailyStates[difficulty.key]?.completed ? '✓' : '·'"></b>
+					</button>
+				</template>
+			</div>
+			<p x-text="currentDifficulty.description"></p>
 		</section>
 
 		<section
@@ -348,7 +368,7 @@
 						@wheel.prevent="cycleScratchTool($event)"
 						@contextmenu.prevent="contextMenuScratch($event)"
 					></canvas>
-					<div class="board-loading" x-show="studySearchingVisible" x-transition.opacity role="status" aria-live="polite">
+					<div class="board-loading" x-show="studySearchingVisible || (mode === 'daily' && boardPreparing)" x-transition.opacity role="status" aria-live="polite">
 						<span class="board-loading-spinner" aria-hidden="true"></span>
 						<strong>Building a puzzle…</strong>
 						<span>Trying different board layouts</span>
@@ -413,7 +433,7 @@
 						:disabled="sharePuzzleDisabled"
 						:aria-label="shareButtonLabel"
 						:title="shareButtonLabel"
-						@click="sharePuzzle()"
+						@click="share()"
 					>
 						<svg viewBox="0 0 24 24" aria-hidden="true">
 							<circle cx="18" cy="5" r="2.5"></circle>
@@ -467,6 +487,12 @@
 					@click="activateStudyBoardAction()"
 					x-text="studyBoardActionLabel"
 				></button>
+			</div>
+		</section>
+		<section class="game-controls" x-show="mode === 'daily'" aria-label="Daily challenge controls">
+			<div class="board-actions daily-actions">
+				<button type="button" class="secondary" :disabled="boardPreparing || !dailyBoardReady" @click="clearDailyBoard()">Clear board</button>
+				<button type="button" class="primary" :disabled="boardPreparing || !dailyBoardReady || result === 'cleared'" @click="checkDailySolution()" x-text="result === 'cleared' ? 'Solved' : 'Check solution'"></button>
 			</div>
 		</section>
 		<section class="game-controls" x-show="mode === 'tutorial'" aria-label="Introduction controls">

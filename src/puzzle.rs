@@ -2,6 +2,14 @@ use super::*;
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
+// Each difficulty owns a stable XOR salt, selecting a distinct RNG state so
+// callers can reuse one seed across every difficulty.
+const EASY_SEED_XOR: u64 = 0x0bb26f91154fd183;
+const MEDIUM_SEED_XOR: u64 = 0x34e5c6e769bd2205;
+const HARD_SEED_XOR: u64 = 0x69407bebbe849894;
+const EXPERT_SEED_XOR: u64 = 0x9e370f31b6c6cd90;
+const MIT_SEED_XOR: u64 = 0xc925542c28d5e908;
+
 // This mask is part of the public `2.` shared-puzzle format in public/mines.js.
 // It only obscures the answer pattern at a glance; it is not encryption.
 const PUZZLE_MASK: [u8; BOARD_CELLS] = {
@@ -21,7 +29,7 @@ const PUZZLE_MASK: [u8; BOARD_CELLS] = {
 /// A generated tactics position.
 #[derive(Copy, Clone)]
 pub struct Puzzle {
-	/// Seed used to construct this deterministic attempt series.
+	/// Caller-supplied seed identifying this deterministic attempt series.
 	pub seed: u64,
 	/// Attempts consumed to find this puzzle; one means first-attempt success.
 	pub attempts: u32,
@@ -361,12 +369,11 @@ pub struct Generator<B, E> {
 }
 
 impl<B: BoardGenerator, E: Explorer> Generator<B, E> {
-	/// Searches up to `attempts` candidates in one deterministic, jump-separated series.
-	pub fn search(&self, seed: u64, attempts: u32) -> Option<Puzzle> {
-		let mut master_rng = urandom::seeded(seed);
+	/// Searches up to `attempts` candidates for puzzles.
+	pub fn search(&self, seed: u64, xor: u64, attempts: u32) -> Option<Puzzle> {
+		let mut rng = urandom::seeded(seed ^ xor);
 		for attempt in 0..attempts {
-			let mut attempt_rng = master_rng.split();
-			if let Some(puzzle) = self.try_attempt(seed, attempt + 1, &mut attempt_rng) {
+			if let Some(puzzle) = self.try_attempt(seed, attempt + 1, &mut rng) {
 				return Some(puzzle);
 			}
 		}
@@ -431,7 +438,7 @@ pub fn generate_easy(seed: u64, attempts: u32) -> Option<Puzzle> {
 			min_revealed: 24,
 			allow_empty: true,
 		},
-	}.search(seed, attempts)
+	}.search(seed, EASY_SEED_XOR, attempts)
 }
 
 /// Medium puzzles focus on pattern recognition across denser boards.
@@ -451,7 +458,7 @@ pub fn generate_medium(seed: u64, attempts: u32) -> Option<Puzzle> {
 			min_revealed: 0,
 			allow_empty: false,
 		},
-	}.search(seed, attempts)
+	}.search(seed, MEDIUM_SEED_XOR, attempts)
 }
 
 /// Hard puzzles require deeper chains of logical deductions.
@@ -471,7 +478,7 @@ pub fn generate_hard(seed: u64, attempts: u32) -> Option<Puzzle> {
 			min_revealed: 0,
 			allow_empty: true,
 		},
-	}.search(seed, attempts)
+	}.search(seed, HARD_SEED_XOR, attempts)
 }
 
 /// Expert puzzles use the random-walk explorer and advertise exact deductions.
@@ -491,7 +498,7 @@ pub fn generate_expert(seed: u64, attempts: u32) -> Option<Puzzle> {
 			min_revealed: 0,
 			allow_empty: false,
 		},
-	}.search(seed, attempts)
+	}.search(seed, EXPERT_SEED_XOR, attempts)
 }
 
 fn minimize_mit_clues<R: urandom::Rng>(mines: u64, rng: &mut urandom::Random<R>) -> Option<GameState> {
@@ -550,10 +557,8 @@ pub fn generate_mit<const REFINEMENTS: usize>(seed: u64, attempts: u32) -> Optio
 		rng.random::<u64>() & rng.random::<u64>()
 	}
 
-	let mut master_rng = urandom::seeded(seed);
+	let mut rng = urandom::seeded(seed ^ MIT_SEED_XOR);
 	for attempt in 0..attempts {
-		let mut rng = master_rng.split();
-
 		let mines = loop {
 			let mines = random(&mut rng);
 			if empty_squares(mines) == 0 {

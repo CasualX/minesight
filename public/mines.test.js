@@ -197,6 +197,31 @@ function testPuzzleAnnotationsAreDistinctFromNormalBoardActions() {
 	assertEqual(field.isMarkedSafe(0, 0), false, 'selecting the same annotation again should remove it');
 }
 
+function testPuzzleAnnotationsCanUseExplicitValidation() {
+	let field = new MineField(2, 1, new Uint8Array([
+		MineField.ACTIVE | MineField.FORCED_SAFE,
+		MineField.MINE | MineField.ACTIVE | MineField.FORCED_MINE,
+	]));
+	field.actionMarkMine(0, 0, false);
+	field.actionMarkSafe(1, 0, false);
+	assertEqual(field.isMarkedMine(0, 0), true, 'checked-feedback rules should retain an unchecked mine annotation');
+	assertEqual(field.isMarkedSafe(1, 0), true, 'checked-feedback rules should retain an unchecked safe annotation');
+	assertEqual(field.consumeIncorrect(), -1, 'unchecked annotations should not trigger immediate incorrect feedback');
+}
+
+function testPuzzleMarksCanBeCleared() {
+	let field = new MineField(2, 1, new Uint8Array([
+		MineField.ACTIVE | MineField.FORCED_SAFE,
+		MineField.MINE | MineField.ACTIVE | MineField.FORCED_MINE,
+	]));
+	field.actionMarkSafe(0, 0);
+	field.actionMarkMine(1, 0);
+	assertEqual(field.clearPuzzleMarks(), true, 'clearing a marked puzzle should report a change');
+	assertEqual(field.isMarkedSafe(0, 0), false, 'clearing should remove safe annotations');
+	assertEqual(field.isMarkedMine(1, 0), false, 'clearing should remove mine annotations');
+	assertEqual(field.clearPuzzleMarks(), false, 'clearing an already empty puzzle should be harmless');
+}
+
 function testPuzzleChordCompletesDirectClueDeductions() {
 	let safeChord = new MineField(3, 2, new Uint8Array([
 		MineField.MINE | MineField.FLAG, MineField.MINE | MineField.ACTIVE | MineField.FORCED_MINE, MineField.ACTIVE | MineField.FORCED_SAFE,
@@ -367,6 +392,8 @@ await runTests([
 	testPuzzleFlagsDescribeCoveredFrontierMoves,
 	testPuzzleRejectsUnforcedAndInactiveMoves,
 	testPuzzleAnnotationsAreDistinctFromNormalBoardActions,
+	testPuzzleAnnotationsCanUseExplicitValidation,
+	testPuzzleMarksCanBeCleared,
 	testPuzzleChordCompletesDirectClueDeductions,
 	testPuzzleCodecUsesSixBitsPerCell,
 	testPuzzleCodecRejectsInvalidPayloads,

@@ -648,6 +648,17 @@ body.settings-open {
 	display: block;
 }
 
+.home-mode em {
+	display: inline-block;
+	margin-top: 7px;
+	padding: 3px 6px;
+	background: var(--ink);
+	color: var(--paper);
+	font: normal 700 9px/1.2 ui-sans-serif, system-ui, sans-serif;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+}
+
 .home-mode strong {
 	font: 700 21px/1.1 Georgia, "Times New Roman", serif;
 }
@@ -927,6 +938,18 @@ body.settings-open {
 	color: var(--muted);
 	font: 11px/1.4 ui-sans-serif, system-ui, sans-serif;
 }
+
+.daily-heading { margin-bottom: 10px; font-family: ui-sans-serif, system-ui, sans-serif; }
+.daily-heading-copy { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.daily-heading-copy span { color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+.daily-heading-copy strong { font-size: 14px; }
+.daily-levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(58px, 1fr)); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+.daily-levels button { display: grid; justify-items: center; gap: 3px; min-width: 0; padding: 8px 3px 6px; border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--paper); color: var(--muted); }
+.daily-levels button.active { box-shadow: inset 0 -2px var(--ink); color: var(--ink); }
+.daily-levels button.solved b { color: var(--success); }
+.daily-levels span { overflow: hidden; width: 100%; font-size: 9px; font-weight: 700; text-align: center; text-overflow: ellipsis; }
+.daily-levels b { font-size: 13px; line-height: 1; }
+.daily-heading > p { margin: 7px 1px 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
 
 .study-streak {
 	display: grid;
