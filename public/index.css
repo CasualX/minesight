@@ -254,24 +254,25 @@ button:focus-visible, select:focus-visible, a:focus-visible {
 .settings-toggle {
 	display: grid;
 	place-items: center;
-	width: 28px;
-	height: 28px;
-	padding: 4px;
-	border: 1px solid var(--line);
-	background: var(--paper);
+	width: 32px;
+	height: 32px;
+	padding: 5px;
+	border: 0;
+	background: transparent;
+	color: var(--muted);
 }
 
-.settings-toggle:hover {
-	border-color: var(--ink);
+.settings-toggle:hover:not(:disabled) {
+	color: var(--ink);
 }
 .settings-toggle svg {
-	width: 18px;
-	height: 18px;
+	width: 24px;
+	height: 24px;
 	fill: none;
 	stroke: currentColor;
 	stroke-linecap: round;
 	stroke-linejoin: round;
-	stroke-width: 1.8;
+	stroke-width: 2;
 }
 
 body.settings-open {
@@ -296,6 +297,7 @@ body.settings-open {
 	padding: 22px 22px calc(22px + env(safe-area-inset-bottom));
 	border: 1px solid var(--line);
 	border-bottom: 0;
+	border-radius: 18px 18px 0 0;
 	background: var(--paper);
 	box-shadow: 0 -12px 40px rgb(0 0 0 / 22%);
 }
@@ -325,11 +327,10 @@ body.settings-open {
 
 .settings-heading {
 	display: flex;
-	align-items: flex-start;
+	align-items: center;
 	justify-content: space-between;
 	gap: 20px;
-	padding-bottom: 18px;
-	border-bottom: 2px solid var(--ink);
+	padding: 0 2px 10px;
 }
 
 .settings-heading h2 {
@@ -345,20 +346,22 @@ body.settings-open {
 	width: 32px;
 	height: 32px;
 	padding: 0;
-	border: 1px solid var(--line);
-	background: var(--background);
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	color: var(--muted);
 	font-size: 24px;
 	line-height: 1;
 }
 
 .settings-close:hover:not(:disabled) {
-	border-color: var(--ink);
 	background: var(--covered);
+	color: var(--ink);
 }
 
 .settings-group {
 	margin: 0;
-	padding: 20px 0;
+	padding: 19px 2px;
 	border: 0;
 	border-bottom: 1px solid var(--line);
 	font-family: ui-sans-serif, system-ui, sans-serif;
@@ -379,6 +382,7 @@ body.settings-open {
 	margin-top: 12px;
 	padding: 4px;
 	border: 1px solid var(--line);
+	border-radius: 10px;
 	background: var(--background);
 	user-select: none;
 }
@@ -390,6 +394,7 @@ body.settings-open {
 	left: 4px;
 	z-index: 0;
 	width: calc((100% - 18px) / 3);
+	border-radius: 7px;
 	background: var(--ink);
 	box-shadow: 0 1px 3px rgb(0 0 0 / 16%);
 	content: '';
@@ -419,6 +424,7 @@ body.settings-open {
 	z-index: 1;
 	display: block;
 	padding: 7px 8px;
+	border-radius: 6px;
 	text-align: center;
 	font-size: 12px;
 	font-weight: 650;
@@ -431,10 +437,6 @@ body.settings-open {
 
 .scheme-options label:hover input:not(:checked) + span {
 	background: var(--covered);
-}
-
-.scheme-options label:hover input:checked + span {
-	background: color-mix(in srgb, var(--paper) 14%, transparent);
 }
 
 .scheme-options input:focus-visible + span {
@@ -474,6 +476,7 @@ body.settings-open {
 	min-width: 78px;
 	padding: 9px 14px;
 	border: 1px solid var(--ink);
+	border-radius: 8px;
 	background: var(--ink);
 	color: var(--paper);
 	font-weight: 750;
@@ -537,7 +540,7 @@ body.settings-open {
 .settings-about {
 	display: grid;
 	gap: 4px;
-	padding-top: 20px;
+	padding: 18px 4px 0;
 	font: 12px/1.4 ui-sans-serif, system-ui, sans-serif;
 }
 
@@ -570,6 +573,7 @@ body.settings-open {
 		max-height: calc(100dvh - 48px);
 		padding: 24px;
 		border-bottom: 1px solid var(--line);
+		border-radius: 18px;
 		box-shadow: 0 16px 50px rgb(0 0 0 / 26%);
 	}
 

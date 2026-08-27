@@ -61,8 +61,7 @@
 				@click="openSettings()"
 			>
 				<svg viewBox="0 0 24 24" aria-hidden="true">
-					<circle cx="12" cy="12" r="3"></circle>
-					<path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path>
+					<path d="M3 5h4m4 0h10M3 12h10m4 0h4M3 19h6m4 0h8M9 2v6M15 9v6M11 16v6"></path>
 				</svg>
 			</button>
 		</div>
@@ -609,7 +608,7 @@
 	<script>
 	if ('serviceWorker' in navigator) {
 		window.addEventListener('load', () => {
-			navigator.serviceWorker.register('./sw.js?v=20260826pwa4', {
+			navigator.serviceWorker.register('./sw.js?v=20260827settings5', {
 				scope: './',
 				updateViaCache: 'none',
 			}).catch(error => {
