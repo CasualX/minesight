@@ -28,29 +28,42 @@ pub const CELL_FORCED_SAFE: u8 = 0x20;
 
 //----------------------------------------------------------------
 
+#[inline]
+const fn cell(x: i8, y: i8) -> u64 {
+	if x < 0 || x >= 8 {
+		return 0;
+	}
+	if y < 0 || y >= 8 {
+		return 0;
+	}
+	1u64 << (y as u32 * 8 + x as u32)
+}
+
+#[inline]
+#[allow(dead_code)]
+fn rect(x: i8, y: i8, w: i8, h: i8) -> u64 {
+	let mut result = 0;
+	for dy in 0..h {
+		for dx in 0..w {
+			result |= cell(x + dx, y + dy);
+		}
+	}
+	result
+}
+
 /// Precomputed neighbour masks.
 ///
 /// For every cell, contains a mask of the neighbouring cells (excluding itself).
 static NEIGHBOURS: [u64; 64] = {
-	const fn bit(x: i8, y: i8) -> u64 {
-		if x < 0 || x >= 8 {
-			return 0;
-		}
-		if y < 0 || y >= 8 {
-			return 0;
-		}
-		let i = y as u32 * 8 + x as u32;
-		1u64 << i
-	}
-	let mut neighs = [0u64; 64];
+	let mut result = [0u64; 64];
 	let mut iter = grid();
 	while let Some((i, x, y)) = iter.next() {
-		neighs[i] =
-			bit(x - 1, y - 1) | bit(x, y - 1) | bit(x + 1, y - 1) |
-			bit(x - 1, y) | bit(x + 1, y) |
-			bit(x - 1, y + 1) | bit(x, y + 1) | bit(x + 1, y + 1);
+		result[i] =
+			cell(x - 1, y - 1) | cell(x, y - 1) | cell(x + 1, y - 1) |
+			cell(x - 1, y) | cell(x + 1, y) |
+			cell(x - 1, y + 1) | cell(x, y + 1) | cell(x + 1, y + 1);
 	}
-	neighs
+	result
 };
 
 #[inline]

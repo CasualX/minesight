@@ -69,22 +69,6 @@ impl GameState {
 	}
 }
 
-#[cfg(test)]
-const fn cell(x: u32, y: u32) -> u64 {
-	1u64 << (y * 8 + x)
-}
-
-#[cfg(test)]
-fn rect(x: u32, y: u32, w: u32, h: u32) -> u64 {
-	let mut result = 0;
-	for dy in 0..h {
-		for dx in 0..w {
-			result |= cell(x + dx, y + dy);
-		}
-	}
-	result
-}
-
 #[test]
 fn solver_contradiction() {
 	let state = GameState {
