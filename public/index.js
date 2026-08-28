@@ -15,6 +15,7 @@ const SCRATCH_ERASER_RADIUS = .025;
 const SCRATCH_MARK_SIZE = .04125;
 const SCRATCH_MARK_ANIMATION_MS = 220;
 const MINESIGHT_STORAGE_KEY = 'minesight';
+const MINESIGHT_CACHE_PREFIX = 'minesight';
 const LEGACY_PUZZLE_PARAMETER = 'p';
 const TUTORIAL_PARAMETER = 'tutorial';
 const CHALLENGE_MODE_PARAMETER = 'challenge';
@@ -379,6 +380,57 @@ function saveMinesightData(key, value) {
 		window.localStorage.setItem(MINESIGHT_STORAGE_KEY, JSON.stringify(data));
 	}
 	catch {}
+}
+
+/** @param {number} bytes */
+function formatStorageSize(bytes) {
+	if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown';
+	if (bytes < 1024) return `${Math.round(bytes)} B`;
+	let units = ['KB', 'MB', 'GB', 'TB'];
+	let value = bytes;
+	let unit = 'B';
+	for (let nextUnit of units) {
+		value /= 1024;
+		unit = nextUnit;
+		if (value < 1024) break;
+	}
+	let digits = value < 10 ? 1 : 0;
+	return `${value.toFixed(digits)} ${unit}`;
+}
+
+async function measureMinesightStorageUsage() {
+	let bytes = 0;
+	try {
+		let stored = window.localStorage.getItem(MINESIGHT_STORAGE_KEY);
+		if (stored !== null) {
+			bytes += new TextEncoder().encode(MINESIGHT_STORAGE_KEY).byteLength;
+			bytes += new TextEncoder().encode(stored).byteLength;
+		}
+	}
+	catch {}
+
+	try {
+		if ('caches' in window) {
+			let cacheNames = await window.caches.keys();
+			let mineSightCacheNames = cacheNames.filter(name => (
+				name === MINESIGHT_CACHE_PREFIX || name.startsWith(`${MINESIGHT_CACHE_PREFIX}-`)
+			));
+			let cacheSizes = await Promise.all(mineSightCacheNames.map(async name => {
+				let cache = await window.caches.open(name);
+				let responses = await cache.matchAll();
+				let responseSizes = await Promise.all(responses.map(async response => {
+					let contentLengthHeader = response.headers.get('content-length');
+					let contentLength = Number(contentLengthHeader);
+					if (contentLengthHeader !== null && Number.isFinite(contentLength) && contentLength >= 0) return contentLength;
+					return (await response.blob()).size;
+				}));
+				return responseSizes.reduce((total, size) => total + size, 0);
+			}));
+			bytes += cacheSizes.reduce((total, size) => total + size, 0);
+		}
+	}
+	catch {}
+	return bytes;
 }
 
 /** @param {'system' | 'light' | 'dark'} colorScheme */
@@ -784,6 +836,11 @@ function createMinesight() {
 		appInstalled: isAppInstalled(),
 		installPromptAvailable: false,
 		colorScheme,
+		storageUsageText: 'Checking storage usage…',
+		storagePersisted: false,
+		storagePersistenceBusy: false,
+		storageMessage: '',
+		wipeStorageBusy: false,
 		actionsInverted: false,
 		/** @type {GameResult} */
 		result: 'playing',
@@ -1000,6 +1057,22 @@ function createMinesight() {
 			if (this.appInstalled) return 'Minesight is installed and opens as its own app.';
 			if (this.canInstallApp) return 'Play in its own window and keep it close at hand.';
 			return appInstallInstructions();
+		},
+
+		get storagePersistenceSupported() {
+			return typeof navigator.storage?.persisted === 'function'
+				&& typeof navigator.storage?.persist === 'function';
+		},
+
+		get storagePersistenceDisabled() {
+			return !this.storagePersistenceSupported || this.storagePersisted || this.storagePersistenceBusy;
+		},
+
+		get storagePersistenceMessage() {
+			if (this.storageMessage) return this.storageMessage;
+			if (!this.storagePersistenceSupported) return 'Persistent storage is not supported by this browser.';
+			if (this.storagePersisted) return 'Enabled. Turn it off from your browser\'s site settings.';
+			return 'Ask the browser to keep progress and offline files when storage runs low.';
 		},
 
 		get showChallengeTimer() {
@@ -1955,6 +2028,7 @@ function createMinesight() {
 		openSettings() {
 			this.settingsOpen = true;
 			document.body.classList.add('settings-open');
+			void this.refreshStorageInfo();
 			this.$nextTick(() => this.$refs.settingsClose?.focus());
 		},
 
@@ -1970,6 +2044,67 @@ function createMinesight() {
 			this.colorScheme = colorScheme;
 			applyColorScheme(colorScheme);
 			saveMinesightData('colorScheme', colorScheme);
+		},
+
+		async refreshStorageInfo() {
+			this.storageMessage = '';
+			try {
+				let usage = await measureMinesightStorageUsage();
+				if (typeof navigator.storage?.estimate === 'function') {
+					let { quota } = await navigator.storage.estimate();
+					this.storageUsageText = `${formatStorageSize(usage)} used${typeof quota === 'number' ? ` out of ${formatStorageSize(quota)}` : ''}.`;
+				}
+				else this.storageUsageText = `${formatStorageSize(usage)} used.`;
+			}
+			catch {
+				this.storageUsageText = 'Storage usage is unavailable.';
+			}
+			if (this.storagePersistenceSupported) {
+				try {
+					this.storagePersisted = await navigator.storage.persisted();
+				}
+				catch {
+					this.storageMessage = 'Persistent storage status is unavailable.';
+				}
+			}
+		},
+
+		async enablePersistentStorage() {
+			if (this.storagePersistenceDisabled) return;
+			this.storagePersistenceBusy = true;
+			this.storageMessage = 'Requesting persistent storage…';
+			try {
+				this.storagePersisted = await navigator.storage.persist();
+				this.storageMessage = this.storagePersisted ? 'Enabled. Turn it off from your browser\'s site settings.' : 'The browser did not grant persistent storage.';
+			}
+			catch {
+				this.storageMessage = 'Persistent storage could not be enabled.';
+			}
+			finally {
+				this.storagePersistenceBusy = false;
+			}
+		},
+
+		async wipeMinesightData() {
+			if (this.wipeStorageBusy) return;
+			let confirmed = window.confirm('Wipe all Minesight data?\n\nThis permanently deletes saved progress, preferences, and offline files on this device.');
+			if (!confirmed) return;
+			this.wipeStorageBusy = true;
+			try {
+				window.localStorage.removeItem(MINESIGHT_STORAGE_KEY);
+				if ('caches' in window) {
+					let cacheNames = await window.caches.keys();
+					await Promise.all(cacheNames
+						.filter(name => name === MINESIGHT_CACHE_PREFIX || name.startsWith(`${MINESIGHT_CACHE_PREFIX}-`))
+						.map(name => window.caches.delete(name)));
+				}
+				window.location.reload();
+			}
+			catch {
+				this.wipeStorageBusy = false;
+				this.storageMessage = 'MineSight data could not be completely removed.';
+				void this.refreshStorageInfo();
+			}
 		},
 
 		activateChallengeStart() {

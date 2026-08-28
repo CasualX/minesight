@@ -490,7 +490,7 @@
 		</section>
 		<section class="game-controls" x-show="mode === 'daily'" aria-label="Daily challenge controls">
 			<div class="board-actions daily-actions">
-				<button type="button" class="secondary" :disabled="boardPreparing || !dailyBoardReady" @click="clearDailyBoard()">Clear board</button>
+				<button type="button" class="secondary" :disabled="boardPreparing || !dailyBoardReady" @click="clearDailyBoard()">Clear marks</button>
 				<button type="button" class="primary" :disabled="boardPreparing || !dailyBoardReady || result === 'cleared'" @click="checkDailySolution()" x-text="result === 'cleared' ? 'Solved' : 'Check solution'"></button>
 			</div>
 		</section>
@@ -599,6 +599,28 @@
 				<button type="button" x-show="canInstallApp" @click="installApp()">Install</button>
 			</div>
 
+			<div class="settings-group storage-setting">
+				<div class="storage-persistence">
+					<div class="storage-setting-copy">
+						<strong>Persistent storage <a class="storage-help" href="https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria" target="_blank" rel="noopener noreferrer" aria-label="Learn about persistent storage on MDN" title="What is persistent storage?"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 1 1 5.83 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg></a></strong>
+						<p x-text="storagePersistenceMessage" role="status" aria-live="polite"></p>
+					</div>
+					<label class="switch" :class="{ disabled: storagePersistenceDisabled }">
+						<span class="sr-only">Enable persistent storage</span>
+						<input type="checkbox" :checked="storagePersisted" :disabled="storagePersistenceDisabled" @change="enablePersistentStorage()">
+						<span class="switch-track" aria-hidden="true"></span>
+					</label>
+				</div>
+				<div class="storage-wipe">
+					<div class="storage-setting-copy">
+						<strong>Wipe all Minesight data</strong>
+						<p>Delete progress, preferences, and downloaded offline files from this device.</p>
+						<p class="storage-usage" x-text="storageUsageText" role="status" aria-live="polite"></p>
+					</div>
+					<button type="button" class="danger-button" :disabled="wipeStorageBusy" @click="wipeMinesightData()" x-text="wipeStorageBusy ? 'Wiping…' : 'Wipe data'"></button>
+				</div>
+			</div>
+
 			<footer class="settings-about">
 				<p>Minesight is free and open source.</p>
 				<a href="https://github.com/CasualX/minesight" target="_blank" rel="noopener noreferrer">CasualX/minesight on GitHub <span aria-hidden="true">&#8599;</span></a>
@@ -608,7 +630,7 @@
 	<script>
 	if ('serviceWorker' in navigator) {
 		window.addEventListener('load', () => {
-			navigator.serviceWorker.register('./sw.js?v=20260827settings5', {
+			navigator.serviceWorker.register('./sw.js?v=20260828storage8', {
 				scope: './',
 				updateViaCache: 'none',
 			}).catch(error => {

@@ -367,6 +367,10 @@ body.settings-open {
 	font-family: ui-sans-serif, system-ui, sans-serif;
 }
 
+.settings-heading + .settings-group {
+	border-top: 1px solid var(--line);
+}
+
 .settings-group strong {
 	padding: 0;
 	font-size: 14px;
@@ -482,6 +486,81 @@ body.settings-open {
 	font-weight: 750;
 }
 
+.storage-setting {
+	display: grid;
+	gap: 17px;
+}
+
+.storage-persistence,
+.storage-wipe {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 20px;
+}
+
+.storage-wipe {
+	padding-top: 17px;
+	border-top: 1px solid var(--line);
+}
+
+.storage-setting-copy {
+	display: grid;
+	gap: 5px;
+}
+
+.storage-setting-copy p {
+	max-width: 280px;
+	margin: 0;
+	color: var(--muted);
+	font-size: 12px;
+	line-height: 1.45;
+}
+
+.storage-help {
+	display: inline-grid;
+	place-items: center;
+	width: 17px;
+	height: 17px;
+	margin-left: 3px;
+	color: var(--focus);
+	text-decoration: none;
+	vertical-align: -3px;
+}
+
+.storage-help svg {
+	width: 100%;
+	height: 100%;
+	fill: none;
+	stroke: currentColor;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	stroke-width: 2;
+}
+
+.storage-help:hover {
+	color: var(--ink);
+}
+
+.storage-help:focus-visible {
+	outline: 2px solid var(--focus);
+	outline-offset: 2px;
+}
+
+.danger-button {
+	flex: none;
+	padding: 8px 11px;
+	border: 1px solid var(--danger);
+	background: var(--danger-soft);
+	color: var(--danger-ink);
+	font-weight: 750;
+}
+
+.danger-button:hover:not(:disabled) {
+	background: var(--danger);
+	color: var(--on-danger);
+}
+
 .switch {
 	position: relative;
 	display: block;
@@ -535,6 +614,11 @@ body.settings-open {
 .switch:hover .switch-track {
 	border-color: var(--ink);
 	filter: brightness(.94);
+}
+
+.switch.disabled {
+	cursor: default;
+	opacity: .7;
 }
 
 .settings-about {
