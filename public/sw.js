@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'minesight';
-const CACHE_NAME = `${CACHE_PREFIX}-v20260828storage8`;
+const CACHE_NAME = `${CACHE_PREFIX}-v20260828storage9`;
 const APP_SHELL_URL = new URL('./index.html', self.registration.scope).href;
 const APP_ASSETS = [
 	'./',

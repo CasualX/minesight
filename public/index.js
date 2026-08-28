@@ -3157,3 +3157,4 @@ function createMinesight() {
 void ensurePuzzleGenerator().catch(() => {});
 
 Object.assign(window, { minesight: createMinesight });
+await import('./alpine.min.js');

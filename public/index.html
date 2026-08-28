@@ -27,7 +27,6 @@
 	<link rel="stylesheet" href="./index.css">
 	<link rel="stylesheet" href="./feedback.css">
 	<script type="module" src="./index.js"></script>
-	<script src="./alpine.min.js" defer></script>
 </head>
 <body x-data="minesight" x-cloak @beforeunload.window="protectChallengeNavigation($event)" @keydown.escape.window="closeSettings()">
 	<header class="site-header" :inert="settingsOpen">
@@ -630,7 +629,7 @@
 	<script>
 	if ('serviceWorker' in navigator) {
 		window.addEventListener('load', () => {
-			navigator.serviceWorker.register('./sw.js?v=20260828storage8', {
+			navigator.serviceWorker.register('./sw.js?v=20260828storage9', {
 				scope: './',
 				updateViaCache: 'none',
 			}).catch(error => {
