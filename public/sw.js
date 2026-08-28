@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'minesight';
-const CACHE_NAME = `${CACHE_PREFIX}-v20260828storage9`;
+const CACHE_NAME = `${CACHE_PREFIX}-v20260828icons11`;
 const APP_SHELL_URL = new URL('./index.html', self.registration.scope).href;
 const APP_ASSETS = [
 	'./',
@@ -14,12 +14,12 @@ const APP_ASSETS = [
 	'./alpine.min.js',
 	'./header-icon.svg',
 	'./favicon.svg',
-	'./manifest.webmanifest?v=20260826pwa3',
-	'./icon/icon.svg?v=20260826pwa3',
-	'./icon/icon-192.png?v=20260826pwa3',
-	'./icon/icon-512.png?v=20260826pwa3',
-	'./icon/icon-maskable-512.png?v=20260826pwa3',
-	'./icon/icon-monochrome-512.png?v=20260826pwa3',
+	'./manifest.webmanifest?v=20260828pwa5',
+	'./icon/icon.svg?v=20260828icons5',
+	'./icon/icon-192.png?v=20260828icons5',
+	'./icon/icon-512.png?v=20260828icons5',
+	'./icon/icon-maskable-512.png?v=20260828icons5',
+	'./icon/icon-monochrome-512.png?v=20260828icons5',
 ];
 
 self.addEventListener('install', event => {
