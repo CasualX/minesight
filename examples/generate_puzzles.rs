@@ -60,7 +60,7 @@ impl Difficulty {
 			Difficulty::Medium => minetacs::puzzle::generate_medium(seed, attempts),
 			Difficulty::Hard => minetacs::puzzle::generate_hard(seed, attempts),
 			Difficulty::Expert => minetacs::puzzle::generate_expert(seed, attempts),
-			Difficulty::Mit => minetacs::puzzle::generate_mit::<100>(seed, attempts),
+			Difficulty::Mit => minetacs::puzzle::generate_mit(seed, attempts),
 		}
 	}
 }

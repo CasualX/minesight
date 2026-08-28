@@ -501,57 +501,158 @@ pub fn generate_expert(seed: u64, attempts: u32) -> Option<Puzzle> {
 	}.search(seed, EXPERT_SEED_XOR, attempts)
 }
 
-fn minimize_mit_clues<R: urandom::Rng>(mines: u64, rng: &mut urandom::Random<R>) -> Option<GameState> {
+const MIT_REFINEMENTS: usize = 100;
+const MIT_POOL_SIZE: usize = 8;
+const MIT_INITIAL_VARIANTS: usize = 4;
+const MIT_MUTATION_REGION_SIZE: i8 = 4;
+const MIT_MINE_MUTATION_INTERVAL: usize = 8;
+const MIT_OUTSIDE_RESTORE_CHANCE: u32 = 16;
+
+fn mit_deductions(state: &GameState) -> Option<Deductions> {
+	Some(state.solve_local()? | state.solve_overlap(true)? | state.solve_clue_cover()?)
+}
+
+fn mit_is_determined(state: &GameState) -> Option<bool> {
+	Some(state.solve_sat()?.always_mine == state.mines)
+}
+
+/// Greedily removes each currently visible clue once while preserving the
+/// fixed mine solution. Failed removals never need reconsideration: hiding
+/// more clues can only discard constraints, so it cannot restore a lost proof.
+fn minimize_mit_clues<R: urandom::Rng>(
+	mut state: GameState,
+	rng: &mut urandom::Random<R>,
+	focus: Option<u64>,
+) -> Option<GameState> {
+	if !mit_is_determined(&state)? {
+		return None;
+	}
+
+	let focus = focus.unwrap_or(0);
+	let mut inside = [0u8; BOARD_CELLS];
+	let mut outside = [0u8; BOARD_CELLS];
+	let mut inside_len = 0;
+	let mut outside_len = 0;
+
+	for i in enumerate(state.revealed) {
+		if focus & (1u64 << i) != 0 {
+			inside[inside_len] = i as u8;
+			inside_len += 1;
+		}
+		else {
+			outside[outside_len] = i as u8;
+			outside_len += 1;
+		}
+	}
+	rng.shuffle(&mut inside[..inside_len]);
+	rng.shuffle(&mut outside[..outside_len]);
+
+	// Region clues go first so newly restored clues can replace old local clues
+	// before the global cleanup pass.
+	for &i in inside[..inside_len].iter().chain(&outside[..outside_len]) {
+		let clue = 1u64 << i;
+		state.revealed &= !clue;
+		if !mit_is_determined(&state)? {
+			state.revealed |= clue;
+		}
+	}
+
+	Some(state)
+}
+
+fn minimize_mit_layout<R: urandom::Rng>(mines: u64, rng: &mut urandom::Random<R>) -> Option<GameState> {
 	// Empty clues make immediate local deductions, so exclude layouts containing them.
 	if empty_squares(mines) != 0 {
 		return None;
 	}
 
-	let mut state = GameState {
+	minimize_mit_clues(GameState {
 		mines,
 		revealed: !mines,
 		flagged: 0,
-	};
+	}, rng, None)
+}
 
-	// Even with every safe clue visible, some mine layouts are not uniquely determined.
-	if state.solve_sat()?.always_mine != mines {
+fn random_subset<R: urandom::Rng>(mut cells: u64, count: u32, rng: &mut urandom::Random<R>) -> u64 {
+	let mut result = 0;
+	for _ in 0..count.min(cells.count_ones()) {
+		let bit = deposit(1u64 << rng.uniform(0..cells.count_ones()), cells);
+		result |= bit;
+		cells &= !bit;
+	}
+	result
+}
+
+fn mit_mutation_region<R: urandom::Rng>(rng: &mut urandom::Random<R>) -> u64 {
+	let limit = (BOARD_SIZE as i8 - MIT_MUTATION_REGION_SIZE) as u32;
+	let x = rng.uniform(0..=limit) as i8;
+	let y = rng.uniform(0..=limit) as i8;
+	rect(x, y, MIT_MUTATION_REGION_SIZE, MIT_MUTATION_REGION_SIZE)
+}
+
+/// Restores several hidden clues locally, then minimizes in a new order.
+/// This exchanges one clue-minimal representation for another without changing the underlying solution.
+fn mutate_mit_clues<R: urandom::Rng>(
+	parent: GameState,
+	rng: &mut urandom::Random<R>,
+) -> Option<GameState> {
+	let region = mit_mutation_region(rng);
+	let hidden_clues = !parent.mines & !parent.revealed;
+	let hidden_inside = hidden_clues & region;
+	let inside_count = hidden_inside.count_ones().div_ceil(4).max(2);
+
+	let mut restored = random_subset(hidden_inside, inside_count, rng);
+	if rng.uniform(0..MIT_OUTSIDE_RESTORE_CHANCE) == 0 {
+		restored |= random_subset(hidden_clues & !region, 1, rng);
+	}
+	if restored == 0 {
 		return None;
 	}
 
-	let mut indices: [u8; BOARD_CELLS] = std::array::from_fn(|i| i as u8);
-	let indices = &mut indices[..state.revealed.count_ones() as usize];
+	let mut child = parent;
+	child.revealed |= restored;
+	minimize_mit_clues(child, rng, Some(region))
+}
 
-	loop {
-		let mut removed_any = false;
-		rng.shuffle(indices);
+#[derive(Copy, Clone)]
+struct MitCandidate {
+	state: GameState,
+	local_count: u32,
+	active_count: u32,
+	clue_count: u32,
+}
 
-		for &i in &*indices {
-			let cell = deposit(1u64 << i, !mines);
-			if state.revealed & cell == 0 {
-				continue;
-			}
+impl MitCandidate {
+	fn analyze(state: GameState) -> Option<MitCandidate> {
+		Some(MitCandidate {
+			state,
+			local_count: mit_deductions(&state)?.count(),
+			active_count: state.active().count_ones(),
+			clue_count: state.revealed.count_ones(),
+		})
+	}
 
-			state.revealed &= !cell;
-			if state.solve_sat()?.always_mine == mines {
-				removed_any = true;
-			}
-			else {
-				state.revealed |= cell;
-			}
-		}
+	fn better_than(&self, other: &MitCandidate) -> bool {
+		(self.local_count, u32::MAX - self.active_count, self.clue_count, self.state.mines, self.state.revealed) <
+			(other.local_count, u32::MAX - other.active_count, other.clue_count, other.state.mines, other.state.revealed)
+	}
+}
 
-		if !removed_any {
-			return Some(state);
-		}
+fn insert_mit_candidate(pool: &mut Vec<MitCandidate>, candidate: MitCandidate) {
+	if pool.iter().any(|item| item.state.mines == candidate.state.mines && item.state.revealed == candidate.state.revealed) {
+		return;
+	}
+
+	let index = pool.iter().position(|item| candidate.better_than(item)).unwrap_or(pool.len());
+	pool.insert(index, candidate);
+	if pool.len() > MIT_POOL_SIZE {
+		pool.pop();
 	}
 }
 
 /// Generates an MIT-style puzzle with a uniquely determined mine layout and
 /// minimizes the number of deductions available to the local solver.
-pub fn generate_mit<const REFINEMENTS: usize>(seed: u64, attempts: u32) -> Option<Puzzle> {
-	fn cleanup(state: &GameState) -> Option<Deductions> {
-		Some(state.solve_local()? | state.solve_overlap(true)? | state.solve_clue_cover()?)
-	}
+pub fn generate_mit(seed: u64, attempts: u32) -> Option<Puzzle> {
 	fn random(rng: &mut urandom::Random<impl urandom::Rng>) -> u64 {
 		// Since we only ever open clues, balance the unrevealed cells between mines and safe cells
 		rng.random::<u64>() & rng.random::<u64>()
@@ -565,36 +666,45 @@ pub fn generate_mit<const REFINEMENTS: usize>(seed: u64, attempts: u32) -> Optio
 				break mines;
 			}
 		};
-		let Some(mut current) = minimize_mit_clues(mines, &mut rng) else {
+		let Some(initial) = minimize_mit_layout(mines, &mut rng) else {
 			continue;
 		};
 
-		let mut best = current;
-		let mut best_local_count = cleanup(&best)?.count();
+		let mut pool = Vec::with_capacity(MIT_POOL_SIZE + 1);
+		insert_mit_candidate(&mut pool, MitCandidate::analyze(initial)?);
 
-		for _ in 0..REFINEMENTS {
-			let local = cleanup(&current)?;
-			let forced = local.always_mine | local.always_safe;
-			if forced == 0 {
-				break;
-			}
-
-			// Rescramble locally obvious cells and their neighbourhood, then repeat
-			// clue minimization for the resulting mine layout.
-			let rescramble = expand(forced);
-			let candidate_mines = (current.mines & !rescramble) | (random(&mut rng) & rescramble);
-			let Some(candidate) = minimize_mit_clues(candidate_mines, &mut rng) else {
-				continue;
-			};
-
-			current = candidate;
-			let local_count = cleanup(&current)?.count();
-			if local_count < best_local_count {
-				best = current;
-				best_local_count = local_count;
+		// Different removal orders can produce very different minimal clue sets
+		// for the same solution, so seed the pool with a few independent variants.
+		let initial_variants = MIT_REFINEMENTS.saturating_add(1).min(MIT_INITIAL_VARIANTS);
+		for _ in 1..initial_variants {
+			if let Some(variant) = minimize_mit_layout(mines, &mut rng) {
+				insert_mit_candidate(&mut pool, MitCandidate::analyze(variant)?);
 			}
 		}
 
+		for refinement in 0..MIT_REFINEMENTS {
+			let parent_count = pool.len().clamp(1, MIT_POOL_SIZE / 2);
+			let parent = pool[rng.uniform(0..parent_count as u32) as usize];
+
+			let child = if refinement % MIT_MINE_MUTATION_INTERVAL == MIT_MINE_MUTATION_INTERVAL - 1 {
+				// Occasionally change the solution itself. Prefer the locally obvious
+				// region, falling back to a random region once simple deductions vanish.
+				let local = mit_deductions(&parent.state)?;
+				let forced = local.always_mine | local.always_safe;
+				let rescramble = if forced == 0 { mit_mutation_region(&mut rng) } else { expand(forced) };
+				let candidate_mines = (parent.state.mines & !rescramble) | (random(&mut rng) & rescramble);
+				minimize_mit_layout(candidate_mines, &mut rng)
+			}
+			else {
+				mutate_mit_clues(parent.state, &mut rng)
+			};
+
+			if let Some(child) = child {
+				insert_mit_candidate(&mut pool, MitCandidate::analyze(child)?);
+			}
+		}
+
+		let best = pool[0].state;
 		let deductions = best.solve_sat()?;
 		return Some(make_puzzle(seed, attempt + 1, best, deductions));
 	}

@@ -238,7 +238,7 @@ pub extern "C" fn random_expert_puzzle_wasm(seed_low: u32, seed_high: u32, attem
 /// Generates an MIT-style puzzle and returns it through `env.resultPuzzle`.
 #[unsafe(export_name = "randomMitPuzzle")]
 pub extern "C" fn random_mit_puzzle_wasm(seed_low: u32, seed_high: u32, attempts: u32) -> bool {
-	generate_puzzle(generate_mit::<100>, seed_low, seed_high, attempts)
+	generate_puzzle(generate_mit, seed_low, seed_high, attempts)
 }
 
 /// The raw ABI keeps the full search in Rust without requiring `wasm-bindgen`.
