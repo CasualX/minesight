@@ -1,5 +1,6 @@
 const CACHE_PREFIX = 'minesight';
-const CACHE_NAME = `${CACHE_PREFIX}-v20260828icons11`;
+const CACHE_NAME = `${CACHE_PREFIX}-v20260828pages3`;
+const APP_ROOT_URL = new URL('./', self.registration.scope);
 const APP_SHELL_URL = new URL('./index.html', self.registration.scope).href;
 const APP_ASSETS = [
 	'./',
@@ -44,12 +45,19 @@ self.addEventListener('fetch', event => {
 	if (event.request.method !== 'GET') return;
 
 	if (event.request.mode === 'navigate') {
-		event.respondWith(
-			caches.open(CACHE_NAME).then(cache =>
-				cache.match(APP_SHELL_URL).then(cachedShell => cachedShell || fetch(event.request))
-			)
+		let requestUrl = new URL(event.request.url);
+		let isAppNavigation = requestUrl.origin === APP_ROOT_URL.origin && (
+			requestUrl.pathname === APP_ROOT_URL.pathname ||
+			requestUrl.pathname === new URL(APP_SHELL_URL).pathname
 		);
-		return;
+		if (isAppNavigation) {
+			event.respondWith(
+				caches.open(CACHE_NAME).then(cache =>
+					cache.match(APP_SHELL_URL).then(cachedShell => cachedShell || fetch(event.request))
+				)
+			);
+			return;
+		}
 	}
 
 	event.respondWith(

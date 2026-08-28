@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="color-scheme" content="light">
+	<meta name="theme-color" content="#efe8d8">
+	<meta name="description" content="A playful, fictional magazine review of Minesight, the no-guessing Minesweeper logic game.">
+	<meta property="og:type" content="article">
+	<meta property="og:title" content="Minesight review: every square must be proven">
+	<meta property="og:description" content="A fake print-magazine feature and user review roundup for Minesight.">
+	<meta property="og:image" content="https://casualx.github.io/minesight/social-preview.png">
+	<title>Minesight review | The Grid</title>
+	<link rel="icon" href="./icon/icon.svg" type="image/svg+xml">
+	<style>
+		@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=League+Spartan:wght@600;700;800&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&display=swap');
+
+		:root {
+			--paper: #efe8d8;
+			--paper-light: #f8f4e9;
+			--ink: #171813;
+			--muted: #5c5b50;
+			--rule: #95917f;
+			--red: #b63a2d;
+			--green: #3f6749;
+			--yellow: #e6c957;
+			--blue-black: #172532;
+			--blue-card: #22384a;
+			--blue-rule: #52718a;
+			--blue-text: #d9e7ee;
+			--positive: #76b900;
+			--negative: #d7655d;
+		}
+
+		*, *::before, *::after { box-sizing: border-box; }
+
+		html {
+			background: #25251f;
+			scroll-behavior: smooth;
+		}
+
+		body {
+			margin: 0;
+			background:
+				radial-gradient(circle at 18% 15%, rgb(255 255 255 / 35%) 0 1px, transparent 1.5px) 0 0 / 9px 9px,
+				var(--paper);
+			color: var(--ink);
+			font-family: "Libre Caslon Text", Georgia, serif;
+			font-size: 17px;
+			line-height: 1.72;
+		}
+
+		a { color: inherit; }
+		a:focus-visible { outline: 3px solid var(--red); outline-offset: 4px; }
+
+		.top-strip {
+			background: var(--ink);
+			color: var(--paper-light);
+			font: 500 11px/1.2 "DM Mono", monospace;
+			letter-spacing: .12em;
+			text-transform: uppercase;
+		}
+
+		.top-strip-inner {
+			display: flex;
+			justify-content: space-between;
+			gap: 18px;
+			width: min(1180px, calc(100% - 32px));
+			margin: auto;
+			padding: 10px 0;
+		}
+
+		.top-strip a { color: #f1d96f; text-underline-offset: 3px; }
+
+		.masthead,
+		.article,
+		.user-roundup,
+		.page-footer {
+			width: min(1180px, calc(100% - 32px));
+			margin-inline: auto;
+		}
+
+		.masthead {
+			display: grid;
+			grid-template-columns: 1fr auto;
+			align-items: end;
+			gap: 24px;
+			padding: 24px 0 14px;
+			border-bottom: 7px solid var(--ink);
+		}
+
+		.publication {
+			font: 800 clamp(58px, 12vw, 150px)/.73 "League Spartan", Impact, sans-serif;
+			letter-spacing: -.075em;
+			text-transform: uppercase;
+		}
+
+		.publication i {
+			color: var(--red);
+			font-style: normal;
+		}
+
+		.issue {
+			padding-bottom: 4px;
+			font: 500 10px/1.45 "DM Mono", monospace;
+			letter-spacing: .08em;
+			text-align: right;
+			text-transform: uppercase;
+		}
+
+		.hero {
+			display: grid;
+			grid-template-columns: minmax(0, 1.3fr) minmax(300px, .7fr);
+			gap: 34px;
+			padding: 38px 0 32px;
+			border-bottom: 1px solid var(--ink);
+		}
+
+		.kicker,
+		.section-kicker,
+		.caption,
+		.byline,
+		.fact-label {
+			font-family: "DM Mono", monospace;
+			letter-spacing: .1em;
+			text-transform: uppercase;
+		}
+
+		.kicker {
+			display: inline-block;
+			padding: 5px 8px 4px;
+			background: var(--red);
+			color: white;
+			font-size: 11px;
+			font-weight: 500;
+		}
+
+		h1 {
+			max-width: 840px;
+			margin: 16px 0 15px;
+			font: 800 clamp(48px, 7.3vw, 94px)/.91 "League Spartan", Impact, sans-serif;
+			letter-spacing: -.055em;
+		}
+
+		.dek {
+			max-width: 760px;
+			margin: 0;
+			color: #3c3c34;
+			font-size: clamp(18px, 2vw, 23px);
+			font-style: italic;
+			line-height: 1.45;
+		}
+
+		.byline {
+			margin: 24px 0 0;
+			font-size: 11px;
+			font-style: normal;
+		}
+
+		.score-panel {
+			position: relative;
+			display: grid;
+			align-content: center;
+			justify-items: center;
+			min-height: 300px;
+			padding: 28px;
+			border: 3px solid var(--ink);
+			background: var(--yellow);
+			box-shadow: 10px 10px 0 var(--ink);
+			text-align: center;
+			transform: rotate(1.2deg);
+		}
+
+		.score-panel::before,
+		.score-panel::after {
+			position: absolute;
+			width: 23px;
+			height: 23px;
+			border: 2px solid var(--ink);
+			content: '';
+		}
+
+		.score-panel::before { top: 12px; left: 12px; }
+		.score-panel::after { right: 12px; bottom: 12px; }
+		.score-label {
+			font: 800 16px/1 "League Spartan", sans-serif;
+			letter-spacing: .14em;
+			text-transform: uppercase;
+		}
+
+		.score {
+			margin: 8px 0 0;
+			font: 800 clamp(86px, 14vw, 150px)/.78 "League Spartan", sans-serif;
+			letter-spacing: -.09em;
+		}
+
+		.score small { font-size: .29em; letter-spacing: -.04em; }
+		.score-blurb { max-width: 220px; margin: 18px 0 0; font-size: 14px; font-weight: 700; line-height: 1.35; }
+
+		.lead-image {
+			margin: 30px 0 0;
+		}
+
+		.lead-image img {
+			display: block;
+			width: 100%;
+			height: auto;
+			aspect-ratio: 1200 / 630;
+			border: 1px solid var(--ink);
+			filter: saturate(.86) contrast(1.04);
+		}
+
+		.caption {
+			display: flex;
+			justify-content: space-between;
+			gap: 24px;
+			margin-top: 7px;
+			color: var(--muted);
+			font-size: 9px;
+			line-height: 1.45;
+		}
+
+		.article-layout {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) 280px;
+			gap: 52px;
+			padding: 42px 0 60px;
+		}
+
+		.prose {
+			max-width: 790px;
+		}
+
+		.prose > p:first-child::first-letter {
+			float: left;
+			margin: 9px 9px 0 0;
+			color: var(--red);
+			font: 800 77px/.65 "League Spartan", sans-serif;
+		}
+
+		.prose h2 {
+			margin: 42px 0 8px;
+			font: 800 34px/1 "League Spartan", sans-serif;
+			letter-spacing: -.035em;
+		}
+
+		.prose p { margin: 0 0 22px; }
+
+		.pullquote {
+			margin: 38px 0;
+			padding: 22px 0 18px;
+			border-top: 5px solid var(--ink);
+			border-bottom: 1px solid var(--ink);
+			font: 700 clamp(28px, 4vw, 46px)/1.08 "League Spartan", sans-serif;
+			letter-spacing: -.025em;
+		}
+
+		.pullquote::before { color: var(--red); content: '"'; }
+		.pullquote::after { color: var(--red); content: '"'; }
+
+		.side-column { min-width: 0; }
+
+		.game-card {
+			position: sticky;
+			top: 24px;
+			padding: 18px;
+			border-top: 7px solid var(--ink);
+			border-bottom: 2px solid var(--ink);
+			background: rgb(255 255 255 / 22%);
+		}
+
+		.game-card-icon {
+			display: block;
+			width: 112px;
+			height: 112px;
+			margin: 0 auto 18px;
+			image-rendering: auto;
+		}
+
+		.game-card h2 {
+			margin: 0 0 6px;
+			font: 800 32px/1 "League Spartan", sans-serif;
+			text-align: center;
+		}
+
+		.game-card > p {
+			margin: 0 0 18px;
+			color: var(--muted);
+			font-size: 13px;
+			font-style: italic;
+			line-height: 1.45;
+			text-align: center;
+		}
+
+		.facts { margin: 0; border-top: 1px solid var(--rule); }
+		.fact { display: grid; grid-template-columns: 76px 1fr; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--rule); }
+		.fact dt, .fact dd { margin: 0; }
+		.fact-label { color: var(--muted); font-size: 8px; }
+		.fact dd { font-size: 12px; font-weight: 700; line-height: 1.35; }
+
+		.mini-scores { display: grid; gap: 8px; margin-top: 20px; }
+		.mini-score { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; font: 700 11px/1 "League Spartan", sans-serif; text-transform: uppercase; }
+		.mini-score span:last-child { font-family: "DM Mono", monospace; }
+		.mini-score-bar { grid-column: 1 / -1; height: 5px; background: #cbc3af; }
+		.mini-score-bar i { display: block; width: var(--value); height: 100%; background: var(--red); }
+
+		.verdict {
+			margin-top: 36px;
+			padding: 24px 26px;
+			border-left: 9px solid var(--red);
+			background: var(--ink);
+			color: var(--paper-light);
+		}
+
+		.verdict strong {
+			display: block;
+			margin-bottom: 7px;
+			color: #f1d96f;
+			font: 800 14px "League Spartan", sans-serif;
+			letter-spacing: .12em;
+			text-transform: uppercase;
+		}
+
+		.verdict p { margin: 0; font-size: 18px; font-weight: 700; line-height: 1.5; }
+
+		.user-section {
+			padding: 66px 0 76px;
+			background:
+				linear-gradient(rgb(255 255 255 / 2%) 1px, transparent 1px) 0 0 / 100% 24px,
+				var(--blue-black);
+			color: var(--blue-text);
+			box-shadow: inset 0 8px 0 #0e171f;
+		}
+
+		.user-heading {
+			display: grid;
+			grid-template-columns: 1fr auto;
+			align-items: end;
+			gap: 24px;
+			margin-bottom: 28px;
+			padding-bottom: 17px;
+			border-bottom: 1px solid var(--blue-rule);
+		}
+
+		.user-heading h2 {
+			margin: 4px 0 0;
+			color: white;
+			font: 800 clamp(42px, 6vw, 70px)/.9 "League Spartan", sans-serif;
+			letter-spacing: -.045em;
+		}
+
+		.user-heading p {
+			max-width: 430px;
+			margin: 0;
+			color: #9db2c0;
+			font: 12px/1.55 "DM Mono", monospace;
+			text-align: right;
+		}
+
+		.section-kicker { color: #87b9d7; font-size: 10px; }
+
+		.community-score {
+			display: grid;
+			grid-template-columns: auto 1fr auto;
+			align-items: center;
+			gap: 18px;
+			margin-bottom: 18px;
+			padding: 14px 18px;
+			border: 1px solid var(--blue-rule);
+			background: #1c3040;
+			font-family: "DM Mono", monospace;
+		}
+
+		.community-score strong { color: #80c8f4; font: 800 18px "League Spartan", sans-serif; text-transform: uppercase; }
+		.community-score span { color: #9db2c0; font-size: 11px; }
+		.community-score b { color: white; font-size: 23px; }
+
+		.review-grid { display: grid; gap: 15px; }
+
+		.user-review {
+			display: grid;
+			grid-template-columns: 210px 1fr;
+			border: 1px solid #38566d;
+			background: linear-gradient(115deg, #203748, var(--blue-card));
+			box-shadow: 0 5px 14px rgb(0 0 0 / 18%);
+		}
+
+		.review-profile {
+			padding: 18px;
+			border-right: 1px solid #38566d;
+			background: rgb(0 0 0 / 9%);
+			font-family: Arial, sans-serif;
+		}
+
+		.avatar {
+			display: grid;
+			place-items: center;
+			float: left;
+			width: 45px;
+			height: 45px;
+			margin-right: 10px;
+			border: 2px solid #6d91aa;
+			background: #142532;
+			font-size: 22px;
+		}
+
+		.review-profile strong { display: block; overflow: hidden; color: #ccecff; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+		.review-profile span { display: block; margin-top: 3px; color: #839aab; font-size: 10px; line-height: 1.4; }
+
+		.review-body { padding: 15px 18px 13px; }
+		.recommendation { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 9px 12px; background: rgb(11 22 30 / 55%); font-family: Arial, sans-serif; }
+		.thumb { font-size: 28px; line-height: 1; }
+		.recommendation strong { display: block; color: white; font-size: 16px; font-weight: 400; }
+		.recommendation small { display: block; margin-top: 2px; color: #8ba1b1; font-size: 10px; }
+		.recommendation-score { padding: 5px 8px; border: 1px solid currentColor; color: var(--positive); font: 700 11px "DM Mono", monospace; }
+		.negative .recommendation-score { color: var(--negative); }
+		.mixed .recommendation-score { color: #d7bd6c; }
+
+		.review-copy { margin: 15px 2px 13px; color: #d6e2e8; font: 14px/1.58 Arial, sans-serif; }
+		.review-copy p { margin: 0 0 10px; }
+		.review-copy p:last-child { margin-bottom: 0; }
+		.review-footer { display: flex; justify-content: space-between; gap: 15px; padding-top: 9px; border-top: 1px solid #38566d; color: #7891a2; font: 10px Arial, sans-serif; }
+		.review-footer b { color: #a9bdca; font-weight: 400; }
+
+		.disclaimer {
+			margin: 25px 0 0;
+			padding: 12px 15px;
+			border: 1px dashed #52718a;
+			color: #8ba1b1;
+			font: 10px/1.55 "DM Mono", monospace;
+			text-align: center;
+			text-transform: uppercase;
+		}
+
+		.page-footer {
+			display: flex;
+			justify-content: space-between;
+			gap: 20px;
+			padding: 24px 0 35px;
+			color: var(--muted);
+			font: 10px/1.5 "DM Mono", monospace;
+			text-transform: uppercase;
+		}
+
+		.page-footer a { color: var(--red); font-weight: 500; text-underline-offset: 3px; }
+
+		@media (max-width: 820px) {
+			.hero { grid-template-columns: 1fr; }
+			.score-panel { grid-template-columns: auto 1fr; align-items: center; min-height: 0; text-align: left; }
+			.score-panel .score-label { grid-column: 1 / -1; }
+			.score-blurb { margin: 0 0 0 24px; }
+			.article-layout { grid-template-columns: 1fr; }
+			.side-column { order: -1; }
+			.game-card { position: static; display: grid; grid-template-columns: 90px 1fr; gap: 0 18px; align-items: center; }
+			.game-card-icon { grid-row: 1 / 4; width: 90px; height: 90px; margin: 0; }
+			.game-card h2, .game-card > p { text-align: left; }
+			.facts, .mini-scores { grid-column: 1 / -1; }
+			.user-review { grid-template-columns: 1fr; }
+			.review-profile { border-right: 0; border-bottom: 1px solid #38566d; }
+		}
+
+		@media (max-width: 560px) {
+			body { font-size: 16px; }
+			.top-strip-inner { align-items: flex-start; }
+			.top-strip-inner span:last-child { display: none; }
+			.masthead { grid-template-columns: 1fr; gap: 10px; }
+			.issue { display: flex; justify-content: space-between; text-align: left; }
+			.hero { padding-top: 28px; }
+			h1 { font-size: clamp(46px, 15.2vw, 76px); }
+			.score-panel {
+				display: block;
+				width: calc(100% - 6px);
+				margin-inline: 3px;
+				box-shadow: 6px 7px 0 var(--ink);
+				text-align: center;
+				transform: rotate(.6deg);
+			}
+			.score-blurb { margin: 14px auto 0; }
+			.lead-image { margin-top: 24px; }
+			.caption { display: block; }
+			.caption span { display: block; margin-top: 4px; }
+			.article-layout { gap: 30px; padding-top: 30px; }
+			.game-card { grid-template-columns: 70px 1fr; }
+			.game-card-icon { width: 70px; height: 70px; }
+			.user-heading { grid-template-columns: 1fr; }
+			.user-heading p { text-align: left; }
+			.community-score { grid-template-columns: 1fr auto; }
+			.community-score span { grid-column: 1 / -1; grid-row: 2; }
+			.recommendation { grid-template-columns: auto 1fr; }
+			.recommendation-score { grid-column: 1 / -1; text-align: center; }
+			.review-footer, .page-footer { display: block; }
+			.review-footer span, .page-footer span { display: block; margin-top: 5px; }
+		}
+
+		@media (max-width: 380px) {
+			.top-strip-inner,
+			.masthead,
+			.article,
+			.user-roundup,
+			.page-footer { width: calc(100% - 24px); }
+			.issue { font-size: 9px; }
+			.game-card { padding-inline: 14px; }
+			.review-body { padding-inline: 13px; }
+			.recommendation { gap: 9px; padding-inline: 10px; }
+			.verdict { padding-inline: 20px; }
+		}
+
+		@media print {
+			@page { margin: 14mm; }
+			.top-strip { display: none; }
+			body { background: white; font-size: 10pt; }
+			.masthead, .article, .user-roundup, .page-footer { width: 100%; }
+			.hero { grid-template-columns: 1fr 55mm; }
+			.article-layout { grid-template-columns: 1fr 54mm; }
+			.user-section { background: white; color: black; box-shadow: none; break-before: page; }
+			.user-heading h2, .community-score strong, .community-score b, .recommendation strong { color: black; }
+			.user-heading p, .section-kicker, .community-score span, .review-copy, .review-profile span, .review-footer, .disclaimer { color: #333; }
+			.community-score, .user-review, .review-profile, .recommendation { border-color: #555; background: white; box-shadow: none; }
+			.review-profile { border-color: #555; }
+		}
+	</style>
+</head>
+<body>
+	<div class="top-strip">
+		<div class="top-strip-inner">
+			<a href="./">← Play Minesight</a>
+			<span>A fake magazine review of a real puzzle game</span>
+		</div>
+	</div>
+
+	<header class="masthead">
+		<div class="publication">The Gr<i>i</i>d</div>
+		<div class="issue"><span>Issue No. 64</span><br><span>Logic &amp; Leisure</span><br><span>August 2026</span></div>
+	</header>
+
+	<main>
+		<article class="article">
+			<div class="hero">
+				<div>
+					<span class="kicker">Review · Web / PWA</span>
+					<h1>Every square must be proven</h1>
+					<p class="dek">Minesight starts where regular Minesweeper gets good. No opening chores. No coin flips. Just a small board and an annoying need to be right.</p>
+					<p class="byline">Words by Ada Forcing-Move · Illustration by The Actual Game</p>
+				</div>
+				<aside class="score-panel" aria-label="Review score: 8 out of 10">
+					<span class="score-label">The Grid score</span>
+					<div class="score">8<small>/10</small></div>
+					<p class="score-blurb">Eight points for the game. None for the hour I lost to "one more board."</p>
+				</aside>
+			</div>
+
+			<figure class="lead-image">
+				<img src="./social-preview.png" width="1200" height="630" alt="A dark Minesight puzzle board with colorful number clues and a marked mine.">
+				<figcaption class="caption"><span>Exhibit A. The routine clicks are gone. Only the argument remains.</span><span>Image credit · Minesight</span></figcaption>
+			</figure>
+
+			<div class="article-layout">
+				<div class="prose">
+					<p>The best bit of Minesweeper comes late. Most of the empty ground has opened, the flags finally matter, and one stubborn square can be convicted by its neighbours. Minesight begins there. Each 8×8 board arrives partway through the job and asks which covered cells the clues prove safe or mined.</p>
+
+					<p>You do not uncover the answer. You write it down. A left-click puts a check mark on a safe cell. A right-click or long press plants a flag. If the clues do not force either answer, keep your hands off. The controls felt familiar after one turn. Left-click still means "safe" and right-click still means "mine." The game asks you to commit before it shows anything new.</p>
+
+					<p>The tutorial needs three moves. The third is wrong on purpose. It asks you to tap an uncertain cell, kicks the move back and explains why. I like that. Most puzzle tutorials teach buttons. This one teaches restraint, which is the whole game.</p>
+
+					<blockquote class="pullquote">A guess is not a risky move here. It is a category error.</blockquote>
+
+					<h2>The difficulty is in the reasoning</h2>
+
+					<p>The five difficulty names undersell how much the puzzles change. Easy gives you open space and familiar patterns. Medium packs the clues together. Hard makes one deduction depend on another. Expert expects proof by contradiction. Then MIT-style drops a thin scattering of clues on the board and insists that they determine every mine. Calling the last one "MIT-style" is a warning label, not a boast.</p>
+
+					<p>I spent most of my time in Study. It keeps feeding you boards at the chosen difficulty and tracks a separate streak for each level. A bad deduction resets that streak, complete with the old number tumbling off the screen. The Hint button marks the cells you should be able to prove. Notes opens a freehand layer over the board, useful once Expert has you circling hypothetical mines like a detective who has run out of corkboard.</p>
+
+					<p>Daily gives you one puzzle at each difficulty. It also changes the rules of judgment. You can revise the whole board before pressing "Check solution," so a stray click does not spoil the attempt. Finishing all five is less a coffee break than a small evening course in mines. Fortunately, the game records each difficulty on its own.</p>
+
+					<h2>A small grid with long edges</h2>
+
+					<p>Challenge queues twelve puzzles and starts a clock. One mistake stains the current puzzle but does not throw away the entire run. Good. A shared link carries the same puzzle seed and your target time, so a friend can race you without making an account. The mode builds all twelve boards up front, and the waiting message sat on my screen long enough for me to notice it. The delay is minor, but it takes some snap out of the Start button.</p>
+
+					<p>Then there is Board Lab, which is far more serious than the cheerful name suggests. Paint clues and flags onto an 8×8 grid, press Analyze, and Minesight tells you which cells are forced. It also catches contradictions and checks whether the layout has one solution. Most players will open this once. Puzzle setters may never leave.</p>
+
+					<p>Minesight looks like a Sunday puzzle page laid over an old desktop game. The serif headings should clash with the raised grey cells, but they do not. Colored numbers stay readable in both themes. The cells are large enough for a thumb, and the keyboard controls cover the full board. Correct marks make a dry mechanical clack. Solve a puzzle and the game allows itself a little flash of color before getting back to work.</p>
+
+					<p>There is no campaign map, achievement drawer or global leaderboard. Your long-term record consists of Study streaks, today's five boxes and the times you send to friends. That will be too spare for anyone who needs a metagame. The Daily labels also squeeze down to tiny type on a phone. I squinted at "MIT-style" more than I solved it.</p>
+
+					<div class="verdict">
+						<strong>Final word</strong>
+						<p>Minesight takes the five good minutes at the end of a Minesweeper board and makes them the whole game. I kept opening another.</p>
+					</div>
+				</div>
+
+				<aside class="side-column">
+					<div class="game-card">
+						<img class="game-card-icon" src="./icon/icon-512.png" width="512" height="512" alt="Minesight app icon">
+						<h2>Minesight</h2>
+						<p>Short Minesweeper logic puzzles. No guessing required.</p>
+						<dl class="facts">
+							<div class="fact"><dt class="fact-label">Format</dt><dd>Browser game / installable PWA</dd></div>
+							<div class="fact"><dt class="fact-label">Modes</dt><dd>Tutorial, Daily, Study, Challenge, Board Lab</dd></div>
+							<div class="fact"><dt class="fact-label">Best for</dt><dd>Pattern hunters, puzzle setters, people who resent 50/50s</dd></div>
+							<div class="fact"><dt class="fact-label">Price</dt><dd>Free and open source</dd></div>
+						</dl>
+						<div class="mini-scores" aria-label="Category scores">
+							<div class="mini-score"><span>Logic design</span><span>9</span><div class="mini-score-bar"><i style="--value: 90%"></i></div></div>
+							<div class="mini-score"><span>Presentation</span><span>8</span><div class="mini-score-bar"><i style="--value: 80%"></i></div></div>
+							<div class="mini-score"><span>Variety</span><span>8</span><div class="mini-score-bar"><i style="--value: 80%"></i></div></div>
+							<div class="mini-score"><span>Long-term pull</span><span>7</span><div class="mini-score-bar"><i style="--value: 70%"></i></div></div>
+						</div>
+					</div>
+				</aside>
+			</div>
+		</article>
+
+		<section class="user-section" aria-labelledby="users-heading">
+			<div class="user-roundup">
+				<header class="user-heading">
+					<div>
+						<span class="section-kicker">Community desk · definitely normal human beings</span>
+						<h2 id="users-heading">Users are saying…</h2>
+					</div>
+					<p>Three incompatible opinions, collected from people our legal department assures us do not exist.</p>
+				</header>
+
+				<div class="community-score" aria-label="Fictional aggregate review score">
+					<strong>Very logically positive</strong>
+					<span>96% of 2,048 imaginary deductions were valid</span>
+					<b>96%</b>
+				</div>
+
+				<div class="review-grid">
+					<article class="user-review positive">
+						<header class="review-profile">
+							<div class="avatar" aria-hidden="true">🧠</div>
+							<strong>ProofByBreakfast</strong>
+							<span>142 reviews<br>11.7 hrs on record</span>
+						</header>
+						<div class="review-body">
+							<div class="recommendation">
+								<span class="thumb" aria-hidden="true">👍</span>
+								<div><strong>Recommended</strong><small>Posted while reconsidering every tile in the kitchen</small></div>
+								<span class="recommendation-score">10 / 10</span>
+							</div>
+							<div class="review-copy">
+								<p>This is the version of Minesweeper I always wanted. No random opening clicks. No reaching a 50/50 and losing because the coin landed wrong. Every board starts at the interesting part and every answer can be proven.</p>
+								<p>The Notes layer is the feature I did not know I needed. I can draw my bad theories directly on the board, erase them, and pretend the whole episode never happened. I expected five minutes of Minesweeper and emerged suspicious of the logical consistency of my kitchen tiles.</p>
+							</div>
+							<footer class="review-footer"><span>Was this review helpful? <b>Yes 428 · No 3 · Philosophically 17</b></span><span>★ Awarded: Tiny Golden Flag</span></footer>
+						</div>
+					</article>
+
+					<article class="user-review negative">
+						<header class="review-profile">
+							<div class="avatar" aria-hidden="true">💥</div>
+							<strong>ClickFirstReadNever</strong>
+							<span>7 reviews<br>0.8 hrs on record</span>
+						</header>
+						<div class="review-body">
+							<div class="recommendation">
+								<span class="thumb" aria-hidden="true">👎</span>
+								<div><strong>Not recommended</strong><small>Posted after attempting to guess, repeatedly</small></div>
+								<span class="recommendation-score">2 / 10</span>
+							</div>
+							<div class="review-copy">
+								<p>This takes Minesweeper, removes the satisfying part where the board opens in a great empty rush, and turns the remainder into homework. Marking "safe" makes sense, but the square just sits there wearing a check mark like my answer is awaiting peer review.</p>
+								<p>If you touch an ambiguous square, the game rejects the move because apparently I failed to establish a rigorous proof. There is no campaign or global leaderboard. There is only sterner logic. It is polished. I also hate what it wants from me.</p>
+							</div>
+							<footer class="review-footer"><span>Was this review helpful? <b>Yes 61 · No 74 · Cannot be deduced 219</b></span><span>Refund reason: Mathematics</span></footer>
+						</div>
+					</article>
+
+					<article class="user-review mixed">
+						<header class="review-profile">
+							<div class="avatar" aria-hidden="true">⚖️</div>
+							<strong>MostlyAmbiguous</strong>
+							<span>38 reviews<br>4.2 hrs on record</span>
+						</header>
+						<div class="review-body">
+							<div class="recommendation">
+								<span class="thumb" aria-hidden="true">🤷</span>
+								<div><strong>Recommended, conditionally</strong><small>One more clue is required for certainty</small></div>
+								<span class="recommendation-score">7 / 10</span>
+							</div>
+							<div class="review-copy">
+								<p>I had no trouble with the phone controls. Tap means safe, hold means mine. The boards load with the boring part already cleared, and the five difficulty settings do ask for different kinds of reasoning. Daily mode gives the game a reason to stay installed.</p>
+								<p>Still, this is a set of deduction exercises, not traditional Minesweeper. I missed clearing large boards and watching empty regions cascade open. If you play for the patterns, try it. If you play for the sweep, skip it.</p>
+							</div>
+							<footer class="review-footer"><span>Was this review helpful? <b>Yes 188 · No 12 · More data needed 44</b></span><span>Verdict confidence: 72%</span></footer>
+						</div>
+					</article>
+				</div>
+
+				<p class="disclaimer">Editorial disclosure. The publication, writer, community score, usernames, playtimes and quotations on this page are fake. Minesight is real. The mines are real in the usual Minesweeper sense.</p>
+			</div>
+		</section>
+	</main>
+
+	<footer class="page-footer">
+		<div>© 2026 The Grid, a publication that does not exist.</div>
+		<span><a href="./">Stop reading reviews and play Minesight →</a></span>
+	</footer>
+</body>
+</html>
