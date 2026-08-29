@@ -147,6 +147,30 @@ fn read_action() -> std::io::Result<Option<Action>> {
 	}
 }
 
+fn solve_sat(state: &minetacs::GameState) -> Option<minetacs::Deductions> {
+	state.solve_sat(minetacs::Deductions::default())
+}
+
+fn solve_subset(state: &minetacs::GameState) -> Option<minetacs::Deductions> {
+	state.solve_subset(minetacs::Deductions::default())
+}
+
+fn solve_total(state: &minetacs::GameState) -> Option<minetacs::Deductions> {
+	state.solve_total(minetacs::Deductions::default())
+}
+
+fn solve_local(state: &minetacs::GameState) -> Option<minetacs::Deductions> {
+	state.solve_local(minetacs::Deductions::default())
+}
+
+fn solve_overlap(state: &minetacs::GameState) -> Option<minetacs::Deductions> {
+	state.solve_overlap(minetacs::Deductions::default(), false)
+}
+
+fn solve_clue_cover(state: &minetacs::GameState) -> Option<minetacs::Deductions> {
+	state.solve_clue_cover(minetacs::Deductions::default())
+}
+
 fn apply_solver(state: &mut minetacs::GameState, name: &str, solver: impl Fn(&minetacs::GameState) -> Option<minetacs::Deductions>) {
 	let mut deductions = 0;
 	loop {
@@ -199,21 +223,21 @@ fn generate_board() -> minetacs::GameState {
 		let state = minetacs::GameState::random(&mut rng, &gradient);
 		let mut subset_state = state;
 
-		while let Some(deductions) = subset_state.solve_subset() {
+		while let Some(deductions) = solve_subset(&subset_state) {
 			if deductions.is_empty() {
 				break;
 			}
 			subset_state.apply(deductions);
 		}
 
-		if subset_state.solve_sat().is_some_and(|deductions| !deductions.is_empty()) {
+		if solve_sat(&subset_state).is_some_and(|deductions| !deductions.is_empty()) {
 			return state;
 		}
 	}
 }
 
 // fn solve_subset_total(state: &minetacs::GameState) -> minetacs::Result {
-// 	state.solve_subset() | state.solve_total()
+// 	solve_subset(state) | solve_total(state)
 // }
 //
 // fn solver_finishes(mut state: minetacs::GameState, solver: fn(&minetacs::GameState) -> minetacs::Result) -> bool {
@@ -233,7 +257,7 @@ fn generate_board() -> minetacs::GameState {
 fn main() {
 	let mut state = generate_board();
 
-	apply_solver(&mut state, "local", minetacs::GameState::solve_local);
+	apply_solver(&mut state, "local", solve_local);
 
 	println!("Enter `help` to see the available commands.");
 	let result = 'game: loop {
@@ -260,18 +284,18 @@ fn main() {
 					println!("The wand requires an unrevealed, unflagged square.");
 				}
 			}
-			Action::SolveSat => apply_solver(&mut state, "SAT", minetacs::GameState::solve_sat),
-			Action::SolveSubset => apply_solver(&mut state, "subset", minetacs::GameState::solve_subset),
-			Action::SolveTotal => apply_solver(&mut state, "total", minetacs::GameState::solve_total),
-			Action::SolveLocal => apply_solver(&mut state, "local", minetacs::GameState::solve_local),
-			Action::SolveOverlap => apply_solver(&mut state, "clue-overlap", |state| state.solve_overlap(false)),
-			Action::SolveCover => apply_solver(&mut state, "clue-cover", minetacs::GameState::solve_clue_cover),
-			Action::CheckSat => check_solver(&state, "SAT", minetacs::GameState::solve_sat),
-			Action::CheckSubset => check_solver(&state, "subset", minetacs::GameState::solve_subset),
-			Action::CheckTotal => check_solver(&state, "total", minetacs::GameState::solve_total),
-			Action::CheckLocal => check_solver(&state, "local", minetacs::GameState::solve_local),
-			Action::CheckOverlap => check_solver(&state, "clue-overlap", |state| state.solve_overlap(false)),
-			Action::CheckCover => check_solver(&state, "clue-cover", minetacs::GameState::solve_clue_cover),
+			Action::SolveSat => apply_solver(&mut state, "SAT", solve_sat),
+			Action::SolveSubset => apply_solver(&mut state, "subset", solve_subset),
+			Action::SolveTotal => apply_solver(&mut state, "total", solve_total),
+			Action::SolveLocal => apply_solver(&mut state, "local", solve_local),
+			Action::SolveOverlap => apply_solver(&mut state, "clue-overlap", solve_overlap),
+			Action::SolveCover => apply_solver(&mut state, "clue-cover", solve_clue_cover),
+			Action::CheckSat => check_solver(&state, "SAT", solve_sat),
+			Action::CheckSubset => check_solver(&state, "subset", solve_subset),
+			Action::CheckTotal => check_solver(&state, "total", solve_total),
+			Action::CheckLocal => check_solver(&state, "local", solve_local),
+			Action::CheckOverlap => check_solver(&state, "clue-overlap", solve_overlap),
+			Action::CheckCover => check_solver(&state, "clue-cover", solve_clue_cover),
 			Action::Help => println!("{HELP}"),
 			Action::Quit => break 'game None,
 		}

@@ -4,9 +4,9 @@ use std::{fmt, ops};
 mod wasm32;
 
 pub mod puzzle;
+pub mod solve;
 
 mod sat;
-mod solve;
 
 /// Width and height of every generated puzzle.
 pub const BOARD_SIZE: usize = 8;
@@ -282,27 +282,45 @@ impl Gradient {
 	}
 }
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Deductions {
-	pub always_mine: u64,
-	pub always_safe: u64,
+	pub mines: u64,
+	pub safe: u64,
 }
 
 impl Deductions {
 	#[inline]
 	pub const fn is_empty(&self) -> bool {
-		self.always_mine | self.always_safe == 0
+		self.mines | self.safe == 0
 	}
 
 	/// Returns the count of forced mines and safe squares.
 	#[inline]
 	pub const fn count(&self) -> u32 {
-		(self.always_mine | self.always_safe).count_ones()
+		(self.mines | self.safe).count_ones()
+	}
+
+	/// Returns whether these assignments agree with the revealed and flagged cells.
+	#[inline]
+	pub const fn is_compatible_with(&self, revealed: u64, flagged: u64) -> bool {
+		self.mines & self.safe == 0 && self.mines & revealed == 0 && self.safe & flagged == 0
+	}
+
+	fn insert(self, bit: u64, mine: bool) -> Option<Deductions> {
+		if if mine { self.safe } else { self.mines } & bit != 0 {
+			return None;
+		}
+		Some(if mine {
+			Deductions { mines: self.mines | bit, ..self }
+		}
+		else {
+			Deductions { safe: self.safe | bit, ..self }
+		})
 	}
 
 	/// Returns the area of the smallest axis-aligned rectangle containing all forced cells.
 	pub fn area(&self) -> u32 {
-		let forced = self.always_mine | self.always_safe;
+		let forced = self.mines | self.safe;
 		if forced == 0 {
 			return 0;
 		}
@@ -330,8 +348,8 @@ impl ops::BitOr<Deductions> for Deductions {
 	#[inline]
 	fn bitor(self, rhs: Deductions) -> Self::Output {
 		Deductions {
-			always_mine: self.always_mine | rhs.always_mine,
-			always_safe: self.always_safe | rhs.always_safe,
+			mines: self.mines | rhs.mines,
+			safe: self.safe | rhs.safe,
 		}
 	}
 }
@@ -339,16 +357,16 @@ impl ops::BitOr<Deductions> for Deductions {
 impl ops::BitOrAssign<Deductions> for Deductions {
 	#[inline]
 	fn bitor_assign(&mut self, rhs: Deductions) {
-		self.always_mine |= rhs.always_mine;
-		self.always_safe |= rhs.always_safe;
+		self.mines |= rhs.mines;
+		self.safe |= rhs.safe;
 	}
 }
 
 impl From<sat::Forced> for Deductions {
 	fn from(forced: sat::Forced) -> Self {
 		Deductions {
-			always_mine: forced.one,
-			always_safe: forced.zero,
+			mines: forced.one,
+			safe: forced.zero,
 		}
 	}
 }
@@ -364,7 +382,7 @@ const MAX_DERIVED_CONSTRAINTS: usize = 256;
 /// Minesweeper game state.
 ///
 /// The board is a fixed 8x8 for performance reasons.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct GameState {
 	mines: u64,
 	revealed: u64,
@@ -647,8 +665,8 @@ impl GameState {
 	}
 	/// Applies the deductions of a solver to the board.
 	pub fn apply(&mut self, result: Deductions) {
-		self.revealed |= result.always_safe;
-		self.flagged |= result.always_mine;
+		self.revealed |= result.safe;
+		self.flagged |= result.mines;
 	}
 	/// Translates the revealed region and its frontier towards the board's center if possible.
 	///
@@ -686,17 +704,28 @@ impl GameState {
 		return self;
 	}
 	/// Translates visible Minesweeper clues into Boolean cardinality constraints.
+	///
 	/// The returned map preserves clue-cell to constraint-index correspondence for
 	/// solvers whose choice of constraint pairs depends on board geometry.
-	fn constraint_state(&self, clues: u64) -> Option<(sat::State<64>, [usize; 64])> {
+	///
+	/// `known` treats covered cells as fixed without revealing the clues of known-safe cells.
+	///
+	/// Returns `None` if the selected clues, flags, and known cells contradict each other.
+	fn constraint_state(&self, clues: u64, known: Deductions) -> Option<(sat::State<64>, [usize; 64])> {
+		if !known.is_compatible_with(self.revealed, self.flagged) {
+			return None;
+		}
+
 		let mut state = sat::State::EMPTY;
 		let mut indices = [usize::MAX; 64];
+		let fixed_mines = self.flagged | known.mines;
+		let fixed = self.revealed | fixed_mines | known.safe;
 
 		for i in enumerate(clues & self.revealed) {
 			let adjacent = NEIGHBOURS[i];
-			let vars = adjacent & !self.revealed & !self.flagged;
+			let vars = adjacent & !fixed;
 			let clue = (self.mines & adjacent).count_ones();
-			let flagged = (self.flagged & adjacent).count_ones();
+			let flagged = (fixed_mines & adjacent).count_ones();
 			let sum = u8::try_from(clue.checked_sub(flagged)?).ok()?;
 			indices[i] = state.push(vars, sum)?;
 		}
@@ -707,9 +736,12 @@ impl GameState {
 	///
 	/// The board's total mine count is intentionally not used. Callers must apply
 	/// the result and call this method again to continue solving.
-	/// Returns `None` if the visible clues and flags contradict each other.
-	pub fn solve(&self) -> Option<Deductions> {
-		self.solve_sat()
+	///
+	/// `known` treats covered cells as fixed without revealing the clues of known-safe cells.
+	///
+	/// Returns `None` if the visible clues, flags, and known cells contradict each other.
+	pub fn solve(&self, known: Deductions) -> Option<Deductions> {
+		self.solve_sat(known)
 	}
 	/// Computes deductions from a small, temporary set of derived frontier constraints.
 	///
@@ -717,23 +749,31 @@ impl GameState {
 	/// cells. Those constraints participate in the local, subset, and overlap
 	/// rules for at most [`DERIVED_CONSTRAINT_DEPTH`] generations. This models a
 	/// short chain of human-scale inferences without becoming an exact solver.
-	/// Returns `None` if the considered clues and flags contradict each other.
-	pub fn solve_derived(&self) -> Option<Deductions> {
-		let active = self.active();
+	///
+	/// `known` treats covered cells as fixed without revealing the clues of known-safe cells.
+	///
+	/// Returns `None` if the considered clues, flags, and known cells contradict each other.
+	pub fn solve_derived(&self, known: Deductions) -> Option<Deductions> {
+		let active = self.active() & !(known.mines | known.safe);
 		if active == 0 {
 			return Some(Deductions::default());
 		}
 
 		let clues = neighbours(active) & self.revealed;
-		let (state, _) = self.constraint_state(clues)?;
+		let (state, _) = self.constraint_state(clues, known)?;
 		state
 			.solve_derived::<MAX_DERIVED_CONSTRAINTS>(DERIVED_CONSTRAINT_DEPTH)
 			.map(Into::into)
 	}
 	/// Computes exact deductions from the revealed clues using the SAT solver.
-	/// Returns `None` if the visible clues and flags contradict each other.
-	pub fn solve_sat(&self) -> Option<Deductions> {
-		let (state, _) = self.constraint_state(self.revealed)?;
+	///
+	/// The board's total mine count is not included in the SAT constraints.
+	///
+	/// `known` treats covered cells as fixed without revealing the clues of known-safe cells.
+	///
+	/// Returns `None` if the visible clues, flags, and known cells contradict each other.
+	pub fn solve_sat(&self, known: Deductions) -> Option<Deductions> {
+		let (state, _) = self.constraint_state(self.revealed, known)?;
 		state.solve().map(Into::into)
 	}
 }

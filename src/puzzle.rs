@@ -8,6 +8,7 @@ const EASY_SEED_XOR: u64 = 0x0bb26f91154fd183;
 const MEDIUM_SEED_XOR: u64 = 0x34e5c6e769bd2205;
 const HARD_SEED_XOR: u64 = 0x69407bebbe849894;
 const EXPERT_SEED_XOR: u64 = 0x9e370f31b6c6cd90;
+const IMPOSSIBLE_SEED_XOR: u64 = 0xb82a6c19d74305ef;
 const MIT_SEED_XOR: u64 = 0xc925542c28d5e908;
 
 // This mask is part of the public `2.` shared-puzzle format in public/mines.js.
@@ -62,10 +63,10 @@ impl Puzzle {
 			if active & bit != 0 {
 				cell |= CELL_ACTIVE;
 			}
-			if self.forced.always_mine & bit != 0 {
+			if self.forced.mines & bit != 0 {
 				cell |= CELL_FORCED_MINE;
 			}
-			if self.forced.always_safe & bit != 0 {
+			if self.forced.safe & bit != 0 {
 				cell |= CELL_FORCED_SAFE;
 			}
 			cells[i] = cell;
@@ -88,14 +89,14 @@ impl Puzzle {
 }
 
 fn ambiguous_count(state: &GameState, forced: Deductions) -> u32 {
-	(state.active() & !(forced.always_mine | forced.always_safe)).count_ones()
+	(state.active() & !(forced.mines | forced.safe)).count_ones()
 }
 
 fn make_puzzle(seed: u64, attempts: u32, state: GameState, deductions: Deductions) -> Puzzle {
 	let active = state.frontier() & !state.flagged;
 	let forced = Deductions {
-		always_mine: deductions.always_mine & active,
-		always_safe: deductions.always_safe & active,
+		mines: deductions.mines & active,
+		safe: deductions.safe & active,
 	};
 	let ambiguous = ambiguous_count(&state, forced);
 	Puzzle { seed, attempts, state, forced, ambiguous }
@@ -314,6 +315,18 @@ impl Explorer for RandomWalkExplorer {
 /// Returns `None` when the input state is contradictory.
 pub type Solver = fn(&GameState) -> Option<Deductions>;
 
+fn solve_local(state: &GameState) -> Option<Deductions> {
+	state.solve_local(Deductions::default())
+}
+
+fn solve_derived(state: &GameState) -> Option<Deductions> {
+	state.solve_derived(Deductions::default())
+}
+
+fn solve_sat(state: &GameState) -> Option<Deductions> {
+	state.solve_sat(Deductions::default())
+}
+
 fn same_solver(left: Solver, right: Solver) -> bool {
 	std::ptr::fn_addr_eq(left, right)
 }
@@ -353,8 +366,8 @@ impl Criteria {
 			puzzle.forced.area() >= self.min_forced_area &&
 			puzzle.ambiguous >= self.min_ambiguous &&
 			puzzle.state.revealed.count_ones() >= self.min_revealed &&
-			puzzle.forced.always_mine.count_ones() > 0 &&
-			puzzle.forced.always_safe.count_ones() > 0 &&
+			puzzle.forced.mines.count_ones() > 0 &&
+			puzzle.forced.safe.count_ones() > 0 &&
 			(self.allow_empty || !has_empty_revealed(&puzzle.state))
 	}
 }
@@ -427,9 +440,9 @@ pub fn generate_easy(seed: u64, attempts: u32) -> Option<Puzzle> {
 		board: EasyBoard,
 		explorer: InitialRevealExplorer { max_steps: 0, walk_threshold: 0 },
 		solvers: SolverConfig {
-			cleanup: GameState::solve_local,
-			test: |state| Some(state.solve_subset()? | state.solve_overlap(false)? | state.solve_clue_cover()?),
-			reject: GameState::solve_sat,
+			cleanup: solve_local,
+			test: |state| Some(state.solve_subset(Deductions::default())? | state.solve_overlap(Deductions::default(), false)? | state.solve_clue_cover(Deductions::default())?),
+			reject: solve_sat,
 		},
 		criteria: Criteria {
 			min_forced: 4,
@@ -447,9 +460,9 @@ pub fn generate_medium(seed: u64, attempts: u32) -> Option<Puzzle> {
 		board: MediumBoard,
 		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
 		solvers: SolverConfig {
-			cleanup: GameState::solve_local,
-			test: |state| Some(state.solve_subset()? | state.solve_overlap(true)? | state.solve_clue_cover()?),
-			reject: GameState::solve_sat,
+			cleanup: solve_local,
+			test: |state| Some(state.solve_subset(Deductions::default())? | state.solve_overlap(Deductions::default(), true)? | state.solve_clue_cover(Deductions::default())?),
+			reject: solve_sat,
 		},
 		criteria: Criteria {
 			min_forced: 4,
@@ -467,9 +480,9 @@ pub fn generate_hard(seed: u64, attempts: u32) -> Option<Puzzle> {
 		board: Gradient::new(4, 4, Gradient::DENOMINATOR * 35 / 100, Gradient::DENOMINATOR / 16, 0),
 		explorer: InitialRevealExplorer { max_steps: 16, walk_threshold: 48 },
 		solvers: SolverConfig {
-			cleanup: |state| Some(state.solve_local()? | state.solve_overlap(true)? | state.solve_clue_cover()?),
-			test: GameState::solve_derived,
-			reject: GameState::solve_sat,
+			cleanup: |state| Some(state.solve_local(Deductions::default())? | state.solve_overlap(Deductions::default(), true)? | state.solve_clue_cover(Deductions::default())?),
+			test: solve_derived,
+			reject: solve_sat,
 		},
 		criteria: Criteria {
 			min_forced: 4,
@@ -487,9 +500,9 @@ pub fn generate_expert(seed: u64, attempts: u32) -> Option<Puzzle> {
 		board: ExpertBoard,
 		explorer: RandomWalkExplorer { max_steps: 16 },
 		solvers: SolverConfig {
-			cleanup: |state| Some(state.solve_subset()? | state.solve_derived()? | state.solve_clue_cover()?),
-			test: GameState::solve_sat,
-			reject: GameState::solve_sat,
+			cleanup: |state| Some(state.solve_subset(Deductions::default())? | state.solve_derived(Deductions::default())? | state.solve_clue_cover(Deductions::default())?),
+			test: solve_sat,
+			reject: solve_sat,
 		},
 		criteria: Criteria {
 			min_forced: 4,
@@ -501,6 +514,64 @@ pub fn generate_expert(seed: u64, attempts: u32) -> Option<Puzzle> {
 	}.search(seed, EXPERT_SEED_XOR, attempts)
 }
 
+fn impossible_generator() -> Generator<ExpertBoard, RandomWalkExplorer> {
+	Generator {
+		board: ExpertBoard,
+		explorer: RandomWalkExplorer { max_steps: 24 },
+		solvers: SolverConfig {
+			cleanup: |state| Some(state.solve_subset(Deductions::default())? | state.solve_derived(Deductions::default())? | state.solve_clue_cover(Deductions::default())?),
+			test: solve_sat,
+			reject: solve_sat,
+		},
+		criteria: Criteria {
+			min_forced: 2,
+			min_forced_area: 9,
+			min_ambiguous: 4,
+			min_revealed: 0,
+			allow_empty: false,
+		},
+	}
+}
+
+/// Generates the hardest puzzle found in a deterministic attempt series.
+///
+/// Every accepted candidate is evaluated rather than returning the first.
+/// Ranking maximizes the easiest initially available move's assumption depth,
+/// then answer area and answer count. Use the `hunt_impossible` example to search
+/// many series in parallel and revalidate finalists with a larger proof budget.
+pub fn generate_impossible(seed: u64, attempts: u32) -> Option<Puzzle> {
+	let generator = impossible_generator();
+	let config = solve::ProofSearchConfig {
+		max_assumptions: 3,
+		candidate_limit: 64,
+		node_limit: 500_000,
+	};
+	let mut rng = urandom::seeded(seed ^ IMPOSSIBLE_SEED_XOR);
+	let mut best: Option<(Puzzle, (u8, u32, u32))> = None;
+
+	for attempt in 0..attempts {
+		let Some(puzzle) = generator.try_attempt(seed, attempt + 1, &mut rng) else {
+			continue;
+		};
+		let Some(step) = puzzle.state.next_deductions(Deductions::default(), config) else {
+			continue;
+		};
+		let assumption_depth = match step {
+			solve::DeductionStep::Found { assumption_depth, budget_exhausted: false, .. } => assumption_depth,
+			solve::DeductionStep::Unresolved { budget_exhausted: false, .. } => config.max_assumptions.saturating_add(1),
+			solve::DeductionStep::Found { budget_exhausted: true, .. } |
+			solve::DeductionStep::Unresolved { budget_exhausted: true, .. } |
+			solve::DeductionStep::Complete => continue,
+		};
+		let score = (assumption_depth, puzzle.forced.area(), puzzle.forced.count());
+		if best.as_ref().is_none_or(|(_, best_score)| score > *best_score) {
+			best = Some((puzzle, score));
+		}
+	}
+
+	best.map(|(puzzle, _)| puzzle)
+}
+
 const MIT_REFINEMENTS: usize = 100;
 const MIT_POOL_SIZE: usize = 8;
 const MIT_INITIAL_VARIANTS: usize = 4;
@@ -509,11 +580,11 @@ const MIT_MINE_MUTATION_INTERVAL: usize = 8;
 const MIT_OUTSIDE_RESTORE_CHANCE: u32 = 16;
 
 fn mit_deductions(state: &GameState) -> Option<Deductions> {
-	Some(state.solve_local()? | state.solve_overlap(true)? | state.solve_clue_cover()?)
+	Some(state.solve_local(Deductions::default())? | state.solve_overlap(Deductions::default(), true)? | state.solve_clue_cover(Deductions::default())?)
 }
 
 fn mit_is_determined(state: &GameState) -> Option<bool> {
-	Some(state.solve_sat()?.always_mine == state.mines)
+	Some(state.solve_sat(Deductions::default())?.mines == state.mines)
 }
 
 /// Greedily removes each currently visible clue once while preserving the
@@ -690,7 +761,7 @@ pub fn generate_mit(seed: u64, attempts: u32) -> Option<Puzzle> {
 				// Occasionally change the solution itself. Prefer the locally obvious
 				// region, falling back to a random region once simple deductions vanish.
 				let local = mit_deductions(&parent.state)?;
-				let forced = local.always_mine | local.always_safe;
+				let forced = local.mines | local.safe;
 				let rescramble = if forced == 0 { mit_mutation_region(&mut rng) } else { expand(forced) };
 				let candidate_mines = (parent.state.mines & !rescramble) | (random(&mut rng) & rescramble);
 				minimize_mit_layout(candidate_mines, &mut rng)
@@ -705,7 +776,7 @@ pub fn generate_mit(seed: u64, attempts: u32) -> Option<Puzzle> {
 		}
 
 		let best = pool[0].state;
-		let deductions = best.solve_sat()?;
+		let deductions = best.solve_sat(Deductions::default())?;
 		return Some(make_puzzle(seed, attempt + 1, best, deductions));
 	}
 	None

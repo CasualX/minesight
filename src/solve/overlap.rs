@@ -3,23 +3,19 @@ use super::*;
 impl GameState {
 	/// Computes deductions by subtracting overlapping frontier-clue constraints.
 	///
-	/// For constraints `A` and `B`, their shared cells cancel:
-	///
-	/// ```text
-	/// mines(B-only) - mines(A-only) = remaining(B) - remaining(A)
-	/// ```
-	///
-	/// If this difference reaches either possible extreme, every cell in both
-	/// exclusive groups is determined. Only clues touching the current unflagged
-	/// frontier are considered.
-	///
+	/// Shared cells cancel when two constraints are subtracted. If the difference
+	/// reaches either possible extreme, every cell exclusive to either constraint
+	/// is determined. Only clues touching the current unflagged frontier are considered.
 	/// When `extended_vision` is false, each clue is compared with its geometrically
 	/// adjacent clues. When it is true, clues up to two squares apart are compared
 	/// by also searching the neighbours of each neighbouring cell. The extended
 	/// search includes every pair considered by the adjacent-only search.
-	/// Returns `None` if the considered clues and flags contradict each other.
-	pub fn solve_overlap(&self, extended_vision: bool) -> Option<Deductions> {
-		let active = self.active();
+	///
+	/// `known` treats covered cells as fixed without revealing the clues of known-safe cells.
+	///
+	/// Returns `None` if the considered clues, flags, and known cells contradict each other.
+	pub fn solve_overlap(&self, known: Deductions, extended_vision: bool) -> Option<Deductions> {
+		let active = self.active() & !(known.mines | known.safe);
 		if active == 0 {
 			return Some(Deductions::default());
 		}
@@ -27,8 +23,8 @@ impl GameState {
 		let clues = neighbours(active) & self.revealed;
 		let mut result = Deductions::default();
 
-		for a in self.constraints(clues) {
-			let a = a?;
+		for a in self.constraints(clues, known) {
+			let a = a.validate()?;
 			let partners = if extended_vision {
 				neighbours(NEIGHBOURS[a.index])
 			}
@@ -36,8 +32,8 @@ impl GameState {
 				NEIGHBOURS[a.index]
 			};
 
-			for b in self.constraints(partners & clues) {
-				let b = b?;
+			for b in self.constraints(partners & clues, known) {
+				let b = b.validate()?;
 				if b.index <= a.index {
 					continue;
 				}
@@ -45,7 +41,7 @@ impl GameState {
 			}
 		}
 
-		(result.always_mine & result.always_safe == 0).then_some(result)
+		(result.mines & result.safe == 0).then_some(result)
 	}
 }
 
@@ -54,22 +50,22 @@ fn overlap() {
 	let mines_equal_clues = cell(0, 1);
 	let revealed_equal_clues = cell(0, 0) | cell(1, 0);
 	let expected_equal_clues = Deductions {
-		always_mine: 0,
-		always_safe: cell(2, 0) | cell(2, 1),
+		mines: 0,
+		safe: cell(2, 0) | cell(2, 1),
 	};
 
 	let mines_121 = cell(3, 1) | cell(5, 1);
 	let revealed_121 = cell(3, 0) | cell(4, 0) | cell(5, 0);
 	let expected_121 = Deductions {
-		always_mine: mines_121,
-		always_safe: cell(2, 0) | cell(2, 1) | cell(6, 0) | cell(6, 1),
+		mines: mines_121,
+		safe: cell(2, 0) | cell(2, 1) | cell(6, 0) | cell(6, 1),
 	};
 
 	let mines_differing_clues = cell(5, 6) | cell(6, 6) | cell(5, 7);
 	let revealed_differing_clues = cell(6, 7) | cell(7, 7);
 	let expected_differing_clues = Deductions {
-		always_mine: cell(5, 6) | cell(5, 7),
-		always_safe: 0,
+		mines: cell(5, 6) | cell(5, 7),
+		safe: 0,
 	};
 
 	let mut state = GameState {
@@ -80,7 +76,13 @@ fn overlap() {
 	println!("{state}");
 
 	let expected = expected_equal_clues | expected_121 | expected_differing_clues;
-	let actual = state.solve_overlap(false).unwrap();
+	let known = Deductions { mines: cell(5, 1), safe: 0 };
+	assert_eq!(state.solve_overlap(known, false), Some(Deductions {
+		mines: expected.mines & !known.mines,
+		safe: expected.safe,
+	}));
+
+	let actual = state.solve_overlap(Deductions::default(), false).unwrap();
 	state.apply(actual);
 	println!("{state}");
 
@@ -92,15 +94,15 @@ fn extended_overlap() {
 	let mines_left = cell(0, 1);
 	let revealed_left = cell(0, 0) | cell(2, 0);
 	let expected_left = Deductions {
-		always_mine: mines_left,
-		always_safe: cell(3, 0) | cell(2, 1) | cell(3, 1),
+		mines: mines_left,
+		safe: cell(3, 0) | cell(2, 1) | cell(3, 1),
 	};
 
 	let mines_right = cell(7, 6);
 	let revealed_right = cell(5, 7) | cell(7, 7);
 	let expected_right = Deductions {
-		always_mine: mines_right,
-		always_safe: cell(4, 6) | cell(5, 6) | cell(4, 7),
+		mines: mines_right,
+		safe: cell(4, 6) | cell(5, 6) | cell(4, 7),
 	};
 
 	let mut state = GameState {
@@ -111,8 +113,8 @@ fn extended_overlap() {
 	println!("{state}");
 
 	let expected = expected_left | expected_right;
-	assert_eq!(state.solve_overlap(false), Some(Deductions::default()));
-	let actual = state.solve_overlap(true).unwrap();
+	assert_eq!(state.solve_overlap(Deductions::default(), false), Some(Deductions::default()));
+	let actual = state.solve_overlap(Deductions::default(), true).unwrap();
 	state.apply(actual);
 	println!("{state}");
 

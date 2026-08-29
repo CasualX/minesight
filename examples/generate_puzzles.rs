@@ -11,6 +11,7 @@ enum Difficulty {
 	Medium,
 	Hard,
 	Expert,
+	Impossible,
 	Mit,
 }
 
@@ -20,6 +21,7 @@ fn parse_difficulty(value: &str) -> Option<Difficulty> {
 		"medium" => Some(Difficulty::Medium),
 		"hard" => Some(Difficulty::Hard),
 		"expert" => Some(Difficulty::Expert),
+		"impossible" => Some(Difficulty::Impossible),
 		"mit" => Some(Difficulty::Mit),
 		_ => None,
 	}
@@ -41,7 +43,7 @@ fn parse_count(value: &str) -> Result<u64, String> {
 fn parse_args() -> (Difficulty, u64, u32) {
 	let matches = clap::Command::new("generate_puzzles")
 		.about("Generate an HTML gallery of Minesight puzzles")
-		.arg(clap::Arg::new("difficulty").required(true).value_parser(["easy", "medium", "hard", "expert", "mit"]))
+		.arg(clap::Arg::new("difficulty").required(true).value_parser(["easy", "medium", "hard", "expert", "impossible", "mit"]))
 		.arg(clap::Arg::new("count").short('n').long("count").value_name("COUNT").value_parser(parse_count))
 		.arg(clap::Arg::new("attempts").long("attempts").value_name("ATTEMPTS").default_value("1000").value_parser(clap::value_parser!(u32)))
 		.arg(clap::Arg::new("positional_count").index(2).value_name("COUNT").value_parser(parse_count).conflicts_with("count"))
@@ -60,6 +62,7 @@ impl Difficulty {
 			Difficulty::Medium => minetacs::puzzle::generate_medium(seed, attempts),
 			Difficulty::Hard => minetacs::puzzle::generate_hard(seed, attempts),
 			Difficulty::Expert => minetacs::puzzle::generate_expert(seed, attempts),
+			Difficulty::Impossible => minetacs::puzzle::generate_impossible(seed, attempts),
 			Difficulty::Mit => minetacs::puzzle::generate_mit(seed, attempts),
 		}
 	}
@@ -71,6 +74,7 @@ fn title(difficulty: Difficulty) -> &'static str {
 		Difficulty::Medium => "Medium puzzles",
 		Difficulty::Hard => "Hard puzzles",
 		Difficulty::Expert => "Expert puzzles",
+		Difficulty::Impossible => "Impossible puzzles",
 		Difficulty::Mit => "MIT-style puzzles",
 	}
 }
@@ -81,6 +85,7 @@ fn intro(difficulty: Difficulty) -> &'static str {
 		Difficulty::Medium => "Recognize patterns on a denser board where finding squares that must be safe or contain a mine requires more scanning. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Hard => "Follow deeper chains of logic to find squares that must be safe or contain a mine. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Expert => "Find squares that must be safe or contain a mine in a broader, more tangled position where several clues and possibilities must be tracked together. Highlighted squares show the answers, while faded squares are outside the puzzle.",
+		Difficulty::Impossible => "Use contradiction and nested case splits to find the least approachable forced moves from a best-of candidate search. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Mit => "Determine the unique mine layout from a minimal set of clues. Every active square has one logically forced answer.",
 	}
 }
@@ -110,12 +115,12 @@ fn write_cell(out: &mut impl Write, puzzle: &minetacs::puzzle::Puzzle, cell: u8,
 	}
 
 	let frontier = state.frontier();
-	if puzzle.forced.always_mine & bit != 0 {
+	if puzzle.forced.mines & bit != 0 {
 		return write!(out, r#"<span class="cell covered known known-mine" title="mine to find"><span class="marker">⚑</span></span>"#);
 	}
 
 	let truth = hidden_truth(state, cell, x, y);
-	if puzzle.forced.always_safe & bit != 0 {
+	if puzzle.forced.safe & bit != 0 {
 		return write!(out, r#"<span class="cell covered known known-safe" title="safe square to find">{truth}<span class="marker">✓</span></span>"#);
 	}
 
@@ -134,7 +139,7 @@ fn write_puzzle(out: &mut impl Write, index: usize, puzzle: &minetacs::puzzle::P
 	let payload = puzzle.encode();
 
 	writeln!(out, r#"<article class="puzzle">"#)?;
-	writeln!(out, r#"<header><strong>#{index}</strong><span>seed {}, attempts {}</span><a href="{PUBLIC_URL}?p={payload}" target="_blank" rel="noopener">play</a></header>"#, puzzle.seed, puzzle.attempts)?;
+	writeln!(out, r#"<header><strong>#{index}</strong><span>seed {}, attempts {}</span><a href="{PUBLIC_URL}#/puzzle/{payload}" target="_blank" rel="noopener">play</a></header>"#, puzzle.seed, puzzle.attempts)?;
 	writeln!(out, r#"<div class="board" role="img" aria-label="Puzzle {index}">"#)?;
 	for y in 0..8 {
 		for x in 0..8 {
@@ -214,10 +219,7 @@ h1 {{ margin: 0 0 8px; font: 700 28px/1.2 system-ui, sans-serif; }}
 
 	let mut found = 0;
 	let mut exhausted = 0u64;
-	let puzzles: Vec<_> = (0..count)
-		.into_par_iter()
-		.map(|seed| (seed, difficulty.generate(seed, attempts)))
-		.collect();
+	let puzzles: Vec<_> = (0..count).into_par_iter().map(|seed| (seed, difficulty.generate(seed, attempts))).collect();
 
 	for (seed, puzzle) in puzzles {
 		match puzzle {
