@@ -95,8 +95,13 @@
 					<span><strong>Challenge</strong><small>Race through a fixed set of puzzles, then invite someone to beat your time.</small></span>
 					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
 				</button>
-				<button type="button" class="home-mode home-mode-editor" @click="switchMode('editor')">
+				<button type="button" class="home-mode" @click="switchMode('traditional')">
 					<span class="home-mode-number" aria-hidden="true">04</span>
+					<span><strong>Traditional</strong><small>Play a classic 8×8 game of no-guess Minesweeper.</small></span>
+					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
+				</button>
+				<button type="button" class="home-mode home-mode-editor" @click="switchMode('editor')">
+					<span class="home-mode-number" aria-hidden="true">05</span>
 					<span><strong>Board lab</strong><small>Create an 8×8 position, test its clues, and find every forced cell.</small></span>
 					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
 				</button>
@@ -318,7 +323,7 @@
 		</section>
 		<section class="board-card" x-show="showBoard" :class="boardResultClass">
 			<div class="board-wrap">
-				<div class="minefield-shell" :class="{ 'scratch-mode': scratchActive }" :aria-busy="boardPreparing">
+				<div class="minefield-shell" :class="{ 'scratch-mode': scratchActive }" :aria-busy="boardPreparing || traditionalBusy">
 					<div class="minefield" role="group" :aria-label="boardAriaLabel" :style="minefieldStyle">
 						<template x-for="cell in cells" :key="cell.key">
 							<button
@@ -429,7 +434,7 @@
 					<button
 						type="button"
 						class="share-puzzle"
-						x-show="!scratchActive"
+						x-show="!scratchActive && mode !== 'traditional'"
 						:disabled="sharePuzzleDisabled"
 						:aria-label="shareButtonLabel"
 						:title="shareButtonLabel"
@@ -493,6 +498,11 @@
 			<div class="board-actions daily-actions">
 				<button type="button" class="secondary" :disabled="boardPreparing || !dailyBoardReady" @click="clearDailyBoard()">Clear marks</button>
 				<button type="button" class="primary" :disabled="boardPreparing || !dailyBoardReady || result === 'cleared'" @click="checkDailySolution()" x-text="result === 'cleared' ? 'Solved' : 'Check solution'"></button>
+			</div>
+		</section>
+		<section class="game-controls" x-show="mode === 'traditional'" aria-label="Traditional controls">
+			<div class="board-actions puzzle-actions">
+				<button type="button" class="primary" :disabled="traditionalBusy" @click="newTraditionalGame()">New game</button>
 			</div>
 		</section>
 		<section class="game-controls" x-show="mode === 'tutorial'" aria-label="Introduction controls">

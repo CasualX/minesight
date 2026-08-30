@@ -12,6 +12,124 @@ const EXPERT_SEED_XOR: u64 = 0x9e370f31b6c6cd90;
 const IMPOSSIBLE_SEED_XOR: u64 = 0xb82a6c19d74305ef;
 const MIT_SEED_XOR: u64 = 0xc925542c28d5e908;
 
+fn traditional_frontier(revealed: u64, covered: u64, forced_mines: u64) -> u64 {
+	let mut frontier = neighbours(revealed) & covered;
+	if frontier & !forced_mines != 0 {
+		return frontier;
+	}
+	let mut barrier = frontier & forced_mines;
+	while barrier != 0 {
+		let next = neighbours(barrier) & covered & !frontier;
+		frontier |= next;
+		if next & !forced_mines != 0 {
+			break;
+		}
+		barrier = next & forced_mines;
+	}
+	frontier
+}
+
+fn random_traditional_mines<R: urandom::Rng>(cells: u64, rng: &mut urandom::Random<R>) -> u64 {
+	let mut mines = 0;
+	for index in enumerate(cells) {
+		if rng.chance_ratio(3u32, 10u32) {
+			mines |= 1u64 << index;
+		}
+	}
+	mines
+}
+
+fn traditional_constraints(revealed: u64, clues: &[u8; BOARD_CELLS]) -> Option<(sat::State<64>, sat::Forced, u64)> {
+	let covered = !revealed;
+	let mut state: sat::State<64> = sat::State::EMPTY;
+	for clue_index in enumerate(revealed) {
+		let clue = clues[clue_index];
+		if clue > 8 {
+			return None;
+		}
+		let variables = NEIGHBOURS[clue_index] & covered;
+		state.push(variables, clue)?;
+	}
+	let forced = state.solve()?;
+	let frontier = traditional_frontier(revealed, covered, forced.one);
+	Some((state, forced, frontier))
+}
+
+/// Chooses the mine layout on which one traditional Minesweeper move will play.
+///
+/// Covered cells are deliberately unconstrained by the previous hidden layout.
+/// The returned layout preserves every visible clue and makes a logical reveal
+/// safe. An unproved reveal instead receives a mine, so the caller can install
+/// the layout and apply the move using ordinary Minesweeper rules. Clicking a
+/// revealed clue represents a chord and uses `flagged` to find its targets.
+pub fn traditional_move(
+	revealed: u64,
+	flagged: u64,
+	clues: &[u8; BOARD_CELLS],
+	clicked: u8,
+	entropy: u64,
+) -> Option<(u64, u64)> {
+	if clicked as usize >= BOARD_CELLS {
+		return None;
+	}
+	let covered = !revealed;
+	let clicked_bit = 1u64 << clicked;
+	if flagged & revealed != 0 {
+		return None;
+	}
+	let move_cells = if revealed & clicked_bit != 0 {
+		let neighbours = NEIGHBOURS[clicked as usize];
+		if (flagged & neighbours).count_ones() as u8 != clues[clicked as usize] {
+			return None;
+		}
+		neighbours & covered & !flagged
+	}
+	else {
+		if flagged & clicked_bit != 0 {
+			return None;
+		}
+		clicked_bit
+	};
+	if move_cells == 0 {
+		return None;
+	}
+	let mut rng = urandom::seeded(entropy);
+	if revealed == 0 {
+		return Some((random_traditional_mines(covered & !move_cells, &mut rng), 0));
+	}
+
+	// Enumerate only the clue-constrained variables and reservoir-sample one valid
+	// frontier assignment uniformly. The unconstrained exterior never enters SAT:
+	// each of its cells receives an independent mine roll instead.
+	let (state, forced, frontier) = traditional_constraints(revealed, clues)?;
+	let chord = revealed & clicked_bit != 0;
+	let safe = if chord {
+		move_cells & !forced.zero == 0
+	}
+	else if forced.zero != 0 {
+		forced.zero & move_cells != 0
+	}
+	else {
+		(frontier == 0 || frontier & move_cells != 0) && forced.one & move_cells == 0
+	};
+	let losing_candidates = move_cells & !forced.zero;
+	let losing_cell = if safe { 0 } else { losing_candidates & losing_candidates.wrapping_neg() };
+	if !safe && losing_cell == 0 {
+		return None;
+	}
+	let frontier_variables = state.variables();
+	let fixed = sat::Forced {
+		one: losing_cell & frontier_variables,
+		zero: if safe { move_cells & frontier_variables } else { 0 },
+	};
+	let outside = covered & !frontier_variables;
+	let outside_one = losing_cell & outside;
+	let outside_zero = if safe { move_cells & outside } else { 0 };
+	let frontier_mines = state.random_solution(fixed, &mut rng)?;
+	let exterior_mines = random_traditional_mines(outside & !outside_one & !outside_zero, &mut rng);
+	Some((frontier_mines | exterior_mines | outside_one, forced.zero))
+}
+
 // This mask is part of the public `2.` shared-puzzle format in public/mines.js.
 // It only obscures the answer pattern at a glance; it is not encryption.
 const PUZZLE_MASK: [u8; BOARD_CELLS] = {

@@ -1,4 +1,4 @@
-use super::{puzzle::*, sat};
+use super::{BOARD_CELLS, CELL_FLAG, CELL_MINE, CELL_REVEALED, NEIGHBOURS, puzzle::*, sat};
 use std::alloc;
 
 const MAX_SOLVE_WIDTH: u8 = 8;
@@ -46,6 +46,8 @@ unsafe extern "C" {
 	fn resultError(ptr: *const u8, len: usize);
 
 	fn resultSolve(ptr: *const SolveEntry, len: usize);
+
+	fn resultTraditionalMove(mines_low: u32, mines_high: u32, forced_safe_low: u32, forced_safe_high: u32);
 }
 
 #[repr(C)]
@@ -207,6 +209,60 @@ pub unsafe extern "C" fn solve_wasm(pointer: *const u8) -> bool {
 	};
 	unsafe {
 		resultSolve(result.as_ptr(), result.len());
+	}
+	true
+}
+
+/// Resolves one traditional Minesweeper move from the public 64-byte `CELL_*`
+/// board state. Rust retains no state between calls and returns the replacement
+/// mine layout together with the safe cells proved before the move.
+#[unsafe(export_name = "traditionalMove")]
+pub unsafe extern "C" fn traditional_move_wasm(pointer: *const u8, clicked: u8, seed_low: u32, seed_high: u32) -> bool {
+	if pointer.is_null() {
+		error(&"traditionalMove received a null board");
+		return false;
+	}
+	if clicked as usize >= BOARD_CELLS {
+		error(&"traditionalMove received an invalid clicked cell");
+		return false;
+	}
+	let cells = unsafe { std::slice::from_raw_parts(pointer, BOARD_CELLS) };
+	let allowed = CELL_MINE | CELL_REVEALED | CELL_FLAG;
+	if cells.iter().any(|&cell| cell & !allowed != 0 || cell & (CELL_REVEALED | CELL_FLAG) == (CELL_REVEALED | CELL_FLAG)) {
+		error(&"traditionalMove received an invalid board state");
+		return false;
+	}
+	let mut clues = [0u8; BOARD_CELLS];
+	let mut previous_mines = 0u64;
+	let mut revealed = 0u64;
+	let mut flagged = 0u64;
+	for (index, &value) in cells.iter().enumerate() {
+		let bit = 1u64 << index;
+		if value & CELL_MINE != 0 {
+			previous_mines |= bit;
+		}
+		if value & CELL_REVEALED != 0 {
+			revealed |= 1u64 << index;
+		}
+		if value & CELL_FLAG != 0 {
+			flagged |= bit;
+		}
+	}
+	for index in 0..BOARD_CELLS {
+		clues[index] = (previous_mines & NEIGHBOURS[index]).count_ones() as u8;
+	}
+	let entropy = u64::from(seed_low) | u64::from(seed_high) << 32;
+	let Some((mines, forced_safe)) = traditional_move(revealed, flagged, &clues, clicked, entropy) else {
+		error(&"traditionalMove board has no compatible mine layout");
+		return false;
+	};
+	unsafe {
+		resultTraditionalMove(
+			mines as u32,
+			(mines >> 32) as u32,
+			forced_safe as u32,
+			(forced_safe >> 32) as u32,
+		);
 	}
 	true
 }

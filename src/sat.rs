@@ -109,6 +109,12 @@ impl<const N: usize> State<N> {
 		all: 0,
 	};
 
+	/// Returns every variable mentioned by at least one constraint.
+	#[inline]
+	pub const fn variables(&self) -> u64 {
+		self.all
+	}
+
 	#[inline]
 	fn constraint(&self, index: usize) -> Constraint {
 		Constraint { vars: self.vars[index], sum: self.sum[index] }
@@ -193,6 +199,38 @@ impl<const N: usize> State<N> {
 			values: if likely { asn.values } else { asn.values | var },
 			assigned: asn.assigned | var,
 		})
+	}
+
+	fn for_each_solution(&self, asn: Asn, callback: &mut impl FnMut(u64)) {
+		let Some(asn) = self.propagate(asn) else {
+			return;
+		};
+		let (var, _) = self.next(asn);
+		if var == 0 {
+			callback(asn.values & self.all);
+			return;
+		}
+		self.for_each_solution(Asn { assigned: asn.assigned | var, values: asn.values }, callback);
+		self.for_each_solution(Asn { assigned: asn.assigned | var, values: asn.values | var }, callback);
+	}
+
+	/// Enumerates every satisfying assignment and chooses one uniformly using
+	/// reservoir sampling. This is intended for bounded
+	/// Minesweeper frontiers, not unconstrained whole-board model spaces.
+	pub fn random_solution<R: urandom::Rng>(&self, fixed: Forced, rng: &mut urandom::Random<R>) -> Option<u64> {
+		let assigned = fixed.one | fixed.zero;
+		if fixed.one & fixed.zero != 0 || assigned & !self.all != 0 {
+			return None;
+		}
+		let mut selected = None;
+		let mut accepted = 0u64;
+		self.for_each_solution(Asn { assigned, values: fixed.one }, &mut |solution| {
+			accepted += 1;
+			if rng.uniform(0..accepted) == 0 {
+				selected = Some(solution);
+			}
+		});
+		selected
 	}
 
 	/// Finds every variable fixed in all satisfying assignments.
@@ -302,6 +340,20 @@ fn exact_solver() {
 	assert!(state.push(0b111, 2).is_some());
 	assert!(state.push(0b110, 1).is_some());
 	assert_eq!(state.solve(), Some(Forced { one: 0b101, zero: 0b010 }));
+}
+
+#[test]
+fn random_solution_honors_fixed_values() {
+	let mut state: State<2> = State::EMPTY;
+	assert!(state.push(0b1111, 2).is_some());
+	assert!(state.push(0b0011, 1).is_some());
+	let mut rng = urandom::seeded(42);
+	let solution = state
+		.random_solution(Forced { one: 0b0001, zero: 0b0100 }, &mut rng)
+		.unwrap();
+	assert_eq!(solution & 0b0011, 0b0001);
+	assert_eq!(solution & 0b1100, 0b1000);
+	assert_eq!(state.random_solution(Forced { one: 0b0011, zero: 0 }, &mut rng), None);
 }
 
 #[test]

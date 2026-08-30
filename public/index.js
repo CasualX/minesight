@@ -5,6 +5,7 @@ import { feedbackEffects } from './feedback.js';
 import { gameSounds } from './sounds.js';
 
 const BOARD_SIZE = 8;
+const TRADITIONAL_RULES_VERSION = 2;
 const PUZZLE_ATTEMPTS = 1000;
 const CELL_HOLD_MS = 450;
 const CELL_GESTURE_MOVE_TOLERANCE = 10;
@@ -317,6 +318,7 @@ function resolveUrlGame(url) {
 
 	if (path === '/tutorial') return { mode: 'tutorial' };
 	if (path === '/editor') return { mode: 'editor' };
+	if (path === '/traditional') return { mode: 'traditional' };
 	return { mode: 'home' };
 }
 
@@ -465,6 +467,8 @@ let wasm;
 let generatedPuzzle;
 /** @type {{ x: number, y: number, mine: boolean }[] | undefined} */
 let solveResult;
+/** @type {{ mines: bigint, forcedSafe: bigint } | undefined} */
+let traditionalMoveResult;
 /** @type {Error | undefined} */
 let wasmError;
 /** @type {Promise<void> | undefined} */
@@ -492,6 +496,15 @@ async function loadPuzzleGenerator() {
 					y: entries[index * 3 + 1],
 					mine: entries[index * 3 + 2] !== 0,
 				}));
+			},
+			/** @param {number} minesLow @param {number} minesHigh @param {number} forcedSafeLow @param {number} forcedSafeHigh */
+			resultTraditionalMove(minesLow, minesHigh, forcedSafeLow, forcedSafeHigh) {
+				/** @param {number} low @param {number} high */
+				let mask = (low, high) => BigInt(low >>> 0) | BigInt(high >>> 0) << 32n;
+				traditionalMoveResult = {
+					mines: mask(minesLow, minesHigh),
+					forcedSafe: mask(forcedSafeLow, forcedSafeHigh),
+				};
 			},
 			/**
 			 * @param {number} seedLow
@@ -577,6 +590,53 @@ export async function solveBoard(width, height, cells) {
 	if (!solved) throw new Error('wasm SAT solver failed without returning an error');
 	if (!solveResult) throw new Error('wasm SAT solver returned without a result');
 	return solveResult;
+}
+
+/**
+ * Sends the visible JavaScript-held game state through the Rust SAT engine and
+ * returns a compatible hidden layout and the safe cells proved before one
+ * traditional-mode click.
+ * @param {MineField} field
+ * @param {number} clickedIndex
+ * @param {bigint} seed
+ */
+export async function resolveTraditionalMove(field, clickedIndex, seed) {
+	if (field.width !== BOARD_SIZE || field.height !== BOARD_SIZE) throw new Error('traditional mode requires an 8 by 8 board');
+	if (!Number.isInteger(clickedIndex) || clickedIndex < 0 || clickedIndex >= BOARD_SIZE * BOARD_SIZE) {
+		throw new Error('clicked cell is outside the traditional board');
+	}
+	if (seed < 0n || seed > MAX_CHALLENGE_SEED) throw new Error('traditional seed must be an unsigned 64-bit integer');
+
+	await ensurePuzzleGenerator();
+	let allocate = wasm?.allocate;
+	let free = wasm?.free;
+	let traditionalMove = wasm?.traditionalMove;
+	if (typeof allocate !== 'function' || typeof free !== 'function' || typeof traditionalMove !== 'function' || !(wasm?.memory instanceof WebAssembly.Memory)) {
+		throw new Error('the Rust traditional solver is not loaded');
+	}
+
+	let cells = field.state;
+	wasmError = undefined;
+	traditionalMoveResult = undefined;
+	let pointer = Number(allocate(cells.length, 1));
+	if (wasmError) throw wasmError;
+	if (pointer === 0) throw new Error('wasm failed to allocate a traditional board');
+	let resolved;
+	try {
+		new Uint8Array(wasm.memory.buffer, pointer, cells.length).set(cells);
+		resolved = Boolean(traditionalMove(
+			pointer,
+			clickedIndex,
+			Number(seed & 0xffff_ffffn),
+			Number(seed >> 32n),
+		));
+	}
+	finally {
+		free(pointer, cells.length, 1);
+	}
+	if (wasmError) throw wasmError;
+	if (!resolved || traditionalMoveResult === undefined) throw new Error('Rust could not reshape this board');
+	return traditionalMoveResult;
 }
 
 async function ensurePuzzleGenerator() {
@@ -671,6 +731,20 @@ function randomChallengeSeed() {
 	return BigInt(entropy[0]) | BigInt(entropy[1]) << 32n;
 }
 
+/** @param {bigint} seed */
+function nextTraditionalSeed(seed) {
+	return BigInt.asUintN(64, seed + 0x9e3779b97f4a7c15n);
+}
+
+/** @param {MineField} field @param {bigint} mines */
+function fieldWithMineLayout(field, mines) {
+	let state = Uint8Array.from(field.state, (cell, index) => {
+		let visible = cell & (MineField.REVEALED | MineField.FLAG);
+		return visible | ((mines & (1n << BigInt(index))) !== 0n ? MineField.MINE : 0);
+	});
+	return new MineField(field.width, field.height, state);
+}
+
 /**
  * Generates a puzzle from a deterministic sequence beginning at `seed`.
  *
@@ -745,7 +819,7 @@ function sortChallengeTiers(puzzles, route) {
 	}
 }
 
-/** @typedef {'home' | 'tutorial' | 'study' | 'daily' | 'challenge' | 'puzzle' | 'editor'} GameMode */
+/** @typedef {'home' | 'tutorial' | 'study' | 'daily' | 'challenge' | 'puzzle' | 'editor' | 'traditional'} GameMode */
 /** @typedef {'playing' | 'cleared' | 'failed' | 'gave-up' | 'complete'} GameResult */
 /** @typedef {'cleared' | 'failed'} ChallengeResult */
 /** @typedef {{ field: MineField, seed: bigint, result: GameResult, hintUsed: boolean, streak: number, ready: boolean }} StudyState */
@@ -754,7 +828,7 @@ function sortChallengeTiers(puzzles, route) {
 /** @param {unknown} value @returns {GameMode} */
 function parseGameMode(value) {
 	if (value === 'tutorial' || value === 'study' || value === 'daily'
-		|| value === 'challenge' || value === 'puzzle' || value === 'editor') return value;
+		|| value === 'challenge' || value === 'puzzle' || value === 'editor' || value === 'traditional') return value;
 	return 'home';
 }
 
@@ -835,6 +909,22 @@ function createMinesight() {
 			return [key, undefined];
 		}
 	}));
+	let traditionalField = new MineField(BOARD_SIZE, BOARD_SIZE);
+	let traditionalSeed = randomChallengeSeed();
+	/** @type {GameResult} */
+	let traditionalResult = 'playing';
+	try {
+		if (
+			stored.traditional?.rulesVersion === TRADITIONAL_RULES_VERSION &&
+			Array.isArray(stored.traditional.cells) &&
+			stored.traditional.cells.length === BOARD_SIZE * BOARD_SIZE
+		) {
+			traditionalField = new MineField(BOARD_SIZE, BOARD_SIZE, Uint8Array.from(stored.traditional.cells));
+			traditionalSeed = BigInt(stored.traditional.seed);
+			if (['playing', 'cleared', 'failed'].includes(stored.traditional.result)) traditionalResult = stored.traditional.result;
+		}
+	}
+	catch {}
 	if (stored?.daily?.lastSeenDate !== today) saveMinesightData('daily', storedDaily);
 	return {
 		mode: parseGameMode(urlGame.mode),
@@ -851,6 +941,11 @@ function createMinesight() {
 		actionsInverted: false,
 		/** @type {GameResult} */
 		result: 'playing',
+		traditionalSeed,
+		traditionalBusy: false,
+		traditionalMoveId: 0,
+		traditionalField,
+		traditionalResult,
 		studyDifficultyKey,
 		dailyDate: today,
 		dailyDifficultyKey,
@@ -1007,6 +1102,13 @@ function createMinesight() {
 				this.openDailyDifficulty(this.dailyDifficultyKey, false);
 				return;
 			}
+			if (this.mode === 'traditional') {
+				this.field = traditionalField;
+				this.result = traditionalResult;
+				this.boardNumber += 1;
+				this.revision += 1;
+				return;
+			}
 			if (this.mode === 'home' || this.mode === 'editor') return;
 			if (!this.restoreStudyState() && !this.engineError) this.newStudyBoard();
 		},
@@ -1050,6 +1152,7 @@ function createMinesight() {
 			if (this.mode === 'tutorial') return 'How to play';
 			if (this.mode === 'puzzle') return 'Puzzle';
 			if (this.mode === 'editor') return 'Board lab';
+			if (this.mode === 'traditional') return 'Traditional';
 			return this.mode[0].toUpperCase() + this.mode.slice(1);
 		},
 
@@ -1218,6 +1321,7 @@ function createMinesight() {
 
 		get boardAriaLabel() {
 			if (this.mode === 'tutorial') return 'Introduction minefield';
+			if (this.mode === 'traditional') return 'Traditional 8 by 8 minefield';
 			return this.mode === 'puzzle' ? 'Puzzle minefield' : `${this.currentDifficulty.label} minefield`;
 		},
 
@@ -1226,20 +1330,25 @@ function createMinesight() {
 		},
 
 		get sharePuzzleDisabled() {
+			if (this.mode === 'traditional') return true;
 			if (this.mode === 'challenge') return this.challengeShareDisabled;
 			return this.boardPreparing || (this.mode === 'study' && !this.studyBoardReady) || (this.mode === 'daily' && !this.dailyBoardReady);
 		},
 
 		get showPuzzleStatus() {
-			return this.mode === 'study' || this.mode === 'puzzle' || this.mode === 'daily';
+			return this.mode === 'study' || this.mode === 'puzzle' || this.mode === 'daily' || this.mode === 'traditional';
 		},
 
 		get statusTitle() {
+			if (this.mode === 'traditional' && this.result === 'playing') return 'Traditional Minesweeper';
 			if (this.mode === 'daily' && this.result === 'playing' && this.dailyCheckMessage) return 'Solution checked';
 			return this.result === 'playing' ? 'What can you prove?' : this.resultTitle;
 		},
 
 		get statusMessage() {
+			if (this.mode === 'traditional' && this.result === 'playing') {
+				return 'Reveal safe squares, flag mines, and use the numbered clues. You never need to guess.';
+			}
 			if (this.mode === 'daily' && this.result === 'playing') {
 				return this.dailyCheckMessage || 'Mark the squares, then check your solution when you are ready.';
 			}
@@ -1371,6 +1480,7 @@ function createMinesight() {
 
 		get inputHelp() {
 			if (this.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
+			if (this.mode === 'traditional') return 'Tap or left-click to reveal. Long-press or right-click to flag. Select a revealed clue to reveal safe neighbours or flag mines.';
 			return `Tap or left-click to mark ${this.tapActionLabel}. Long-press or right-click to mark ${this.holdActionLabel}.`;
 		},
 
@@ -1923,12 +2033,15 @@ function createMinesight() {
 					let flagged = this.field.isFlagged(x, y);
 					let markedMine = this.field.isMarkedMine(x, y);
 					let markedSafe = this.field.isMarkedSafe(x, y);
-					let active = this.field.isActive(x, y);
-					let incorrect = this.field.isIncorrect(x, y) || index === this.incorrectCellIndex;
+					let active = this.mode === 'traditional' ? !revealed : this.field.isActive(x, y);
+					let incorrect = this.field.isIncorrect(x, y) || index === this.incorrectCellIndex
+						|| (this.mode === 'traditional' && this.result === 'failed' && mine && revealed);
 					let solutionMine = showSolution && this.field.isForcedMine(x, y);
-					let solutionSafe = showSolution && this.field.isForcedSafe(x, y);
+					let solutionSafe = (showSolution || (this.mode === 'traditional' && this.result === 'failed'))
+						&& this.field.isForcedSafe(x, y);
 					let clue = this.field.getClue(x, y);
-					let showMine = !this.field.isPuzzle && mine && (revealed || this.result === 'failed');
+					let showMine = this.mode !== 'traditional' && !this.field.isPuzzle && mine
+						&& (revealed || this.result === 'failed');
 					let hinted = showHints && (
 						(this.field.isForcedSafe(x, y) && !markedSafe) ||
 						(this.field.isForcedMine(x, y) && !markedMine)
@@ -1936,7 +2049,7 @@ function createMinesight() {
 					let classNames = [];
 					if (revealed) classNames.push('revealed');
 					if (flagged) classNames.push('flagged');
-					if (markedMine || solutionMine) classNames.push('marked-mine');
+					if (markedMine || solutionMine || (this.mode === 'traditional' && flagged)) classNames.push('marked-mine');
 					if (markedSafe || solutionSafe) classNames.push('marked-safe');
 					if (!active && !revealed && !flagged) classNames.push('inactive');
 					if (hinted) classNames.push('hinted');
@@ -1976,7 +2089,7 @@ function createMinesight() {
 
 					let studyBoardUnavailable = this.mode === 'study' && !this.studyBoardReady;
 					let chordable = this.mode !== 'tutorial' && revealed && !mine;
-					let disabled = this.boardPreparing || studyBoardUnavailable ||
+					let disabled = this.boardPreparing || this.traditionalBusy || studyBoardUnavailable ||
 						this.result !== 'playing' || (!active && !chordable) ||
 						(this.mode === 'tutorial' && this.tutorialComplete);
 					let key = `${this.boardNumber}-${index}`;
@@ -1991,6 +2104,7 @@ function createMinesight() {
 
 		get resultTitle() {
 			if (this.result === 'cleared') {
+				if (this.mode === 'traditional') return 'Field cleared';
 				if (this.mode === 'daily') return 'Daily solved';
 				if (this.mode === 'puzzle') return 'Puzzle solved';
 				if (this.mode === 'challenge' && this.challengeResults[this.challengeIndex] === 'failed') {
@@ -1999,10 +2113,13 @@ function createMinesight() {
 				return 'Puzzle solved';
 			}
 			if (this.result === 'complete') return 'Challenge complete';
+			if (this.mode === 'traditional') return 'Game over';
 			return this.result === 'gave-up' ? 'Run ended' : 'Incorrect move';
 		},
 
 		get resultMessage() {
+			if (this.mode === 'traditional' && this.result === 'cleared') return 'You cleared the minefield without guessing.';
+			if (this.mode === 'traditional' && this.result === 'failed') return 'That move was not logically safe. The provably safe choices are highlighted.';
 			if (this.result === 'cleared' && this.mode === 'daily') {
 				return this.dailyAllSolved ? 'Today\'s set is complete. Come back tomorrow.' : `${this.dailySolvedCount} of ${this.dailyTotal} complete today.`;
 			}
@@ -2144,6 +2261,114 @@ function createMinesight() {
 			else void this.newStudyBoard();
 		},
 
+		snapshotTraditionalState() {
+			if (this.mode !== 'traditional') return;
+			this.traditionalField = this.field;
+			this.traditionalResult = this.result;
+		},
+
+		saveTraditionalData() {
+			saveMinesightData('traditional', {
+				rulesVersion: TRADITIONAL_RULES_VERSION,
+				cells: Array.from(this.traditionalField.state),
+				seed: String(this.traditionalSeed),
+				result: this.traditionalResult,
+			});
+		},
+
+		newTraditionalGame() {
+			if (this.result === 'playing' && !window.confirm('Start a new game?\n\nYour current game is not finished.')) return;
+			this.traditionalMoveId += 1;
+			this.traditionalBusy = false;
+			this.clearIncorrectFeedback();
+			this.field = new MineField(BOARD_SIZE, BOARD_SIZE);
+			this.traditionalSeed = randomChallengeSeed();
+			this.result = 'playing';
+			this.engineError = '';
+			this.boardNumber += 1;
+			this.revision += 1;
+			this.snapshotTraditionalState();
+			this.saveTraditionalData();
+		},
+
+		/** @param {number} x @param {number} y */
+		async revealTraditionalCell(x, y) {
+			if (this.mode !== 'traditional' || this.result !== 'playing' || this.traditionalBusy) return;
+			if (this.field.isFlagged(x, y)) return;
+			let chord = this.field.isRevealed(x, y);
+			if (chord) {
+				let flags = 0;
+				/** @type {number[]} */
+				let covered = [];
+				for (let neighbourY = Math.max(0, y - 1); neighbourY <= Math.min(BOARD_SIZE - 1, y + 1); neighbourY += 1) {
+					for (let neighbourX = Math.max(0, x - 1); neighbourX <= Math.min(BOARD_SIZE - 1, x + 1); neighbourX += 1) {
+						if (neighbourX === x && neighbourY === y) continue;
+						if (this.field.isFlagged(neighbourX, neighbourY)) flags += 1;
+						else if (!this.field.isRevealed(neighbourX, neighbourY)) covered.push(this.field.getIndex(neighbourX, neighbourY));
+					}
+				}
+				let clue = this.field.getClue(x, y);
+				if (covered.length === 0) return;
+				if (flags !== clue) {
+					if (flags + covered.length !== clue) return;
+					for (let cellIndex of covered) {
+						this.field.actionFlag(cellIndex % BOARD_SIZE, Math.floor(cellIndex / BOARD_SIZE));
+						feedbackEffects.mark({ cellIndex, mine: true });
+					}
+					gameSounds.play('mark');
+					this.revision += 1;
+					this.snapshotTraditionalState();
+					this.saveTraditionalData();
+					return;
+				}
+			}
+			let moveId = this.traditionalMoveId + 1;
+			this.traditionalMoveId = moveId;
+			this.traditionalBusy = true;
+			this.engineError = '';
+			try {
+				let previousState = this.field.state.slice();
+				let move = await resolveTraditionalMove(this.field, this.field.getIndex(x, y), this.traditionalSeed);
+				if (this.mode !== 'traditional' || moveId !== this.traditionalMoveId) return;
+				this.traditionalSeed = nextTraditionalSeed(this.traditionalSeed);
+				this.field = fieldWithMineLayout(this.field, move.mines);
+				if (chord) this.field.actionChord(x, y);
+				else this.field.actionReveal(x, y);
+				let gameOver = this.field.gameOverReason();
+				this.result = gameOver === MineField.GAME_OVER_CLEARED ? 'cleared'
+					: gameOver === MineField.GAME_OVER_DETONATION ? 'failed' : 'playing';
+				if (this.result === 'failed') {
+					for (let index = 0; index < this.field.state.length; index += 1) {
+						if ((move.forcedSafe & (1n << BigInt(index))) !== 0n) this.field.state[index] |= MineField.FORCED_SAFE;
+					}
+					let failedIndex = this.field.state.findIndex(cell => (cell & (MineField.MINE | MineField.REVEALED)) === (MineField.MINE | MineField.REVEALED));
+					gameSounds.play('failure');
+					feedbackEffects.failure({ cellIndex: failedIndex, terminal: true });
+				}
+				else if (this.result === 'cleared') {
+					gameSounds.play('success');
+					feedbackEffects.success({ grand: true });
+				}
+				else {
+					gameSounds.play('mark');
+					for (let [cellIndex, cell] of this.field.state.entries()) {
+						if ((previousState[cellIndex] & MineField.REVEALED) === 0 && (cell & MineField.REVEALED) !== 0) {
+							feedbackEffects.mark({ cellIndex, mine: false });
+						}
+					}
+				}
+				this.revision += 1;
+				this.snapshotTraditionalState();
+				this.saveTraditionalData();
+			}
+			catch (error) {
+				if (moveId === this.traditionalMoveId) this.engineError = error instanceof Error ? error.message : String(error);
+			}
+			finally {
+				if (moveId === this.traditionalMoveId) this.traditionalBusy = false;
+			}
+		},
+
 		startTutorial() {
 			this.clearIncorrectFeedback();
 			this.mode = 'tutorial';
@@ -2186,9 +2411,15 @@ function createMinesight() {
 				this.saveDailyData();
 				this.dailyBoardReady = false;
 			}
+			if (this.mode === 'traditional') {
+				this.snapshotTraditionalState();
+				this.saveTraditionalData();
+			}
 			this.challengePreparationId += 1;
 			this.studyPreparationId += 1;
 			this.dailyPreparationId += 1;
+			this.traditionalMoveId += 1;
+			this.traditionalBusy = false;
 			this.challengePreparing = false;
 			this.boardPreparing = false;
 			this.clearStudySearchingDelay();
@@ -2209,6 +2440,15 @@ function createMinesight() {
 			}
 			if (route.mode === 'editor') {
 				this.mode = 'editor';
+				return;
+			}
+			if (route.mode === 'traditional') {
+				this.mode = 'traditional';
+				this.field = this.traditionalField;
+				this.result = this.traditionalResult;
+				this.engineError = '';
+				this.boardNumber += 1;
+				this.revision += 1;
 				return;
 			}
 			if (route.mode === 'puzzle') {
@@ -2254,6 +2494,7 @@ function createMinesight() {
 			else if (nextMode === 'daily') this.navigate(`/daily/${this.dailyDifficultyKey}`);
 			else if (nextMode === 'challenge') this.navigate(`/challenge/${this.challengeModeKey}`);
 			else if (nextMode === 'editor') this.navigate('/editor');
+			else if (nextMode === 'traditional') this.navigate('/traditional');
 		},
 
 		goHome() {
@@ -2851,6 +3092,24 @@ function createMinesight() {
 		 */
 		applyCellInput(x, y, invert) {
 			if (this.result !== 'playing') return;
+			if (this.mode === 'traditional') {
+				if (this.traditionalBusy) return;
+				if (invert) {
+					if (this.field.isRevealed(x, y)) {
+						void this.revealTraditionalCell(x, y);
+						return;
+					}
+					this.field.actionFlag(x, y);
+					let flagged = this.field.isFlagged(x, y);
+					gameSounds.play(flagged ? 'mark' : 'unmark');
+					if (flagged) feedbackEffects.mark({ cellIndex: this.field.getIndex(x, y), mine: true });
+					this.revision += 1;
+					this.snapshotTraditionalState();
+					this.saveTraditionalData();
+				}
+				else void this.revealTraditionalCell(x, y);
+				return;
+			}
 			if (this.mode === 'tutorial') {
 				this.applyTutorialInput(x, y, invert);
 				return;
