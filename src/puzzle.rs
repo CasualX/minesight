@@ -4,6 +4,7 @@ const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
 
 // Each difficulty owns a stable XOR salt, selecting a distinct RNG state so
 // callers can reuse one seed across every difficulty.
+const BEGINNER_SEED_XOR: u64 = 0xd6e8feb86659fd93;
 const EASY_SEED_XOR: u64 = 0x0bb26f91154fd183;
 const MEDIUM_SEED_XOR: u64 = 0x34e5c6e769bd2205;
 const HARD_SEED_XOR: u64 = 0x69407bebbe849894;
@@ -172,7 +173,7 @@ pub trait Explorer {
 	fn explore<R: urandom::Rng>(&self,
 		mines: u64,
 		rng: &mut urandom::Random<R>,
-		cleanup: Solver,
+		cleanup: SolveFn,
 		candidate_score: &mut dyn FnMut(&GameState) -> Option<(u32, u32)>,
 	) -> Option<GameState>;
 }
@@ -191,7 +192,7 @@ impl Explorer for InitialRevealExplorer {
 	fn explore<R: urandom::Rng>(&self,
 		mines: u64,
 		rng: &mut urandom::Random<R>,
-		cleanup: Solver,
+		cleanup: SolveFn,
 		candidate_score: &mut dyn FnMut(&GameState) -> Option<(u32, u32)>,
 	) -> Option<GameState> {
 		let mut state = GameState { mines, revealed: initial_reveal(mines), flagged: 0 };
@@ -263,7 +264,7 @@ impl Explorer for RandomWalkExplorer {
 	fn explore<R: urandom::Rng>(&self,
 		mines: u64,
 		rng: &mut urandom::Random<R>,
-		cleanup: Solver,
+		cleanup: SolveFn,
 		candidate_score: &mut dyn FnMut(&GameState) -> Option<(u32, u32)>,
 	) -> Option<GameState> {
 		let mut state = GameState::new(mines);
@@ -311,9 +312,13 @@ impl Explorer for RandomWalkExplorer {
 	}
 }
 
-/// Solver function used by cleanup, test, and reject roles.
+/// Solver function used by cleanup and advertised-answer roles.
 /// Returns `None` when the input state is contradictory.
-pub type Solver = fn(&GameState) -> Option<Deductions>;
+pub type SolveFn = fn(&GameState) -> Option<Deductions>;
+
+/// Checks whether advertised deductions leave additional forced cells.
+/// Returns `None` when the input state is contradictory.
+pub type RejectFn = fn(&GameState, Deductions) -> Option<Deductions>;
 
 fn solve_local(state: &GameState) -> Option<Deductions> {
 	state.solve_local(Deductions::default())
@@ -327,16 +332,22 @@ fn solve_sat(state: &GameState) -> Option<Deductions> {
 	state.solve_sat(Deductions::default())
 }
 
-fn same_solver(left: Solver, right: Solver) -> bool {
-	std::ptr::fn_addr_eq(left, right)
+fn reject_sat_after_apply(state: &GameState, deductions: Deductions) -> Option<Deductions> {
+	let mut remainder = *state;
+	remainder.apply(deductions);
+	solve_sat(&remainder)
+}
+
+fn reject_sat_with_known(state: &GameState, deductions: Deductions) -> Option<Deductions> {
+	state.solve_sat(deductions)
 }
 
 /// Cleanup, advertised-answer, and hidden-deduction solver roles.
 #[derive(Copy, Clone, Debug)]
 pub struct SolverConfig {
-	pub cleanup: Solver,
-	pub test: Solver,
-	pub reject: Solver,
+	pub cleanup: SolveFn,
+	pub test: SolveFn,
+	pub reject: Option<RejectFn>,
 }
 
 /// Inclusive high-level constraints applied to fully analyzed candidates.
@@ -413,18 +424,14 @@ fn analyze_candidate(seed: u64, attempts: u32, state: GameState, solvers: Solver
 		return None;
 	}
 
-	if !same_solver(solvers.test, solvers.reject) {
-		let mut remainder = state;
-		remainder.apply(puzzle.forced);
-		if !(solvers.reject)(&remainder)?.is_empty() {
-			return None;
-		}
+	if let Some(reject) = solvers.reject && !reject(&state, puzzle.forced)?.is_empty() {
+		return None;
 	}
 
 	Some(puzzle)
 }
 
-fn apply_cleanup(state: &mut GameState, solver: Solver) -> Option<()> {
+fn apply_cleanup(state: &mut GameState, solver: SolveFn) -> Option<()> {
 	loop {
 		let deductions = solver(state)?;
 		if deductions.is_empty() {
@@ -432,6 +439,54 @@ fn apply_cleanup(state: &mut GameState, solver: Solver) -> Option<()> {
 		}
 		state.apply(deductions);
 	}
+}
+
+/// Produces sparse boards with gentle density gradients for beginner puzzles.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+struct BeginnerBoard;
+
+impl BoardGenerator for BeginnerBoard {
+	fn generate<R: urandom::Rng>(&self, rng: &mut urandom::Random<R>) -> Option<u64> {
+		Gradient::random(
+			rng,
+			Gradient::DENOMINATOR * 3 / 16,
+			Gradient::DENOMINATOR / 32,
+		).generate(rng)
+	}
+}
+
+/// Repeatedly applies direct clue deductions as known annotations. Known-safe
+/// cells remain covered, matching how the player marks them in a tactics puzzle.
+fn solve_local_repeated(state: &GameState) -> Option<Deductions> {
+	let mut known = Deductions::default();
+	loop {
+		let deductions = state.solve_local(known)?;
+		if deductions.is_empty() {
+			return Some(known);
+		}
+		known |= deductions;
+	}
+}
+
+/// Beginner puzzles contain every exact deduction, all obtainable by repeatedly
+/// applying the direct one-clue solver.
+pub fn generate_beginner(seed: u64, attempts: u32) -> Option<Puzzle> {
+	Generator {
+		board: BeginnerBoard,
+		explorer: InitialRevealExplorer { max_steps: 0, walk_threshold: 0 },
+		solvers: SolverConfig {
+			cleanup: |_| Some(Deductions::default()),
+			test: solve_local_repeated,
+			reject: Some(reject_sat_with_known),
+		},
+		criteria: Criteria {
+			min_forced: 2,
+			min_forced_area: 2,
+			min_ambiguous: 2,
+			min_revealed: 8,
+			allow_empty: true,
+		},
+	}.search(seed, BEGINNER_SEED_XOR, attempts)
 }
 
 /// Easy puzzles focus on pattern recognition across mostly open boards.
@@ -442,7 +497,7 @@ pub fn generate_easy(seed: u64, attempts: u32) -> Option<Puzzle> {
 		solvers: SolverConfig {
 			cleanup: solve_local,
 			test: |state| Some(state.solve_subset(Deductions::default())? | state.solve_overlap(Deductions::default(), false)? | state.solve_clue_cover(Deductions::default())?),
-			reject: solve_sat,
+			reject: Some(reject_sat_after_apply),
 		},
 		criteria: Criteria {
 			min_forced: 4,
@@ -462,7 +517,7 @@ pub fn generate_medium(seed: u64, attempts: u32) -> Option<Puzzle> {
 		solvers: SolverConfig {
 			cleanup: solve_local,
 			test: |state| Some(state.solve_subset(Deductions::default())? | state.solve_overlap(Deductions::default(), true)? | state.solve_clue_cover(Deductions::default())?),
-			reject: solve_sat,
+			reject: Some(reject_sat_after_apply),
 		},
 		criteria: Criteria {
 			min_forced: 4,
@@ -482,7 +537,7 @@ pub fn generate_hard(seed: u64, attempts: u32) -> Option<Puzzle> {
 		solvers: SolverConfig {
 			cleanup: |state| Some(state.solve_local(Deductions::default())? | state.solve_overlap(Deductions::default(), true)? | state.solve_clue_cover(Deductions::default())?),
 			test: solve_derived,
-			reject: solve_sat,
+			reject: Some(reject_sat_after_apply),
 		},
 		criteria: Criteria {
 			min_forced: 4,
@@ -502,7 +557,7 @@ pub fn generate_expert(seed: u64, attempts: u32) -> Option<Puzzle> {
 		solvers: SolverConfig {
 			cleanup: |state| Some(state.solve_subset(Deductions::default())? | state.solve_derived(Deductions::default())? | state.solve_clue_cover(Deductions::default())?),
 			test: solve_sat,
-			reject: solve_sat,
+			reject: None,
 		},
 		criteria: Criteria {
 			min_forced: 4,
@@ -521,7 +576,7 @@ fn impossible_generator() -> Generator<ExpertBoard, RandomWalkExplorer> {
 		solvers: SolverConfig {
 			cleanup: |state| Some(state.solve_subset(Deductions::default())? | state.solve_derived(Deductions::default())? | state.solve_clue_cover(Deductions::default())?),
 			test: solve_sat,
-			reject: solve_sat,
+			reject: None,
 		},
 		criteria: Criteria {
 			min_forced: 2,

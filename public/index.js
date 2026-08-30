@@ -169,6 +169,12 @@ function createTutorialField() {
 	return new MineField(width, height, state);
 }
 
+const BEGINNER_DIFFICULTY = {
+	key: 'beginner',
+	label: 'Beginner',
+	generator: 'randomBeginnerPuzzle',
+	description: 'Use one clue at a time to find squares that are immediately safe or mined.',
+};
 const EASY_DIFFICULTY = {
 	key: 'easy',
 	label: 'Easy',
@@ -199,7 +205,15 @@ const MIT_DIFFICULTY = {
 	generator: 'randomMitPuzzle',
 	description: 'Solve the whole board from a minimal set of clues. Each puzzle has a unique mine layout.',
 };
+const DAILY_DIFFICULTIES = [
+	EASY_DIFFICULTY,
+	MEDIUM_DIFFICULTY,
+	HARD_DIFFICULTY,
+	EXPERT_DIFFICULTY,
+	MIT_DIFFICULTY,
+];
 const STUDY_DIFFICULTIES = [
+	BEGINNER_DIFFICULTY,
 	EASY_DIFFICULTY,
 	MEDIUM_DIFFICULTY,
 	HARD_DIFFICULTY,
@@ -274,7 +288,7 @@ function resolveUrlGame(url) {
 	let dailyMatch = path.match(/^\/daily(?:\/([^/]+))?$/);
 	if (dailyMatch) {
 		let difficultyKey = dailyMatch[1];
-		if (difficultyKey === undefined || STUDY_DIFFICULTIES.some(({ key }) => key === difficultyKey)) {
+		if (difficultyKey === undefined || DAILY_DIFFICULTIES.some(({ key }) => key === difficultyKey)) {
 			return { mode: 'daily', difficultyKey };
 		}
 	}
@@ -737,6 +751,13 @@ function sortChallengeTiers(puzzles, route) {
 /** @typedef {{ field: MineField, seed: bigint, result: GameResult, hintUsed: boolean, streak: number, ready: boolean }} StudyState */
 /** @typedef {{ field: MineField, seed: bigint, result: GameResult, completed: boolean, ready: boolean }} DailyState */
 
+/** @param {unknown} value @returns {GameMode} */
+function parseGameMode(value) {
+	if (value === 'tutorial' || value === 'study' || value === 'daily'
+		|| value === 'challenge' || value === 'puzzle' || value === 'editor') return value;
+	return 'home';
+}
+
 function createMinesight() {
 	let stored = loadMinesightData();
 	let colorScheme = ['system', 'light', 'dark'].includes(stored.colorScheme) ? stored.colorScheme : 'system';
@@ -766,10 +787,9 @@ function createMinesight() {
 	let storedStudy = stored?.study ?? {};
 	let today = localDateKey();
 	let storedDaily = stored?.daily?.lastSeenDate === today ? stored.daily : { lastSeenDate: today };
-	let difficultyKey = STUDY_DIFFICULTIES.some(({ key }) => key === storedStudy.difficultyKey) ? storedStudy.difficultyKey : 'easy';
-	if (urlGame.mode === 'study' && urlGame.difficultyKey !== undefined) difficultyKey = urlGame.difficultyKey;
-	let dailyDifficultyKey = STUDY_DIFFICULTIES.some(({ key }) => key === storedDaily.difficultyKey)
-		? storedDaily.difficultyKey : STUDY_DIFFICULTIES[0].key;
+	let studyDifficultyKey = STUDY_DIFFICULTIES.some(({ key }) => key === storedStudy.difficultyKey) ? storedStudy.difficultyKey : STUDY_DIFFICULTIES[0].key;
+	if (urlGame.mode === 'study' && urlGame.difficultyKey !== undefined) studyDifficultyKey = urlGame.difficultyKey;
+	let dailyDifficultyKey = DAILY_DIFFICULTIES.some(({ key }) => key === storedDaily.difficultyKey) ? storedDaily.difficultyKey : DAILY_DIFFICULTIES[0].key;
 	if (urlGame.mode === 'daily' && urlGame.difficultyKey !== undefined) dailyDifficultyKey = urlGame.difficultyKey;
 	let studyStreaks = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
 		let streak = storedStudy.difficulties?.[key]?.streak;
@@ -799,7 +819,7 @@ function createMinesight() {
 		}
 	}));
 	/** @type {Record<string, DailyState | undefined>} */
-	let dailyStates = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
+	let dailyStates = Object.fromEntries(DAILY_DIFFICULTIES.map(({ key }) => {
 		let saved = storedDaily.difficulties?.[key];
 		if (!Array.isArray(saved?.cells) || saved.difficultyKey !== key) return [key, undefined];
 		try {
@@ -817,13 +837,7 @@ function createMinesight() {
 	}));
 	if (stored?.daily?.lastSeenDate !== today) saveMinesightData('daily', storedDaily);
 	return {
-		/** @type {GameMode} */
-		mode: urlGame.mode === 'puzzle' ? 'puzzle'
-			: urlGame.mode === 'challenge' ? 'challenge'
-				: urlGame.mode === 'daily' ? 'daily'
-				: urlGame.mode === 'tutorial' ? 'tutorial'
-					: urlGame.mode === 'editor' ? 'editor'
-					: urlGame.mode === 'study' ? 'study' : 'home',
+		mode: parseGameMode(urlGame.mode),
 		soundEnabled: gameSounds.enabled,
 		settingsOpen: false,
 		appInstalled: isAppInstalled(),
@@ -837,7 +851,7 @@ function createMinesight() {
 		actionsInverted: false,
 		/** @type {GameResult} */
 		result: 'playing',
-		difficultyKey,
+		studyDifficultyKey,
 		dailyDate: today,
 		dailyDifficultyKey,
 		dailyCheckMessage: '',
@@ -845,7 +859,8 @@ function createMinesight() {
 		dailyPreparationId: 0,
 		/** @type {Record<string, DailyState | undefined>} */
 		dailyStates,
-		difficulties: STUDY_DIFFICULTIES,
+		studyDifficulties: STUDY_DIFFICULTIES,
+		dailyDifficulties: DAILY_DIFFICULTIES,
 		challengeModes: CHALLENGE_MODES,
 		challengeModeKey,
 		challengeSeed,
@@ -867,7 +882,7 @@ function createMinesight() {
 		challengeResults: [],
 		elapsedMs: 0,
 		studyStreaks,
-		studyStreak: studyStreaks[difficultyKey],
+		studyStreak: studyStreaks[studyDifficultyKey],
 		hintUsed: false,
 		tutorialStep: 0,
 		keyboardFocusIndex: -1,
@@ -1025,9 +1040,9 @@ function createMinesight() {
 				))?.difficulty ?? this.challengeGroups[0].difficulty;
 			}
 			if (this.mode === 'daily') {
-				return STUDY_DIFFICULTIES.find(({ key }) => key === this.dailyDifficultyKey) ?? STUDY_DIFFICULTIES[0];
+				return DAILY_DIFFICULTIES.find(({ key }) => key === this.dailyDifficultyKey) ?? DAILY_DIFFICULTIES[0];
 			}
-			return STUDY_DIFFICULTIES.find((difficulty) => difficulty.key === this.difficultyKey) ?? STUDY_DIFFICULTIES[0];
+			return STUDY_DIFFICULTIES.find((difficulty) => difficulty.key === this.studyDifficultyKey) ?? STUDY_DIFFICULTIES[0];
 		},
 
 		get headerModeTitle() {
@@ -1253,11 +1268,11 @@ function createMinesight() {
 		},
 
 		get dailySolvedCount() {
-			return STUDY_DIFFICULTIES.filter(({ key }) => this.dailyStates[key]?.completed).length;
+			return DAILY_DIFFICULTIES.filter(({ key }) => this.dailyStates[key]?.completed).length;
 		},
 
 		get dailyTotal() {
-			return STUDY_DIFFICULTIES.length;
+			return DAILY_DIFFICULTIES.length;
 		},
 
 		get dailyHomeProgress() {
@@ -2142,7 +2157,13 @@ function createMinesight() {
 
 		finishTutorial() {
 			if (this.mode !== 'tutorial') return;
+			this.studyDifficultyKey = BEGINNER_DIFFICULTY.key;
 			this.switchMode('study');
+		},
+
+		skipTutorial() {
+			if (this.mode !== 'tutorial') return;
+			this.switchMode('home');
 		},
 
 		/** @param {string} route */
@@ -2221,7 +2242,7 @@ function createMinesight() {
 			}
 
 			this.mode = 'study';
-			if (route.difficultyKey !== undefined) this.difficultyKey = route.difficultyKey;
+			if (route.difficultyKey !== undefined) this.studyDifficultyKey = route.difficultyKey;
 			if (!this.restoreStudyState()) void this.newStudyBoard();
 		},
 
@@ -2229,7 +2250,7 @@ function createMinesight() {
 		switchMode(nextMode) {
 			if (nextMode === 'home') this.navigate('/');
 			else if (nextMode === 'tutorial') this.navigate('/tutorial');
-			else if (nextMode === 'study') this.navigate(`/study/${this.difficultyKey}`);
+			else if (nextMode === 'study') this.navigate(`/study/${this.studyDifficultyKey}`);
 			else if (nextMode === 'daily') this.navigate(`/daily/${this.dailyDifficultyKey}`);
 			else if (nextMode === 'challenge') this.navigate(`/challenge/${this.challengeModeKey}`);
 			else if (nextMode === 'editor') this.navigate('/editor');
@@ -2344,8 +2365,8 @@ function createMinesight() {
 			let today = localDateKey();
 			if (today === this.dailyDate) return false;
 			this.dailyDate = today;
-			this.dailyStates = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => [key, undefined]));
-			this.dailyDifficultyKey = STUDY_DIFFICULTIES[0].key;
+			this.dailyStates = Object.fromEntries(DAILY_DIFFICULTIES.map(({ key }) => [key, undefined]));
+			this.dailyDifficultyKey = DAILY_DIFFICULTIES[0].key;
 			this.dailyBoardReady = false;
 			this.dailyCheckMessage = '';
 			this.dailyPreparationId += 1;
@@ -2357,7 +2378,7 @@ function createMinesight() {
 
 		/** @param {string} key @param {boolean} [navigate] */
 		openDailyDifficulty(key, navigate = true) {
-			if (!STUDY_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
+			if (!DAILY_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
 			if (this.mode === 'daily' && this.dailyBoardReady) this.snapshotDailyState();
 			this.dailyPreparationId += 1;
 			this.boardPreparing = false;
@@ -2402,7 +2423,7 @@ function createMinesight() {
 		},
 
 		saveDailyData() {
-			let difficulties = Object.fromEntries(STUDY_DIFFICULTIES.flatMap(({ key }) => {
+			let difficulties = Object.fromEntries(DAILY_DIFFICULTIES.flatMap(({ key }) => {
 				let state = this.dailyStates[key];
 				if (!state?.ready) return [];
 				return [[key, {
@@ -2428,7 +2449,7 @@ function createMinesight() {
 			this.result = 'playing';
 			this.engineError = '';
 			let difficultyKey = this.dailyDifficultyKey;
-			let difficulty = STUDY_DIFFICULTIES.find(({ key }) => key === difficultyKey) ?? STUDY_DIFFICULTIES[0];
+			let difficulty = DAILY_DIFFICULTIES.find(({ key }) => key === difficultyKey) ?? DAILY_DIFFICULTIES[0];
 			try {
 				let puzzle = await generateSeededField(
 					difficulty,
@@ -2493,13 +2514,13 @@ function createMinesight() {
 
 		/** @param {string} key */
 		selectDifficulty(key) {
-			if (this.difficultyKey === key) return;
+			if (this.studyDifficultyKey === key) return;
 			if (!STUDY_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
 			this.snapshotStudyState();
 			this.studyPreparationId += 1;
 			this.boardPreparing = false;
 			this.clearStudySearchingDelay();
-			this.difficultyKey = key;
+			this.studyDifficultyKey = key;
 			window.history.pushState(null, '', createRouteUrl(window.location.href, `/study/${key}`));
 			this.activeRouteUrl = window.location.href;
 			let restored = this.restoreStudyState();
@@ -2508,7 +2529,7 @@ function createMinesight() {
 		},
 
 		snapshotStudyState() {
-			this.studyStates[this.difficultyKey] = {
+			this.studyStates[this.studyDifficultyKey] = {
 				field: this.field,
 				seed: this.boardSeed,
 				result: this.result,
@@ -2519,9 +2540,10 @@ function createMinesight() {
 		},
 
 		restoreStudyState() {
-			let state = this.studyStates[this.difficultyKey];
+			let difficultyKey = this.studyDifficultyKey;
+			let state = this.studyStates[difficultyKey];
 			if (!state) {
-				this.studyStreak = this.studyStreaks[this.difficultyKey];
+				this.studyStreak = this.studyStreaks[difficultyKey];
 				this.studyBoardReady = false;
 				return false;
 			}
@@ -2545,7 +2567,7 @@ function createMinesight() {
 		/** @param {number} streak */
 		setStudyStreak(streak) {
 			this.studyStreak = streak;
-			this.studyStreaks[this.difficultyKey] = streak;
+			this.studyStreaks[this.studyDifficultyKey] = streak;
 		},
 
 		saveStudyData() {
@@ -2563,7 +2585,7 @@ function createMinesight() {
 				return [key, saved];
 			}));
 			saveMinesightData('study', {
-				difficultyKey: this.difficultyKey,
+				difficultyKey: this.studyDifficultyKey,
 				difficulties,
 			});
 		},
@@ -2725,16 +2747,16 @@ function createMinesight() {
 			this.engineError = '';
 			try {
 				let difficulty = this.currentDifficulty;
-				let difficultyKey = this.difficultyKey;
+				let difficultyKey = this.studyDifficultyKey;
 				let puzzle = await generateField(difficulty, () => (
 					this.mode === 'study' &&
-					difficultyKey === this.difficultyKey &&
+					difficultyKey === this.studyDifficultyKey &&
 					preparationId === this.studyPreparationId
 				));
 				if (
 					!puzzle ||
 					this.mode !== 'study' ||
-					difficultyKey !== this.difficultyKey ||
+					difficultyKey !== this.studyDifficultyKey ||
 					preparationId !== this.studyPreparationId
 				) return;
 				this.field = puzzle.field;

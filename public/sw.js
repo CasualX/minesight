@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'minesight';
-const CACHE_NAME = `${CACHE_PREFIX}-v20260828wasm4`;
+const CACHE_NAME = `${CACHE_PREFIX}-v20260830beginner4`;
 const APP_ROOT_URL = new URL('./', self.registration.scope);
 const APP_SHELL_URL = new URL('./index.html', self.registration.scope).href;
 const APP_ASSETS = [
@@ -15,18 +15,22 @@ const APP_ASSETS = [
 	'./alpine.min.js',
 	'./header-icon.svg',
 	'./favicon.svg',
-	'./manifest.webmanifest?v=20260828pwa5',
-	'./icon/icon.svg?v=20260828icons5',
-	'./icon/icon-192.png?v=20260828icons5',
-	'./icon/icon-512.png?v=20260828icons5',
-	'./icon/icon-maskable-512.png?v=20260828icons5',
-	'./icon/icon-monochrome-512.png?v=20260828icons5',
+	'./manifest.webmanifest',
+	'./icon/icon.svg',
+	'./icon/icon-192.png',
+	'./icon/icon-512.png',
+	'./icon/icon-maskable-512.png',
+	'./icon/icon-monochrome-512.png',
 ];
 
 self.addEventListener('install', event => {
+	let requests = APP_ASSETS.map(asset => new Request(
+		new URL(asset, self.registration.scope),
+		{ cache: 'reload' },
+	));
 	event.waitUntil(
 		caches.open(CACHE_NAME)
-			.then(cache => cache.addAll(APP_ASSETS))
+			.then(cache => cache.addAll(requests))
 			.then(() => self.skipWaiting())
 	);
 });

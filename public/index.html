@@ -22,10 +22,10 @@
 	<meta name="apple-mobile-web-app-capable" content="yes">
 	<meta name="apple-mobile-web-app-status-bar-style" content="default">
 	<title>Minesight</title>
-	<link rel="manifest" href="./manifest.webmanifest?v=20260828pwa5">
-	<link rel="icon" href="./icon/icon.svg?v=20260828icons5" type="image/svg+xml">
-	<link rel="icon" href="./icon/icon-192.png?v=20260828icons5" type="image/png" sizes="192x192">
-	<link rel="apple-touch-icon" href="./icon/icon-192.png?v=20260828icons5">
+	<link rel="manifest" href="./manifest.webmanifest">
+	<link rel="icon" href="./icon/icon.svg" type="image/svg+xml">
+	<link rel="icon" href="./icon/icon-192.png" type="image/png" sizes="192x192">
+	<link rel="apple-touch-icon" href="./icon/icon-192.png">
 	<link rel="stylesheet" href="./index.css">
 	<link rel="stylesheet" href="./feedback.css">
 	<script type="module" src="./index.js"></script>
@@ -109,7 +109,7 @@
 				<strong x-text="`${dailySolvedCount} / ${dailyTotal} complete`"></strong>
 			</div>
 			<div class="daily-levels" role="tablist" aria-label="Daily difficulties">
-				<template x-for="difficulty in difficulties" :key="difficulty.key">
+				<template x-for="difficulty in dailyDifficulties" :key="difficulty.key">
 					<button type="button" role="tab" :class="{ active: dailyDifficultyKey === difficulty.key, solved: dailyStates[difficulty.key]?.completed }" :aria-selected="dailyDifficultyKey === difficulty.key" :aria-label="`${difficulty.label}, ${dailyStates[difficulty.key]?.completed ? 'solved' : 'not solved'}`" @click="openDailyDifficulty(difficulty.key)">
 						<span x-text="difficulty.label"></span><b aria-hidden="true" x-text="dailyStates[difficulty.key]?.completed ? '✓' : '·'"></b>
 					</button>
@@ -209,10 +209,10 @@
 			<div class="study-toolbar">
 				<label class="sr-only" for="difficulty">Difficulty</label>
 				<select id="difficulty" @change="selectDifficulty($event.target.value)">
-					<template x-for="difficulty in difficulties" :key="difficulty.key">
+					<template x-for="difficulty in studyDifficulties" :key="difficulty.key">
 						<option
 							:value="difficulty.key"
-							:selected="difficulty.key === difficultyKey"
+							:selected="difficulty.key === studyDifficultyKey"
 							x-text="difficulty.label"
 						></option>
 					</template>
@@ -501,7 +501,7 @@
 					x-show="!tutorialComplete"
 					type="button"
 					class="secondary"
-					@click="finishTutorial()"
+					@click="skipTutorial()"
 				>Skip introduction</button>
 				<button
 					x-show="tutorialComplete"
@@ -632,7 +632,7 @@
 	<script>
 	if ('serviceWorker' in navigator) {
 		window.addEventListener('load', () => {
-			navigator.serviceWorker.register('./sw.js?v=20260828wasm4', {
+			navigator.serviceWorker.register('./sw.js', {
 				scope: './',
 				updateViaCache: 'none',
 			}).catch(error => {

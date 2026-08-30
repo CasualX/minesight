@@ -211,6 +211,12 @@ pub unsafe extern "C" fn solve_wasm(pointer: *const u8) -> bool {
 	true
 }
 
+/// Generates a beginner puzzle using only direct local deductions.
+#[unsafe(export_name = "randomBeginnerPuzzle")]
+pub extern "C" fn random_beginner_puzzle_wasm(seed_low: u32, seed_high: u32, attempts: u32) -> bool {
+	generate_puzzle(generate_beginner, seed_low, seed_high, attempts)
+}
+
 /// Generates an easy tactics puzzle and returns it through `env.resultPuzzle`.
 #[unsafe(export_name = "randomEasyPuzzle")]
 pub extern "C" fn random_easy_puzzle_wasm(seed_low: u32, seed_high: u32, attempts: u32) -> bool {

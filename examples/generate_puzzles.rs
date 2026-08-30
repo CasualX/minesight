@@ -7,6 +7,7 @@ const PUBLIC_URL: &str = "https://casualhacks.net/minesight/";
 
 #[derive(Copy, Clone)]
 enum Difficulty {
+	Beginner,
 	Easy,
 	Medium,
 	Hard,
@@ -17,6 +18,7 @@ enum Difficulty {
 
 fn parse_difficulty(value: &str) -> Option<Difficulty> {
 	match value {
+		"beginner" => Some(Difficulty::Beginner),
 		"easy" => Some(Difficulty::Easy),
 		"medium" => Some(Difficulty::Medium),
 		"hard" => Some(Difficulty::Hard),
@@ -43,7 +45,7 @@ fn parse_count(value: &str) -> Result<u64, String> {
 fn parse_args() -> (Difficulty, u64, u32) {
 	let matches = clap::Command::new("generate_puzzles")
 		.about("Generate an HTML gallery of Minesight puzzles")
-		.arg(clap::Arg::new("difficulty").required(true).value_parser(["easy", "medium", "hard", "expert", "impossible", "mit"]))
+		.arg(clap::Arg::new("difficulty").required(true).value_parser(["beginner", "easy", "medium", "hard", "expert", "impossible", "mit"]))
 		.arg(clap::Arg::new("count").short('n').long("count").value_name("COUNT").value_parser(parse_count))
 		.arg(clap::Arg::new("attempts").long("attempts").value_name("ATTEMPTS").default_value("1000").value_parser(clap::value_parser!(u32)))
 		.arg(clap::Arg::new("positional_count").index(2).value_name("COUNT").value_parser(parse_count).conflicts_with("count"))
@@ -58,6 +60,7 @@ fn parse_args() -> (Difficulty, u64, u32) {
 impl Difficulty {
 	fn generate(self, seed: u64, attempts: u32) -> Option<minetacs::puzzle::Puzzle> {
 		match self {
+			Difficulty::Beginner => minetacs::puzzle::generate_beginner(seed, attempts),
 			Difficulty::Easy => minetacs::puzzle::generate_easy(seed, attempts),
 			Difficulty::Medium => minetacs::puzzle::generate_medium(seed, attempts),
 			Difficulty::Hard => minetacs::puzzle::generate_hard(seed, attempts),
@@ -70,6 +73,7 @@ impl Difficulty {
 
 fn title(difficulty: Difficulty) -> &'static str {
 	match difficulty {
+		Difficulty::Beginner => "Beginner puzzles",
 		Difficulty::Easy => "Easy puzzles",
 		Difficulty::Medium => "Medium puzzles",
 		Difficulty::Hard => "Hard puzzles",
@@ -81,6 +85,7 @@ fn title(difficulty: Difficulty) -> &'static str {
 
 fn intro(difficulty: Difficulty) -> &'static str {
 	match difficulty {
+		Difficulty::Beginner => "Use direct deductions from individual clues to find every square that must be safe or contain a mine. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Easy => "Recognize familiar patterns on a mostly open board to find squares that must be safe or contain a mine. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Medium => "Recognize patterns on a denser board where finding squares that must be safe or contain a mine requires more scanning. Highlighted squares show the answers, while faded squares are outside the puzzle.",
 		Difficulty::Hard => "Follow deeper chains of logic to find squares that must be safe or contain a mine. Highlighted squares show the answers, while faded squares are outside the puzzle.",
