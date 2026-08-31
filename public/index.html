@@ -30,20 +30,20 @@
 	<link rel="stylesheet" href="./feedback.css">
 	<script type="module" src="./index.js"></script>
 </head>
-<body x-data="minesight" x-cloak @beforeunload.window="protectChallengeNavigation($event)" @keydown.escape.window="closeSettings()">
+<body x-data="minesight" x-cloak @beforeunload.window="page.kind === 'challenge' && page.protectNavigation($event)" @keydown.escape.window="closeSettings()">
 	<header class="site-header" :inert="settingsOpen">
 		<div class="header-title">
 			<a class="site-permalink" href="" aria-label="Permalink to this page" title="Permalink to this page">
 				<img src="./header-icon.svg" alt="">
 			</a>
 			<span class="brand">Minesight</span>
-			<template x-if="headerModeTitle">
-				<span class="header-mode"><span aria-hidden="true">/</span> <span x-text="headerModeTitle"></span></span>
+			<template x-if="page.title">
+				<span class="header-mode"><span aria-hidden="true">/</span> <span x-text="page.title"></span></span>
 			</template>
 			<button
 				type="button"
 				class="header-back"
-				x-show="mode !== 'home' && !challengeRunActive"
+				x-show="page.kind !== 'home' && !(page.kind === 'challenge' && page.runActive)"
 				aria-label="Back to main menu"
 				title="Back to main menu"
 				@click="goHome()"
@@ -68,8 +68,8 @@
 		</div>
 	</header>
 
-	<main class="app-shell" :inert="settingsOpen" x-effect="document.title = pageTitle">
-		<section class="home-screen" x-show="mode === 'home'">
+	<main class="app-shell" :inert="settingsOpen" x-effect="document.title = page.title ? `Minesight / ${page.title}` : 'Minesight'">
+		<section class="home-screen" x-show="page.kind === 'home'">
 			<div class="home-intro">
 				<h1>Minesweeper logic puzzles</h1>
 				<p>Study each position and find the squares that must be safe or mined.</p>
@@ -82,7 +82,7 @@
 				</button>
 				<button type="button" class="home-mode home-mode-daily" @click="switchMode('daily')">
 					<span class="home-mode-number" aria-hidden="true">01</span>
-					<span><strong>Daily</strong><small>One puzzle at every difficulty. A fresh set returns every day.</small><em x-text="dailyHomeProgress"></em></span>
+					<span><strong>Daily</strong><small>One puzzle at every difficulty. A fresh set returns every day.</small><em x-text="page.dailyProgress"></em></span>
 					<span class="home-mode-arrow" aria-hidden="true">&#8594;</span>
 				</button>
 				<button type="button" class="home-mode" @click="switchMode('study')">
@@ -108,28 +108,28 @@
 			</div>
 		</section>
 
-		<section class="daily-heading" x-show="mode === 'daily'">
+		<section class="daily-heading" x-show="page.kind === 'daily'">
 			<div class="daily-heading-copy">
 				<span>Today's set</span>
-				<strong x-text="`${dailySolvedCount} / ${dailyTotal} complete`"></strong>
+				<strong x-text="`${page.solvedCount} / ${page.total} complete`"></strong>
 			</div>
 			<div class="daily-levels" role="tablist" aria-label="Daily difficulties">
-				<template x-for="difficulty in dailyDifficulties" :key="difficulty.key">
-					<button type="button" role="tab" :class="{ active: dailyDifficultyKey === difficulty.key, solved: dailyStates[difficulty.key]?.completed }" :aria-selected="dailyDifficultyKey === difficulty.key" :aria-label="`${difficulty.label}, ${dailyStates[difficulty.key]?.completed ? 'solved' : 'not solved'}`" @click="openDailyDifficulty(difficulty.key)">
-						<span x-text="difficulty.label"></span><b aria-hidden="true" x-text="dailyStates[difficulty.key]?.completed ? '✓' : '·'"></b>
+				<template x-for="difficulty in page.difficulties" :key="difficulty.key">
+					<button type="button" role="tab" :class="{ active: page.difficultyKey === difficulty.key, solved: page.states[difficulty.key]?.completed }" :aria-selected="page.difficultyKey === difficulty.key" :aria-label="`${difficulty.label}, ${page.states[difficulty.key]?.completed ? 'solved' : 'not solved'}`" @click="page.openDifficulty($data, difficulty.key)">
+						<span x-text="difficulty.label"></span><b aria-hidden="true" x-text="page.states[difficulty.key]?.completed ? '✓' : '·'"></b>
 					</button>
 				</template>
 			</div>
 			<p x-text="currentDifficulty.description"></p>
 		</section>
 
+		<template x-if="page.kind === 'editor'">
 		<section
 			class="editor-screen"
-			x-show="mode === 'editor'"
-			@keydown.window="keydownEditorAtPointer($event)"
-			@pointermove.window="moveEditorPaint($event)"
-			@pointerup.window="endEditorPaint($event)"
-			@pointercancel.window="endEditorPaint($event)"
+			@keydown.window="page.kind === 'editor' && page.keydownAtPointer($event)"
+			@pointermove.window="page.kind === 'editor' && page.movePaint($event)"
+			@pointerup.window="page.kind === 'editor' && page.endPaint($event)"
+			@pointercancel.window="page.kind === 'editor' && page.endPaint($event)"
 		>
 			<header class="editor-intro">
 				<h1>Build a position</h1>
@@ -137,13 +137,13 @@
 			</header>
 
 			<div class="editor-palette" role="toolbar" aria-label="Cell state">
-				<template x-for="tool in editorTools" :key="tool.value">
+				<template x-for="tool in page.tools" :key="tool.value">
 					<button
 						type="button"
-						:class="`${editorTool === tool.value ? 'selected ' : ''}editor-tool-${tool.value}`"
-						:aria-pressed="editorTool === tool.value"
+						:class="`${page.tool === tool.value ? 'selected ' : ''}editor-tool-${tool.value}`"
+						:aria-pressed="page.tool === tool.value"
 						:title="tool.label"
-						@click="selectEditorTool(tool.value)"
+						@click="page.selectTool(tool.value)"
 					>
 						<span aria-hidden="true" x-text="tool.text"></span>
 						<small x-text="tool.label"></small>
@@ -151,8 +151,8 @@
 				</template>
 			</div>
 
-			<div class="minefield editor-minefield" role="group" aria-label="8 by 8 board editor" style="--columns: 8" @pointerleave="leaveEditorBoard($event)">
-				<template x-for="cell in editorCells" :key="cell.index">
+			<div class="minefield editor-minefield" role="group" aria-label="8 by 8 board editor" style="--columns: 8" @pointerleave="page.leaveBoard($event)">
+				<template x-for="cell in page.editorCells" :key="cell.index">
 					<button
 						type="button"
 						class="cell"
@@ -161,87 +161,88 @@
 						aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight 0 1 2 3 4 5 6 7 8 F M U Delete Space Enter"
 						:tabindex="cell.tabIndex"
 						:data-editor-index="cell.index"
-						@focus="editorFocusIndex = cell.index"
-						@keydown="keydownEditorCell($event, cell.index)"
-						@pointerdown.prevent="beginEditorPaint($event, cell.index)"
-						@click="setEditorCell(cell.index)"
-						@contextmenu.prevent="setEditorCell(cell.index, 'flag')"
+						@focus="page.focusIndex = cell.index"
+						@keydown="page.keydownCell($data, $event, cell.index)"
+						@pointerdown.prevent="page.beginPaint($event, cell.index)"
+						@click="page.setCell(cell.index)"
+						@contextmenu.prevent="page.setCell(cell.index, 'flag')"
 						x-text="cell.text"
 					></button>
 				</template>
 			</div>
 
 			<div class="editor-actions">
-				<button type="button" class="secondary" :disabled="editorHistory.length === 0" @click="undoEditor()">Undo</button>
-				<button type="button" class="secondary" :disabled="editorBoard.every((cell) => cell === 'covered')" @click="clearEditor()">Clear</button>
-				<button type="button" class="primary" @click="activateEditorPrimaryAction()" x-text="editorPrimaryActionLabel"></button>
+				<button type="button" class="secondary" :disabled="page.history.length === 0" @click="page.undo()">Undo</button>
+				<button type="button" class="secondary" :disabled="page.board.every((cell) => cell === 'covered')" @click="page.clear()">Clear</button>
+				<button type="button" class="primary" @click="page.activatePrimaryAction($data)" x-text="page.primaryActionLabel"></button>
 			</div>
 
-			<div class="editor-result" :class="{ contradiction: editorAnalysis?.contradiction }" role="status" aria-live="polite">
+			<div class="editor-result" :class="{ contradiction: page.analysis?.contradiction }" role="status" aria-live="polite">
 				<div class="editor-result-copy">
-					<strong x-text="editorStatusTitle"></strong>
-					<span x-text="editorStatusMessage"></span>
+					<strong x-text="page.editorStatusTitle"></strong>
+					<span x-text="page.editorStatusMessage"></span>
 				</div>
 				<div
 					class="editor-solution-toggle"
-					x-show="editorAnalysis && !editorAnalysis.contradiction && !editorAnalysis.unique"
+					x-show="page.analysis && !page.analysis.contradiction && !page.analysis.unique"
 				>
 					<span>Example solution</span>
 					<label class="switch">
 						<input
 							type="checkbox"
 							aria-label="Show example solution"
-							:checked="editorShowSolution"
-							@change="editorShowSolution = $event.target.checked; editorRevision += 1"
+							:checked="page.showEditorSolution"
+							@change="page.showEditorSolution = $event.target.checked; page.revision += 1"
 						>
 						<span class="switch-track" aria-hidden="true"></span>
 					</label>
 				</div>
 			</div>
 		</section>
+		</template>
 
-		<section class="challenge-run-heading" x-show="showChallengeTimer">
-			<span x-text="`${currentDifficulty.label} · ${challengeIndex + 1} / ${challengeTotal}`"></span>
+		<section class="challenge-run-heading" x-show="page.kind === 'challenge' && page.showPath">
+			<span x-text="`${currentDifficulty.label} · ${page.index + 1} / ${page.total}`"></span>
 			<div class="timer" aria-label="Elapsed time">
 				<span>Time</span>
-				<strong x-text="challengeTimerTime"></strong>
+				<strong x-text="page.timerTime"></strong>
 			</div>
 		</section>
-		<p class="engine-error" x-show="mode !== 'home' && puzzleError" x-text="puzzleError" role="alert"></p>
-		<p class="engine-error" x-show="mode !== 'home' && engineError" x-text="engineErrorMessage" role="alert"></p>
+		<p class="engine-error" x-show="page.kind === 'puzzle' && page.error" x-text="page.error" role="alert"></p>
+		<p class="engine-error" x-show="page.kind !== 'home' && engineError" x-text="engineErrorMessage" role="alert"></p>
 
-		<section class="difficulty-picker" x-show="mode === 'study'">
+		<section class="difficulty-picker" x-show="page.kind === 'study'">
 			<div class="study-toolbar">
 				<label class="sr-only" for="difficulty">Difficulty</label>
-				<select id="difficulty" @change="selectDifficulty($event.target.value)">
-					<template x-for="difficulty in studyDifficulties" :key="difficulty.key">
+				<select id="difficulty" @change="page.selectDifficulty($data, $event.target.value)">
+					<template x-for="difficulty in page.difficulties" :key="difficulty.key">
 						<option
 							:value="difficulty.key"
-							:selected="difficulty.key === studyDifficultyKey"
+							:selected="difficulty.key === page.difficultyKey"
 							x-text="difficulty.label"
 						></option>
 					</template>
 				</select>
-				<div class="study-streak" role="status" :aria-label="studyStreakLabel">
+				<div class="study-streak" role="status" :aria-label="page.streakLabel">
 					<span>Streak</span>
-					<strong x-text="studyStreak"></strong>
+					<strong x-text="page.streak"></strong>
 				</div>
 			</div>
 			<p class="difficulty-description" x-text="currentDifficulty.description"></p>
 		</section>
 
-		<section class="challenge-intro" x-show="showChallengeIntro" :aria-busy="challengePreparing">
-			<div class="challenge-invitation" x-show="challengeReceived">
-				<h2 x-text="challengeMode.label"></h2>
-				<p class="challenge-target" x-show="challengeTargetMs !== undefined">
-					Time to beat: <strong x-text="challengeTargetTime"></strong>
+		<section class="challenge-intro" x-show="page.kind === 'challenge' && page.showIntro" :aria-busy="page.preparing">
+			<div class="challenge-invitation" x-show="page.received">
+				<h2 x-text="page.mode?.label"></h2>
+				<p class="challenge-target" x-show="page.targetMs !== undefined">
+					Time to beat: <strong x-text="page.targetTime"></strong>
 				</p>
 				<div
 					class="challenge-difficulty-grid"
-					:style="{ '--challenge-invitation-difficulty-count': challengeInvitationDifficulties.length }"
+					:style="{ '--challenge-invitation-difficulty-count': (page.invitationDifficulties ?? []).length }"
 					aria-label="Challenge difficulties"
 				>
-					<template x-for="difficulty in challengeInvitationDifficulties" :key="difficulty.key">
+					<template x-for="difficulty in page.invitationDifficulties ?? []" :key="difficulty.key">
 						<div class="challenge-difficulty">
 							<strong x-text="difficulty.label"></strong>
 							<span x-text="`${difficulty.puzzleCount} puzzles`"></span>
@@ -249,55 +250,55 @@
 					</template>
 				</div>
 			</div>
-			<div class="challenge-mode-picker" x-show="!challengeReceived" role="group" aria-label="Challenge mode">
-				<template x-for="challengeMode in challengeModes" :key="challengeMode.key">
+			<div class="challenge-mode-picker" x-show="!page.received" role="group" aria-label="Challenge mode">
+				<template x-for="challengeMode in page.modes ?? []" :key="challengeMode.key">
 					<button
 						type="button"
-						:class="{ active: challengeModeKey === challengeMode.key }"
-						:aria-pressed="challengeModeKey === challengeMode.key"
-						@click="selectChallengeMode(challengeMode.key)"
+						:class="{ active: page.modeKey === challengeMode.key }"
+						:aria-pressed="page.modeKey === challengeMode.key"
+						@click="page.selectMode($data, challengeMode.key)"
 					>
 						<span class="challenge-mode-heading">
 							<strong x-text="challengeMode.label"></strong>
-							<span x-text="`${challengeModeTotal(challengeMode)} puzzles`"></span>
+							<span x-text="`${page.modeTotal(challengeMode)} puzzles`"></span>
 						</span>
-						<span class="challenge-mode-route" x-text="challengeModeRouteLabel(challengeMode)"></span>
+						<span class="challenge-mode-route" x-text="page.modeRouteLabel(challengeMode)"></span>
 					</button>
 				</template>
 			</div>
 			<p>Solve the puzzles. Each mistake marks that puzzle failed, but you can keep solving it. Mark every covered square the clues prove safe or mined. The clock starts when you press Start.</p>
 			<div class="challenge-intro-actions">
-				<button type="button" class="challenge-start" :disabled="challengePreparing" @click="activateChallengeStart()" x-text="challengeStartLabel"></button>
-				<button type="button" class="challenge-invite" @click="shareChallenge()">
+				<button type="button" class="challenge-start" :disabled="page.preparing" @click="page.activateStart($data)" x-text="page.startLabel"></button>
+				<button type="button" class="challenge-invite" @click="page.share($data)">
 					<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.5"></circle><circle cx="6" cy="12" r="2.5"></circle><circle cx="18" cy="19" r="2.5"></circle><path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5"></path></svg>
 					<span>Invite a friend</span>
 				</button>
 			</div>
 		</section>
 
-		<section class="challenge-finish" x-show="showChallengeFinish" x-transition.opacity role="status" aria-live="polite">
-			<div class="victory-effect" :class="{ failed: challengeFailedCount > 0 }" aria-hidden="true">
-				<span x-text="challengeFailedCount > 0 ? '\u2691' : '\u2713'"></span>
+		<section class="challenge-finish" x-show="page.kind === 'challenge' && page.showFinish" x-transition.opacity role="status" aria-live="polite">
+			<div class="victory-effect" :class="{ failed: page.failedCount > 0 }" aria-hidden="true">
+				<span x-text="page.failedCount > 0 ? '\u2691' : '\u2713'"></span>
 			</div>
 			<span class="challenge-kicker">Challenge complete</span>
-			<h2 x-text="challengeFinishTitle"></h2>
-			<p x-text="challengeCompleteMessage"></p>
-			<div class="finish-scorecard" :class="{ beaten: challengeTimeBeaten }">
+			<h2 x-text="page.finishTitle"></h2>
+			<p x-text="page.completeMessage"></p>
+			<div class="finish-scorecard" :class="{ beaten: page.timeBeaten }">
 				<div class="finish-time" aria-label="Final time">
 					<span>Final time</span>
-					<strong x-text="formattedTime"></strong>
+					<strong x-text="page.formattedTime"></strong>
 				</div>
-				<div class="finish-comparison" x-show="challengeTargetMs !== undefined">
-					<strong class="challenge-time-result" x-text="challengeTimeResultMessage"></strong>
+				<div class="finish-comparison" x-show="page.targetMs !== undefined">
+					<strong class="challenge-time-result" x-text="page.timeResultMessage"></strong>
 					<div class="their-time" aria-label="Their time">
 						<span>Their time</span>
-						<strong x-text="challengeTargetTime"></strong>
+						<strong x-text="page.targetTime"></strong>
 					</div>
 				</div>
 			</div>
 			<div class="challenge-finish-actions">
-				<button type="button" class="challenge-start" @click="restartChallenge()">Play again</button>
-				<button type="button" class="challenge-invite" @click="shareChallenge()">
+				<button type="button" class="challenge-start" @click="page.restart($data)">Play again</button>
+				<button type="button" class="challenge-invite" @click="page.share($data)">
 					<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.5"></circle><circle cx="6" cy="12" r="2.5"></circle><circle cx="18" cy="19" r="2.5"></circle><path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5"></path></svg>
 					<span>Challenge a friend</span>
 				</button>
@@ -306,26 +307,26 @@
 
 		<section
 			class="challenge-path"
-			x-show="showChallengePath"
-			:style="{ '--challenge-difficulty-count': challengeGroups.length }"
+			x-show="page.kind === 'challenge' && page.showPath"
+			:style="{ '--challenge-difficulty-count': (page.groups ?? []).length }"
 			aria-label="Challenge progress"
 		>
-			<template x-for="group in challengeGroups" :key="group.key">
+			<template x-for="group in page.groups ?? []" :key="group.key">
 				<div class="path-group">
 					<span class="path-label" x-text="group.label"></span>
 					<div class="path-steps" :style="{ '--challenge-puzzle-count': group.puzzleCount }">
 						<template x-for="step in group.steps" :key="step">
-							<span class="path-step" :class="challengeStepClass(step)" :aria-label="challengeStepLabel(step)"></span>
+							<span class="path-step" :class="page.stepClass(step)" :aria-label="page.stepLabel(step)"></span>
 						</template>
 					</div>
 				</div>
 			</template>
 		</section>
-		<section class="board-card" x-show="showBoard" :class="boardResultClass">
+		<section class="board-card" x-show="showBoard" :class="minefieldView.boardResultClass">
 			<div class="board-wrap">
-				<div class="minefield-shell" :class="{ 'scratch-mode': scratchActive }" :aria-busy="boardPreparing || traditionalBusy">
-					<div class="minefield" role="group" :aria-label="boardAriaLabel" :style="minefieldStyle">
-						<template x-for="cell in cells" :key="cell.key">
+				<div class="minefield-shell" :class="{ 'scratch-mode': minefieldView.scratchActive }" :aria-busy="minefieldView.busy ?? (boardPreparing || (page.kind === 'traditional' && page.busy))">
+					<div class="minefield" role="group" aria-label="Minefield" :style="minefieldView.minefieldStyle">
+						<template x-for="cell in minefieldView.cells" :key="cell.key">
 							<button
 								type="button"
 								class="cell"
@@ -348,32 +349,32 @@
 							></button>
 						</template>
 					</div>
-					<template x-if="mode === 'tutorial' && !tutorialComplete">
+					<template x-if="page.kind === 'tutorial' && !page.tutorialComplete">
 						<aside
 							class="tutorial-bubble"
-							:class="tutorialBubbleClass"
-							:style="tutorialBubbleStyle"
+							:class="page.tutorialBubbleClass"
+							:style="page.tutorialBubbleStyle"
 							aria-live="polite"
 						>
-							<span class="tutorial-progress" x-text="tutorialProgress"></span>
-							<h2 x-text="tutorialTitle"></h2>
-							<p x-text="tutorialMessage"></p>
+							<span class="tutorial-progress" x-text="page.tutorialProgress"></span>
+							<h2 x-text="page.tutorialTitle"></h2>
+							<p x-text="page.tutorialMessage"></p>
 						</aside>
 					</template>
 					<canvas
 						x-ref="scratchCanvas"
 						id="scratch-pad"
 						class="scratch-canvas"
-						:class="{ active: scratchActive, erasing: scratchActive && scratchTool === 'eraser' }"
+						:class="{ active: minefieldView.scratchActive, erasing: minefieldView.scratchActive && minefieldView.scratchTool === 'eraser' }"
 						aria-hidden="true"
-						@pointerdown="startScratchStroke($event)"
-						@pointermove="continueScratchStroke($event)"
-						@pointerup="endScratchStroke($event)"
-						@pointercancel="endScratchStroke($event)"
-						@wheel.prevent="cycleScratchTool($event)"
-						@contextmenu.prevent="contextMenuScratch($event)"
+						@pointerdown="minefieldView.startScratchStroke($event)"
+						@pointermove="minefieldView.continueScratchStroke($event)"
+						@pointerup="minefieldView.endScratchStroke($event)"
+						@pointercancel="minefieldView.endScratchStroke($event)"
+						@wheel.prevent="minefieldView.cycleScratchTool($event)"
+						@contextmenu.prevent="minefieldView.contextMenuScratch($event)"
 					></canvas>
-					<div class="board-loading" x-show="studySearchingVisible || (mode === 'daily' && boardPreparing)" x-transition.opacity role="status" aria-live="polite">
+					<div class="board-loading" x-show="page.searchingVisible || (page.kind === 'daily' && page.preparing)" x-transition.opacity role="status" aria-live="polite">
 						<span class="board-loading-spinner" aria-hidden="true"></span>
 						<strong>Building a puzzle…</strong>
 						<span>Trying different board layouts</span>
@@ -381,51 +382,51 @@
 				</div>
 			</div>
 			<div class="input-help-row">
-				<p class="input-help" x-text="inputHelp"></p>
-				<div class="board-utilities" x-show="mode !== 'tutorial'">
-					<div class="scratch-tools" :class="{ active: scratchActive }" role="toolbar" aria-label="Scratch pad">
+				<p class="input-help" x-text="page.minefield ? page.inputHelp : inputHelp"></p>
+				<div class="board-utilities" x-show="page.kind !== 'tutorial'">
+					<div class="scratch-tools" :class="{ active: minefieldView.scratchActive }" role="toolbar" aria-label="Scratch pad">
 						<button
 							type="button"
 							class="scratch-toggle"
-							:class="{ active: scratchActive }"
-							:aria-pressed="scratchActive"
+							:class="{ active: minefieldView.scratchActive }"
+							:aria-pressed="minefieldView.scratchActive"
 							aria-controls="scratch-pad"
-							:title="scratchActive ? 'Finish drawing' : 'Draw notes over the board'"
-							@click="toggleScratchPad()"
+							:title="minefieldView.scratchActive ? 'Finish drawing' : 'Draw notes over the board'"
+							@click="minefieldView.toggleScratchPad()"
 						>
 							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.7-10.7a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"></path><path d="m14.8 6.5 3 3M8.2 19l-3-3"></path></svg>
-							<span x-text="scratchActive ? 'Done' : 'Notes'"></span>
+							<span x-text="minefieldView.scratchActive ? 'Done' : 'Notes'"></span>
 						</button>
-						<div class="scratch-options" x-show="scratchActive">
-							<template x-for="color in scratchColors" :key="color.key">
+						<div class="scratch-options" x-show="minefieldView.scratchActive">
+							<template x-for="color in minefieldView.scratchColors" :key="color.key">
 								<button
 									type="button"
 									class="scratch-color"
-									:class="[color.key, { selected: scratchTool === 'pencil' && scratchColor === color.key }]"
+									:class="[color.key, { selected: minefieldView.scratchTool === 'pencil' && minefieldView.scratchColor === color.key }]"
 									:aria-label="`${color.label} pencil`"
-									:aria-pressed="scratchTool === 'pencil' && scratchColor === color.key"
+									:aria-pressed="minefieldView.scratchTool === 'pencil' && minefieldView.scratchColor === color.key"
 									:title="color.label"
-									@click="scratchColor = color.key; scratchTool = 'pencil'"
+									@click="minefieldView.scratchColor = color.key; minefieldView.scratchTool = 'pencil'"
 								></button>
 							</template>
 							<button
 								type="button"
 								class="scratch-eraser"
-								:class="{ active: scratchTool === 'eraser' }"
-								:aria-pressed="scratchTool === 'eraser'"
+								:class="{ active: minefieldView.scratchTool === 'eraser' }"
+								:aria-pressed="minefieldView.scratchTool === 'eraser'"
 								aria-label="Erase whole strokes"
 								title="Erase whole strokes"
-								@click="scratchTool = 'eraser'"
+								@click="minefieldView.scratchTool = 'eraser'"
 							>
 								<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.5 15.5 8.8-8.8a2.4 2.4 0 0 1 3.4 0l1.6 1.6a2.4 2.4 0 0 1 0 3.4L10 20H7.8l-3.3-3.3a.9.9 0 0 1 0-1.2Z"></path><path d="m11 9 6 6M10 20h9"></path></svg>
 							</button>
 							<button
 								type="button"
 								class="scratch-clear"
-								:disabled="scratchStrokes.length === 0"
+								:disabled="minefieldView.scratchStrokes.length === 0"
 								aria-label="Clear scratch pad"
 								title="Clear scratch pad"
-								@click="clearScratchPad()"
+								@click="minefieldView.clearScratchPad()"
 							>
 								<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 21q-.825 0-1.412-.587Q5 19.825 5 19V6H4V4h5V3h6v1h5v2h-1v13q0 .825-.587 1.413Q17.825 21 17 21Zm10-15H7v13h10V6ZM9 17h2V8H9v9Zm4 0h2V8h-2v9Z"></path></svg>
 							</button>
@@ -434,7 +435,7 @@
 					<button
 						type="button"
 						class="share-puzzle"
-						x-show="!scratchActive && mode !== 'traditional'"
+						x-show="!minefieldView.scratchActive && page.kind !== 'traditional'"
 						:disabled="sharePuzzleDisabled"
 						:aria-label="shareButtonLabel"
 						:title="shareButtonLabel"
@@ -455,7 +456,7 @@
 				<span x-text="statusMessage"></span>
 			</div>
 
-			<div class="result-banner" x-show="mode === 'challenge'" role="status" aria-live="polite">
+			<div class="result-banner" x-show="page.kind === 'challenge'" role="status" aria-live="polite">
 				<div>
 					<strong x-text="statusTitle"></strong>
 					<span x-text="statusMessage"></span>
@@ -463,88 +464,88 @@
 			</div>
 		</section>
 
-		<section class="game-controls" x-show="mode === 'puzzle' && !puzzleError" aria-label="Puzzle">
+		<section class="game-controls" x-show="page.kind === 'puzzle' && !page.error" aria-label="Puzzle">
 			<div class="board-actions puzzle-actions">
 				<button
 					type="button"
 					class="secondary"
 					:class="hintButtonClass"
 					:disabled="hintButtonDisabled"
-					:aria-pressed="hintUsed"
+					:aria-pressed="page.hintUsed"
 					@click="useHint()"
 				>Hint</button>
 			</div>
 		</section>
-		<section class="game-controls" x-show="mode === 'study'" aria-label="Board controls">
-			<div class="board-actions" :class="studyActionsClass">
+		<section class="game-controls" x-show="page.kind === 'study'" aria-label="Board controls">
+			<div class="board-actions" :class="page.actionsClass">
 				<button
 					type="button"
 					class="secondary"
 					:class="hintButtonClass"
 					:disabled="hintButtonDisabled"
-					:aria-pressed="hintUsed"
+					:aria-pressed="page.hintUsed"
 					@click="useHint()"
 				>Hint</button>
 				<button
 					type="button"
-					:class="studyBoardActionClass"
+					:class="page.boardActionClass"
 					:disabled="boardPreparing"
-					@click="activateStudyBoardAction()"
-					x-text="studyBoardActionLabel"
+					@click="page.activateBoardAction($data)"
+					x-text="page.boardActionLabel"
 				></button>
 			</div>
 		</section>
-		<section class="game-controls" x-show="mode === 'daily'" aria-label="Daily challenge controls">
+		<section class="game-controls" x-show="page.kind === 'daily'" aria-label="Daily challenge controls">
 			<div class="board-actions daily-actions">
-				<button type="button" class="secondary" :disabled="boardPreparing || !dailyBoardReady" @click="clearDailyBoard()">Clear marks</button>
-				<button type="button" class="primary" :disabled="boardPreparing || !dailyBoardReady || result === 'cleared'" @click="checkDailySolution()" x-text="result === 'cleared' ? 'Solved' : 'Check solution'"></button>
+				<button type="button" class="secondary" :disabled="page.preparing || !page.ready" @click="page.clearBoard($data)">Clear marks</button>
+				<button type="button" class="primary" :disabled="page.preparing || !page.ready || page.result === 'cleared'" @click="page.checkSolution($data)" x-text="page.result === 'cleared' ? 'Solved' : 'Check solution'"></button>
 			</div>
 		</section>
-		<section class="game-controls" x-show="mode === 'traditional'" aria-label="Traditional controls">
+		<section class="game-controls" x-show="page.kind === 'traditional'" aria-label="Traditional controls">
 			<div class="board-actions puzzle-actions">
-				<button type="button" class="primary" :disabled="traditionalBusy" @click="newTraditionalGame()">New game</button>
+				<button type="button" class="primary" :disabled="page.kind === 'traditional' && page.busy" @click="page.newGame($data)">New game</button>
 			</div>
 		</section>
-		<section class="game-controls" x-show="mode === 'tutorial'" aria-label="Introduction controls">
+		<section class="game-controls" x-show="page.kind === 'tutorial'" aria-label="Introduction controls">
 			<div class="board-actions tutorial-actions">
 				<button
-					x-show="!tutorialComplete"
+					x-show="!page.tutorialComplete"
 					type="button"
 					class="secondary"
-					@click="skipTutorial()"
+					@click="page.skip($data)"
 				>Skip introduction</button>
 				<button
-					x-show="tutorialComplete"
+					x-show="page.tutorialComplete"
 					type="button"
 					class="primary"
-					@click="finishTutorial()"
+					@click="page.finish($data)"
 				>Start playing</button>
 			</div>
 		</section>
-		<section class="game-controls" x-show="showChallengeControls" aria-label="Challenge controls">
+		<section class="game-controls" x-show="page.kind === 'challenge' && page.showControls" aria-label="Challenge controls">
 			<div class="board-actions challenge-actions">
 				<button
 					type="button"
 					class="primary"
-					:disabled="challengeResultActionDisabled"
-					@click="activateChallengeResultAction()"
-					x-text="challengeResultActionLabel"
+					:disabled="page.resultActionDisabled"
+					@click="page.activateResultAction($data)"
+					x-text="page.resultActionLabel"
 				></button>
 				<button
 					type="button"
 					class="secondary give-up-button"
-					:class="giveUpButtonClass"
-					:style="giveUpButtonStyle"
-					:disabled="!challengeRunActive"
-					:aria-label="giveUpButtonLabel"
-					@pointerdown="beginGiveUpGesture()"
-					@pointerup="cancelGiveUpGesture()"
-					@pointerleave="cancelGiveUpGesture()"
-					@pointercancel="cancelGiveUpGesture()"
-					@keydown.space.prevent="beginGiveUpGesture()"
-					@keyup.space.prevent="cancelGiveUpGesture()"
-					@keydown.enter.prevent="beginGiveUpGesture()"
-					@keyup.enter.prevent="cancelGiveUpGesture()"
+					:class="page.giveUpButtonClass"
+					:style="page.giveUpButtonStyle"
+					:disabled="!page.runActive"
+					:aria-label="page.giveUpButtonLabel"
+					@pointerdown="page.beginGiveUpGesture($data)"
+					@pointerup="page.cancelGiveUpGesture()"
+					@pointerleave="page.cancelGiveUpGesture()"
+					@pointercancel="page.cancelGiveUpGesture()"
+					@keydown.space.prevent="page.beginGiveUpGesture($data)"
+					@keyup.space.prevent="page.cancelGiveUpGesture()"
+					@keydown.enter.prevent="page.beginGiveUpGesture($data)"
+					@keyup.enter.prevent="page.cancelGiveUpGesture()"
 					title="Hold to give up"
 				>
 					<span class="give-up-progress" aria-hidden="true"></span>

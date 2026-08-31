@@ -832,59 +832,487 @@ function parseGameMode(value) {
 	return 'home';
 }
 
-function createMinesight() {
-	let stored = loadMinesightData();
-	let colorScheme = ['system', 'light', 'dark'].includes(stored.colorScheme) ? stored.colorScheme : 'system';
-	applyColorScheme(colorScheme);
+/** Wait for Alpine to apply pending reactive DOM updates. */
+function nextAlpineRender() {
+	let alpine = /** @type {Window & { Alpine: { nextTick: () => Promise<void> } }} */ (window).Alpine;
+	return alpine.nextTick();
+}
+
+/**
+ * Owns the presentation state for one rendered minefield. The parent controller
+ * handles input and the page applies game rules by updating this view.
+ *
+ * @param {MineField} field
+ */
+function createMineField(field) {
 	/** @type {ResizeObserver | undefined} */
 	let scratchResizeObserver;
-	/** @type {MineField | undefined} */
-	let puzzle;
-	let puzzleError = '';
-	/** @type {BeforeInstallPromptEvent | undefined} */
-	let installPrompt;
-	let initialUrl = redirectLegacyUrl(new URL(window.location.href));
-	if (initialUrl.hash === '') {
-		initialUrl.hash = '/';
-		window.history.replaceState(null, '', initialUrl);
-	}
-	let urlGame = resolveUrlGame(initialUrl);
-	if (urlGame.mode === 'puzzle') {
-		try {
-			puzzle = MineField.decode(urlGame.payload);
-		}
-		catch {
-			puzzleError = 'This puzzle link is invalid.';
-		}
-	}
-	gameSounds.setEnabled(stored.soundEnabled !== false);
-	let storedStudy = stored?.study ?? {};
-	let today = localDateKey();
-	let storedDaily = stored?.daily?.lastSeenDate === today ? stored.daily : { lastSeenDate: today };
-	let studyDifficultyKey = STUDY_DIFFICULTIES.some(({ key }) => key === storedStudy.difficultyKey) ? storedStudy.difficultyKey : STUDY_DIFFICULTIES[0].key;
-	if (urlGame.mode === 'study' && urlGame.difficultyKey !== undefined) studyDifficultyKey = urlGame.difficultyKey;
-	let dailyDifficultyKey = DAILY_DIFFICULTIES.some(({ key }) => key === storedDaily.difficultyKey) ? storedDaily.difficultyKey : DAILY_DIFFICULTIES[0].key;
-	if (urlGame.mode === 'daily' && urlGame.difficultyKey !== undefined) dailyDifficultyKey = urlGame.difficultyKey;
-	let studyStreaks = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
-		let streak = storedStudy.difficulties?.[key]?.streak;
+	/** @type {HTMLCanvasElement | undefined} */
+	let scratchCanvas;
+	return {
+		field,
+		/** @type {GameResult} */
+		result: 'playing',
+		hintsVisible: false,
+		solutionVisible: false,
+		traditionalRules: false,
+		tutorialRules: false,
+		ready: true,
+		busy: false,
+		actionsInverted: false,
+		revision: 0,
+		boardNumber: 0,
+		incorrectCellIndex: -1,
+		keyboardFocusIndex: -1,
+		/** @type {number | undefined} */
+		cellHoldTimerId: undefined,
+		/** @type {number | undefined} */
+		cellGesturePointerId: undefined,
+		cellGestureStartX: 0,
+		cellGestureStartY: 0,
+		lastCellHoldX: -1,
+		lastCellHoldY: -1,
+		lastCellHoldTime: 0,
+		scratchActive: false,
+		scratchTool: 'pencil',
+		scratchColor: 'graphite',
+		scratchColors: [
+			{ key: 'graphite', label: 'Graphite' },
+			{ key: 'blue', label: 'Blue' },
+			{ key: 'red', label: 'Red' },
+		],
+		/** @type {Array<{ color: string, points: Array<{ x: number, y: number }>, drawProgress?: number }>} */
+		scratchStrokes: [],
+		/** @type {{ color: string, points: Array<{ x: number, y: number }> } | undefined} */
+		scratchStroke: undefined,
+		/** @type {{ x: number, y: number } | undefined} */
+		scratchEraserPoint: undefined,
+
+		get boardResultClass() { return `result-${this.result}`; },
+		get minefieldStyle() { return `--columns: ${this.field.width}`; },
+		get tapActionLabel() { return this.actionsInverted ? 'Mine' : 'Safe'; },
+		get holdActionLabel() { return this.actionsInverted ? 'Safe' : 'Mine'; },
+
+		destroy() {
+			if (this.cellHoldTimerId !== undefined) window.clearTimeout(this.cellHoldTimerId);
+			this.cellHoldTimerId = undefined;
+			this.cellGesturePointerId = undefined;
+			scratchResizeObserver?.disconnect();
+			scratchCanvas = undefined;
+		},
+		reset() {
+			this.keyboardFocusIndex = -1;
+			this.resetScratchPad();
+		},
+
+		get cells() {
+			this.revision;
+			let field = this.field;
+			let result = this.result;
+			let cells = [];
+			let showHints = this.hintsVisible && result === 'playing';
+			let showSolution = this.solutionVisible;
+			for (let y = 0; y < field.height; y += 1) for (let x = 0; x < field.width; x += 1) {
+				let index = field.getIndex(x, y);
+				let mine = field.isMine(x, y);
+				let revealed = field.isRevealed(x, y);
+				let flagged = field.isFlagged(x, y);
+				let markedMine = field.isMarkedMine(x, y);
+				let markedSafe = field.isMarkedSafe(x, y);
+				let active = this.traditionalRules ? !revealed : field.isActive(x, y);
+				let incorrect = field.isIncorrect(x, y) || index === this.incorrectCellIndex
+					|| (this.traditionalRules && result === 'failed' && mine && revealed);
+				let solutionMine = showSolution && field.isForcedMine(x, y);
+				let solutionSafe = (showSolution || (this.traditionalRules && result === 'failed')) && field.isForcedSafe(x, y);
+				let clue = field.getClue(x, y);
+				let showMine = !this.traditionalRules && !field.isPuzzle && mine && (revealed || result === 'failed');
+				let hinted = showHints && ((field.isForcedSafe(x, y) && !markedSafe) || (field.isForcedMine(x, y) && !markedMine));
+				let classNames = [];
+				if (revealed) classNames.push('revealed');
+				if (flagged) classNames.push('flagged');
+				if (markedMine || solutionMine || (this.traditionalRules && flagged)) classNames.push('marked-mine');
+				if (markedSafe || solutionSafe) classNames.push('marked-safe');
+				if (!active && !revealed && !flagged) classNames.push('inactive');
+				if (hinted) classNames.push('hinted');
+				if (showMine) classNames.push('mine');
+				if (incorrect) classNames.push('incorrect-guess');
+				if (mine && revealed) classNames.push('detonated');
+				if (revealed && !mine && clue > 0) classNames.push(`clue-${clue}`);
+				let text = incorrect ? '!' : markedSafe || solutionSafe ? '✓' : markedMine || solutionMine || flagged ? '⚑'
+					: showMine ? '✹' : hinted ? '?' : revealed && clue > 0 ? String(clue) : '';
+				let description = incorrect ? 'incorrect choice' : solutionSafe ? 'solution: safe' : solutionMine ? 'solution: mine'
+					: markedSafe ? 'marked safe' : markedMine ? 'marked mine' : flagged ? 'flagged' : showMine ? 'mine'
+					: hinted ? 'hint' : revealed ? clue > 0 ? `clue ${clue}` : 'empty' : active ? 'covered square' : 'outside this puzzle';
+				let chordable = !this.tutorialRules && revealed && !mine;
+				let disabled = this.busy || !this.ready || result !== 'playing' || (!active && !chordable);
+				cells.push({ key: `${this.boardNumber}-${index}`, index, x, y, text, className: classNames.join(' '),
+					label: `Row ${y + 1}, column ${x + 1}, ${description}`, disabled, tabIndex: -1 });
+			}
+			let keyboardTarget = cells.find(cell => cell.index === this.keyboardFocusIndex && !cell.disabled) ?? cells.find(cell => !cell.disabled);
+			for (let cell of cells) cell.tabIndex = cell === keyboardTarget ? 0 : -1;
+			return cells;
+		},
+
+		toggleScratchPad() {
+			this.scratchActive = !this.scratchActive;
+			if (this.scratchActive && this.scratchTool === 'eraser') {
+				this.scratchTool = 'pencil';
+				this.scratchColor = this.scratchColors[0].key;
+			}
+			this.scratchStroke = undefined;
+			this.scratchEraserPoint = undefined;
+		},
+		/** @param {unknown} canvas */
+		setupScratchPad(canvas) {
+			if (!(canvas instanceof HTMLCanvasElement)) return;
+			scratchCanvas = canvas;
+			scratchResizeObserver?.disconnect();
+			scratchResizeObserver = new ResizeObserver(() => this.resizeScratchPad());
+			scratchResizeObserver.observe(canvas.parentElement ?? canvas);
+			this.resizeScratchPad();
+		},
+		resizeScratchPad() {
+			let canvas = scratchCanvas;
+			if (!(canvas instanceof HTMLCanvasElement)) return;
+			let rect = canvas.getBoundingClientRect();
+			if (rect.width <= 0 || rect.height <= 0) return;
+			let scale = Math.min(window.devicePixelRatio || 1, 3);
+			let width = Math.round(rect.width * scale);
+			let height = Math.round(rect.height * scale);
+			if (canvas.width !== width || canvas.height !== height) {
+				canvas.width = width;
+				canvas.height = height;
+			}
+			this.renderScratchPad();
+		},
+		renderScratchPad() {
+			let canvas = scratchCanvas;
+			if (!(canvas instanceof HTMLCanvasElement)) return;
+			let context = canvas.getContext('2d');
+			let rect = canvas.getBoundingClientRect();
+			if (!context || rect.width <= 0 || rect.height <= 0) return;
+			let styles = getComputedStyle(document.documentElement);
+			let colors = Object.fromEntries(this.scratchColors.map(color => [color.key, styles.getPropertyValue(`--scratch-${color.key}`).trim()]));
+			context.setTransform(1, 0, 0, 1, 0, 0);
+			context.clearRect(0, 0, canvas.width, canvas.height);
+			context.setTransform(canvas.width / rect.width, 0, 0, canvas.width / rect.width, 0, 0);
+			context.lineCap = 'round'; context.lineJoin = 'round'; context.lineWidth = 2.4;
+			for (let stroke of this.scratchStrokes) {
+				let first = stroke.points[0];
+				if (!first) continue;
+				let progress = Math.max(0, Math.min(1, stroke.drawProgress ?? 1));
+				if (progress === 0) continue;
+				context.beginPath(); context.strokeStyle = colors[stroke.color] || colors.graphite;
+				context.moveTo(first.x * rect.width, first.y * rect.height);
+				let segments = stroke.points.slice(1).map((point, index) => {
+					let previous = stroke.points[index];
+					return { point, previous, length: Math.hypot((point.x - previous.x) * rect.width, (point.y - previous.y) * rect.height) };
+				});
+				let remaining = segments.reduce((total, segment) => total + segment.length, 0) * progress;
+				for (let segment of segments) {
+					if (remaining >= segment.length) {
+						context.lineTo(segment.point.x * rect.width, segment.point.y * rect.height);
+						remaining -= segment.length;
+						continue;
+					}
+					let amount = segment.length === 0 ? 1 : remaining / segment.length;
+					context.lineTo((segment.previous.x + (segment.point.x - segment.previous.x) * amount) * rect.width,
+						(segment.previous.y + (segment.point.y - segment.previous.y) * amount) * rect.height);
+					break;
+				}
+				if (stroke.points.length === 1) context.lineTo(first.x * rect.width + .01, first.y * rect.height + .01);
+				context.stroke();
+			}
+		},
+		scratchPoint(event) {
+			let rect = event.currentTarget.getBoundingClientRect();
+			return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
+		},
+		isScratchTap(stroke, endPoint) {
+			let first = stroke.points[0];
+			return Boolean(first) && [...stroke.points, ...(endPoint ? [endPoint] : [])].every(point => Math.hypot(point.x - first.x, point.y - first.y) < SCRATCH_TAP_DISTANCE);
+		},
+		eraseScratchStrokes(start, end) {
+			this.scratchStrokes = this.scratchStrokes.filter(stroke => {
+				if (stroke === this.scratchStroke || stroke.points.length === 0) return true;
+				if (stroke.points.length === 1) return pointSegmentDistance(stroke.points[0], start, end) > SCRATCH_ERASER_RADIUS;
+				return !stroke.points.slice(1).some((point, index) => segmentDistance(stroke.points[index], point, start, end) <= SCRATCH_ERASER_RADIUS);
+			});
+		},
+		startScratchStroke(event) {
+			if (!this.scratchActive || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+			event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId);
+			let point = this.scratchPoint(event);
+			if (this.scratchTool === 'eraser') { this.scratchEraserPoint = point; this.eraseScratchStrokes(point, point); }
+			else { this.scratchStroke = { color: this.scratchColor, points: [point] }; this.scratchStrokes.push(this.scratchStroke); }
+			this.renderScratchPad();
+		},
+		continueScratchStroke(event) {
+			if ((!this.scratchStroke && !this.scratchEraserPoint) || !event.isPrimary || event.buttons === 0) return;
+			event.preventDefault(); let point = this.scratchPoint(event);
+			if (this.scratchEraserPoint) { this.eraseScratchStrokes(this.scratchEraserPoint, point); this.scratchEraserPoint = point; }
+			else {
+				let previous = this.scratchStroke?.points.at(-1);
+				if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) >= .0015) this.scratchStroke?.points.push(point);
+			}
+			this.renderScratchPad();
+		},
+		endScratchStroke(event) {
+			if (!event.isPrimary) return;
+			if (this.scratchEraserPoint) { this.scratchEraserPoint = undefined; return; }
+			let stroke = this.scratchStroke; this.scratchStroke = undefined;
+			if (!stroke) return;
+			if (event.type === 'pointercancel') {
+				if (this.isScratchTap(stroke)) this.scratchStrokes.splice(this.scratchStrokes.indexOf(stroke), 1);
+				this.renderScratchPad();
+				return;
+			}
+			let point = this.scratchPoint(event);
+			if (!this.isScratchTap(stroke, point)) return;
+			this.scratchStrokes.splice(this.scratchStrokes.indexOf(stroke), 1);
+			this.drawScratchMark(point, this.flagForInput(false));
+		},
+		drawScratchMark(point, flag) {
+			let jitter = () => (Math.random() - .5) * SCRATCH_MARK_SIZE * .12;
+			let angle = (Math.random() - .5) * .14;
+			let rotate = (x, y) => ({ x: point.x + x * Math.cos(angle) - y * Math.sin(angle) + jitter(), y: point.y + x * Math.sin(angle) + y * Math.cos(angle) + jitter() });
+			let path = flag ? [[-.32, .9], [-.32, -.9], [-.3, -.82], [.72, -.48], [-.3, -.08]] : [[-.8, -.02], [-.22, .62], [.86, -.72]];
+			let stroke = { color: this.scratchColor, points: path.map(([x, y]) => rotate(x * SCRATCH_MARK_SIZE, y * SCRATCH_MARK_SIZE)), drawProgress: 0 };
+			this.scratchStrokes.push(stroke);
+			let startTime;
+			let drawFrame = time => {
+				startTime ??= time;
+				stroke.drawProgress = Math.min(1, (time - startTime) / SCRATCH_MARK_ANIMATION_MS);
+				this.renderScratchPad();
+				if (stroke.drawProgress < 1) requestAnimationFrame(drawFrame);
+			};
+			requestAnimationFrame(drawFrame);
+		},
+		contextMenuScratch(event) {
+			if (!this.scratchActive) return;
+			let point = this.scratchPoint(event);
+			if (this.scratchTool === 'eraser') this.eraseScratchStrokes(point, point);
+			else {
+				if (this.scratchStroke && this.isScratchTap(this.scratchStroke, point)) {
+					this.scratchStrokes.splice(this.scratchStrokes.indexOf(this.scratchStroke), 1);
+					this.scratchStroke = undefined;
+				}
+				this.drawScratchMark(point, this.flagForInput(true));
+			}
+			this.renderScratchPad();
+		},
+		cycleScratchTool(event) {
+			if (!this.scratchActive) return;
+			let delta = event.deltaY || event.deltaX;
+			if (delta === 0) return;
+			let tools = [...this.scratchColors.map(color => color.key), 'eraser'];
+			let current = this.scratchTool === 'eraser' ? tools.length - 1 : tools.indexOf(this.scratchColor);
+			let next = tools[(current + (delta > 0 ? 1 : -1) + tools.length) % tools.length];
+			if (next === 'eraser') this.scratchTool = 'eraser';
+			else { this.scratchTool = 'pencil'; this.scratchColor = next; }
+		},
+		clearScratchPad() { this.scratchStrokes = []; this.scratchStroke = undefined; this.scratchEraserPoint = undefined; this.renderScratchPad(); },
+		async resetScratchPad() {
+			this.scratchActive = false;
+			this.scratchTool = 'pencil';
+			this.clearScratchPad();
+			await nextAlpineRender();
+			this.resizeScratchPad();
+		},
+	};
+}
+
+function createHomePage() {
+	return {
+		kind: 'home',
+		title: '',
+		field: new MineField(BOARD_SIZE, BOARD_SIZE),
+		result: 'playing',
+		markValidation: 'immediate',
+		hints: false,
+		traditionalRules: false,
+		tutorialRules: false,
+		requiresReadyBoard: false,
+		showSolution: () => false,
+		currentDifficulty: () => STUDY_DIFFICULTIES[0],
+		showBoard: () => false,
+		open() {
+			this.refreshDailyProgress();
+		},
+		close() {},
+		inputHelp: () => '',
+		applyCellInput() {},
+		share() {},
+		shareButtonLabel: () => '',
+		shareDisabled: () => true,
+		showPuzzleStatus: false,
+		statusTitle: () => '',
+		statusMessage: () => '',
+		resultTitle: () => '',
+		resultMessage: () => '',
+		hintDisabled: () => true,
+		toggleHint() {},
+		beforeMove() {},
+		handleIncorrect: () => false,
+		handleCleared: () => false,
+		saveMove() {},
+		dailyProgress: '',
+		refreshDailyProgress() {
+			let stored = loadMinesightData()?.daily;
+			let completed = stored?.lastSeenDate === localDateKey()
+				? DAILY_DIFFICULTIES.filter(({ key }) => stored.difficulties?.[key]?.completed).length
+				: 0;
+			this.dailyProgress = `${completed}/${DAILY_DIFFICULTIES.length} complete today`;
+		},
+	};
+}
+
+function createTutorialPage() {
+	return {
+		kind: 'tutorial',
+		title: 'How to play',
+		field: new MineField(BOARD_SIZE, BOARD_SIZE),
+		result: 'playing',
+		markValidation: 'immediate',
+		hints: false,
+		traditionalRules: false,
+		tutorialRules: true,
+		requiresReadyBoard: false,
+		showSolution: () => false,
+		tutorialStep: 0,
+		get tutorialComplete() {
+			return this.tutorialStep >= TUTORIAL_STEPS.length;
+		},
+		get tutorialProgress() {
+			return this.tutorialComplete ? 'Introduction complete' : `Step ${this.tutorialStep + 1} of ${TUTORIAL_STEPS.length}`;
+		},
+		get tutorialTitle() {
+			return this.tutorialComplete ? 'That is Minesight' : TUTORIAL_STEPS[this.tutorialStep].title;
+		},
+		get tutorialMessage() {
+			if (this.tutorialComplete) {
+				return 'Mark only squares the clues prove safe or mined. If a square is ambiguous, leave it alone.';
+			}
+			return TUTORIAL_STEPS[this.tutorialStep].message;
+		},
+		get tutorialBubbleClass() {
+			if (this.tutorialComplete) return '';
+			return `tutorial-bubble-${TUTORIAL_STEPS[this.tutorialStep].bubble}`;
+		},
+		get tutorialBubbleStyle() {
+			if (this.tutorialComplete) return '';
+			let { x, y } = TUTORIAL_STEPS[this.tutorialStep];
+			let rightEdge = (x + 1) / this.field.width * 100;
+			let top = y / this.field.height * 100;
+			let spaceRight = (this.field.width - x) / this.field.width * 100;
+			let spaceBelow = (this.field.height - y - 1) / this.field.height * 100;
+			let bottomEdge = (y + 1) / this.field.height * 100;
+			let targetCenter = (x + .5) / this.field.width * 100;
+			return `--tutorial-right-edge: ${rightEdge}%; --tutorial-top: ${top}%; --tutorial-space-right: ${spaceRight}%; --tutorial-space-below: ${spaceBelow}%; --tutorial-bottom-edge: ${bottomEdge}%; --tutorial-target-center: ${targetCenter}%`;
+		},
+		currentDifficulty: () => STUDY_DIFFICULTIES[0],
+		showBoard: () => true,
+		open(app) {
+			app.clearIncorrectFeedback();
+			this.result = 'playing';
+			app.engineError = '';
+			this.field = createTutorialField();
+			app.boardNumber += 1;
+			app.revision += 1;
+		},
+		close() {},
+		inputHelp(app) {
+			return `Tap or left-click to mark ${app.tapActionLabel}. Long-press or right-click to mark ${app.holdActionLabel}.`;
+		},
+		applyCellInput(app, x, y, flag) {
+			this.applyInput(app, x, y, flag);
+		},
+		share(app) {
+			return app.sharePuzzle();
+		},
+		shareButtonLabel: () => 'Share this puzzle',
+		shareDisabled: () => true,
+		showPuzzleStatus: false,
+		statusTitle: () => '',
+		statusMessage: () => '',
+		resultTitle: () => '',
+		resultMessage: () => '',
+		hintDisabled: () => true,
+		toggleHint() {},
+		beforeMove() {},
+		handleIncorrect: () => false,
+		handleCleared: () => false,
+		saveMove() {},
+		/** @param {any} app @param {number} x @param {number} y @param {boolean} flag */
+		applyInput(app, x, y, flag) {
+			if (this.tutorialComplete) return;
+			let step = TUTORIAL_STEPS[this.tutorialStep];
+			let correctCell = x === step.x && y === step.y;
+			let correctGesture = step.action === 'ambiguous' || (step.action === 'mine') === flag;
+			if (!correctCell || !correctGesture) {
+				this.rejectInput(app, x, y);
+				return;
+			}
+
+			if (step.action === 'safe') this.field.actionMarkSafe(x, y);
+			else if (step.action === 'mine') this.field.actionMarkMine(x, y);
+			else {
+				this.field.actionMarkSafe(x, y);
+				this.field.consumeIncorrect();
+				let index = this.field.getIndex(x, y);
+				app.showIncorrectFeedback(index, 'That square is not forced. Minesight rejects guesses.');
+				gameSounds.play('incorrect');
+				feedbackEffects.failure({ cellIndex: index, terminal: false });
+			}
+			if (step.action !== 'ambiguous') {
+				gameSounds.play('mark');
+				feedbackEffects.mark({
+					cellIndex: this.field.getIndex(x, y),
+					mine: step.action === 'mine',
+				});
+			}
+			this.tutorialStep += 1;
+			app.revision += 1;
+		},
+		/** @param {any} app @param {number} x @param {number} y */
+		rejectInput(app, x, y) {
+			let index = this.field.getIndex(x, y);
+			app.showIncorrectFeedback(index, 'Try the highlighted square using the instructed action.');
+			gameSounds.play('incorrect');
+			feedbackEffects.failure({ cellIndex: index, terminal: false });
+		},
+		/** @param {any} app */
+		finish(app) {
+			if (app.page !== this) return;
+			app.navigate(`/study/${BEGINNER_DIFFICULTY.key}`);
+		},
+		/** @param {any} app */
+		skip(app) {
+			if (app.page === this) app.switchMode('home');
+		},
+	};
+}
+
+function createStudyPage() {
+	let stored = loadMinesightData()?.study ?? {};
+	let difficultyKey = STUDY_DIFFICULTIES.some(({ key }) => key === stored.difficultyKey)
+		? stored.difficultyKey
+		: STUDY_DIFFICULTIES[0].key;
+	let streaks = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
+		let streak = stored.difficulties?.[key]?.streak;
 		return [key, Math.max(0, Number.parseInt(streak) || 0)];
 	}));
-	let savedChallengeModeKey = stored.challengeModeKey ?? 'expert';
-	let challengeModeKey = CHALLENGE_MODES.some(({ key }) => key === savedChallengeModeKey) ? savedChallengeModeKey : CHALLENGE_MODES[0].key;
-	if (urlGame.mode === 'challenge') challengeModeKey = urlGame.modeKey;
-	let challengeSeed = urlGame.mode === 'challenge' && urlGame.seed !== undefined ? urlGame.seed : randomChallengeSeed();
 	/** @type {Record<string, StudyState | undefined>} */
-	let studyStates = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
-		let saved = storedStudy.difficulties?.[key];
-		if (!Array.isArray(saved?.board?.cells)) return [key, undefined];
-		if (saved.board.difficultyKey !== key) return [key, undefined];
+	let states = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
+		let saved = stored.difficulties?.[key];
+		if (!Array.isArray(saved?.board?.cells) || saved.board.difficultyKey !== key) return [key, undefined];
 		try {
 			return [key, {
 				field: new MineField(BOARD_SIZE, BOARD_SIZE, Uint8Array.from(saved.board.cells)),
 				seed: BigInt(saved.board.seed),
 				result: saved.board.result === 'cleared' ? 'cleared' : 'playing',
 				hintUsed: Boolean(saved.board.hintUsed),
-				streak: studyStreaks[key],
+				streak: streaks[key],
 				ready: true,
 			}];
 		}
@@ -892,9 +1320,305 @@ function createMinesight() {
 			return [key, undefined];
 		}
 	}));
+	return {
+		kind: 'study',
+		title: 'Study',
+		field: new MineField(BOARD_SIZE, BOARD_SIZE),
+		result: 'playing',
+		markValidation: 'immediate',
+		hints: true,
+		hintUsed: false,
+		traditionalRules: false,
+		tutorialRules: false,
+		requiresReadyBoard: true,
+		showSolution: () => false,
+		difficulties: STUDY_DIFFICULTIES,
+		difficultyKey,
+		states,
+		streaks,
+		streak: streaks[difficultyKey],
+		ready: false,
+		preparing: false,
+		preparationId: 0,
+		searchingVisible: false,
+		/** @type {number | undefined} */
+		searchingTimerId: undefined,
+		currentDifficulty() {
+			return STUDY_DIFFICULTIES.find(({ key }) => key === this.difficultyKey) ?? STUDY_DIFFICULTIES[0];
+		},
+		close(app) {
+			this.cancelPreparation(app);
+			this.snapshotState(app);
+			this.saveData();
+		},
+		open(app, route) {
+			if (route.difficultyKey !== undefined) this.difficultyKey = route.difficultyKey;
+			else {
+				window.history.replaceState(null, '', createRouteUrl(window.location.href, `/study/${this.difficultyKey}`));
+				app.activeRouteUrl = window.location.href;
+			}
+			this.streak = this.streaks[this.difficultyKey];
+			if (!this.restoreState(app)) void this.newBoard(app);
+		},
+		showBoard() {
+			return this.ready || this.preparing;
+		},
+		inputHelp(app) {
+			if (app.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
+			return `Tap or left-click to mark ${app.tapActionLabel}. Long-press or right-click to mark ${app.holdActionLabel}.`;
+		},
+		applyCellInput(app, x, y, flag) {
+			this.applyInput(app, x, y, flag);
+		},
+		async share(app) {
+			if (this.shareDisabled() || !this.showBoard()) return;
+			let url = createRouteUrl(window.location.href, `/puzzle/${this.field.encode()}`);
+			let shareData = {
+				title: 'Minesight Puzzle',
+				text: 'Can you solve this Minesight puzzle?',
+				url: url.href,
+			};
+			await app.shareLink(shareData, 'Puzzle shared', 'Share link copied');
+		},
+		shareButtonLabel: () => 'Share this puzzle',
+		shareDisabled() {
+			return this.preparing || !this.ready;
+		},
+		showPuzzleStatus: true,
+		statusTitle() {
+			return this.result === 'playing' ? 'What can you prove?' : this.resultTitle();
+		},
+		statusMessage() {
+			return this.result === 'playing'
+				? 'Mark every covered square that must be safe or mined.'
+				: this.resultMessage();
+		},
+		resultTitle() {
+			return this.result === 'cleared' ? 'Puzzle solved' : 'Incorrect move';
+		},
+		resultMessage() {
+			return this.result === 'cleared' ? 'Good solve. Keep the streak going.' : "The clues don't support that mark.";
+		},
+		hintDisabled() {
+			return this.preparing || this.result !== 'playing' || !this.ready;
+		},
+		toggleHint(app) {
+			if (this.result !== 'playing' || !this.ready) return;
+			this.hintUsed = !this.hintUsed;
+			app.revision += 1;
+			this.snapshotState(app);
+			this.saveData();
+		},
+		beforeMove() {},
+		handleIncorrect() {
+			feedbackEffects.streakLost(this.streak);
+			this.setStreak(0);
+			return false;
+		},
+		handleCleared() {
+			this.result = 'cleared';
+			this.setStreak(this.streak + 1);
+			return false;
+		},
+		saveMove(app) {
+			this.snapshotState(app);
+			this.saveData();
+		},
+		get streakLabel() {
+			return `${this.currentDifficulty().label} study streak: ${this.streak}`;
+		},
+		get actionsClass() {
+			return this.searchingVisible ? 'is-searching' : '';
+		},
+		get boardActionClass() {
+			return this.result === 'playing' && this.ready ? 'skip' : 'primary';
+		},
+		get boardActionLabel() {
+			if (this.searchingVisible) return 'Searching…';
+			if (this.preparing) return 'Building…';
+			if (!this.ready) return 'Try again';
+			return this.result === 'playing' ? 'Skip' : 'Next';
+		},
+		activateBoardAction(app) {
+			if (this.preparing) return;
+			if (this.result === 'playing' && this.ready) this.skipBoard(app);
+			else void this.newBoard(app);
+		},
+		/** @param {any} app @param {string} key */
+		selectDifficulty(app, key) {
+			if (this.difficultyKey === key) return;
+			if (!STUDY_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
+			this.snapshotState(app);
+			this.cancelPreparation(app);
+			this.difficultyKey = key;
+			this.streak = this.streaks[key];
+			window.history.pushState(null, '', createRouteUrl(window.location.href, `/study/${key}`));
+			app.activeRouteUrl = window.location.href;
+			let restored = this.restoreState(app);
+			this.saveData();
+			if (!restored) void this.newBoard(app);
+		},
+		snapshotState(app) {
+			this.states[this.difficultyKey] = {
+				field: this.field,
+				seed: app.boardSeed,
+				result: this.result,
+				hintUsed: this.hintUsed,
+				streak: this.streak,
+				ready: this.ready,
+			};
+		},
+		restoreState(app) {
+			let state = this.states[this.difficultyKey];
+			if (!state) {
+				this.streak = this.streaks[this.difficultyKey];
+				this.ready = false;
+				return false;
+			}
+			this.streak = state.streak;
+			if (!state.ready) {
+				this.ready = false;
+				return false;
+			}
+			app.clearIncorrectFeedback();
+			this.field = state.field;
+			app.boardSeed = state.seed;
+			this.result = state.result;
+			this.hintUsed = state.hintUsed;
+			this.ready = true;
+			app.engineError = '';
+			app.boardNumber += 1;
+			app.revision += 1;
+			return true;
+		},
+		/** @param {number} streak */
+		setStreak(streak) {
+			this.streak = streak;
+			this.streaks[this.difficultyKey] = streak;
+		},
+		saveData() {
+			let difficulties = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
+				let state = this.states[key];
+				/** @type {{ streak: number, board?: { difficultyKey: string, cells: number[], seed: string, result: GameResult, hintUsed: boolean } }} */
+				let saved = { streak: this.streaks[key] };
+				if (state?.ready) saved.board = {
+					difficultyKey: key,
+					cells: Array.from(state.field.state),
+					seed: String(state.seed),
+					result: state.result,
+					hintUsed: state.hintUsed,
+				};
+				return [key, saved];
+			}));
+			saveMinesightData('study', { difficultyKey: this.difficultyKey, difficulties });
+		},
+		async newBoard(app) {
+			this.result = 'playing';
+			this.hintUsed = false;
+			this.ready = false;
+			this.snapshotState(app);
+			this.saveData();
+			await this.replaceField(app);
+		},
+		skipBoard(app) {
+			if (app.page !== this || this.result !== 'playing') return;
+			void this.newBoard(app);
+		},
+		async replaceField(app) {
+			app.clearIncorrectFeedback();
+			let preparationId = this.preparationId + 1;
+			this.preparationId = preparationId;
+			this.preparing = true;
+			app.boardPreparing = true;
+			this.clearSearchingDelay();
+			this.searchingTimerId = window.setTimeout(() => {
+				if (app.page === this && app.boardPreparing && preparationId === this.preparationId) {
+					this.searchingVisible = true;
+				}
+			}, 200);
+			app.engineError = '';
+			try {
+				let difficulty = this.currentDifficulty();
+				let difficultyKey = this.difficultyKey;
+				let puzzle = await generateField(difficulty, () => (
+					app.page === this && difficultyKey === this.difficultyKey && preparationId === this.preparationId
+				));
+				if (!puzzle || app.page !== this || difficultyKey !== this.difficultyKey || preparationId !== this.preparationId) return;
+				this.field = puzzle.field;
+				app.boardSeed = puzzle.seed;
+				this.ready = true;
+				app.engineError = '';
+				app.boardNumber += 1;
+				app.revision += 1;
+				this.snapshotState(app);
+				this.saveData();
+			}
+			catch (error) {
+				if (preparationId !== this.preparationId) return;
+				app.engineError = error instanceof Error ? error.message : String(error);
+			}
+			finally {
+				if (preparationId === this.preparationId) {
+					this.preparing = false;
+					app.boardPreparing = false;
+					this.clearSearchingDelay();
+				}
+			}
+		},
+		cancelPreparation(app) {
+			this.preparationId += 1;
+			this.preparing = false;
+			if (app) app.boardPreparing = false;
+			this.clearSearchingDelay();
+		},
+		clearSearchingDelay() {
+			if (this.searchingTimerId !== undefined) window.clearTimeout(this.searchingTimerId);
+			this.searchingTimerId = undefined;
+			this.searchingVisible = false;
+		},
+		/** @param {any} app @param {number} x @param {number} y @param {boolean} flag */
+		applyInput(app, x, y, flag) {
+			if (this.result !== 'playing') return;
+			let validate = this.markValidation === 'immediate';
+			if (this.field.isRevealed(x, y)) {
+				let chord = this.field.actionChordMarks(x, y, { validate });
+				if (chord.marks.length === 0 && chord.rejectedIndex < 0) return;
+				let [first, ...additionalMarks] = chord.marks;
+				app.afterMove({
+					removing: false,
+					cellIndex: first?.index ?? chord.rejectedIndex,
+					markMine: first?.mine ?? false,
+					additionalMarks,
+					rejectedIndex: chord.rejectedIndex,
+				});
+				return;
+			}
+			if (!this.field.isActive(x, y)) return;
+			let cellIndex = this.field.getIndex(x, y);
+			let action = flag
+				? this.field.actionMarkMine(x, y, { validate })
+				: this.field.actionMarkSafe(x, y, { validate });
+			if (action.change === 'ignored') return;
+			app.afterMove({
+				removing: action.change === 'removed',
+				cellIndex,
+				markMine: flag,
+				rejectedIndex: action.change === 'rejected' ? cellIndex : -1,
+			});
+		},
+	};
+}
+
+function createDailyPage() {
+	let today = localDateKey();
+	let savedDaily = loadMinesightData()?.daily;
+	let stored = savedDaily?.lastSeenDate === today ? savedDaily : { lastSeenDate: today };
+	let difficultyKey = DAILY_DIFFICULTIES.some(({ key }) => key === stored.difficultyKey)
+		? stored.difficultyKey
+		: DAILY_DIFFICULTIES[0].key;
 	/** @type {Record<string, DailyState | undefined>} */
-	let dailyStates = Object.fromEntries(DAILY_DIFFICULTIES.map(({ key }) => {
-		let saved = storedDaily.difficulties?.[key];
+	let states = Object.fromEntries(DAILY_DIFFICULTIES.map(({ key }) => {
+		let saved = stored.difficulties?.[key];
 		if (!Array.isArray(saved?.cells) || saved.difficultyKey !== key) return [key, undefined];
 		try {
 			return [key, {
@@ -909,25 +1633,1358 @@ function createMinesight() {
 			return [key, undefined];
 		}
 	}));
-	let traditionalField = new MineField(BOARD_SIZE, BOARD_SIZE);
-	let traditionalSeed = randomChallengeSeed();
+	if (savedDaily?.lastSeenDate !== today) saveMinesightData('daily', stored);
+	return {
+		kind: 'daily',
+		title: 'Daily',
+		field: new MineField(BOARD_SIZE, BOARD_SIZE),
+		result: 'playing',
+		hints: false,
+		traditionalRules: false,
+		tutorialRules: false,
+		requiresReadyBoard: false,
+		showSolution: () => false,
+		date: today,
+		difficulties: DAILY_DIFFICULTIES,
+		difficultyKey,
+		states,
+		checkMessage: '',
+		ready: false,
+		preparing: false,
+		preparationId: 0,
+		close(app) {
+			this.cancelPreparation(app);
+			this.snapshotState(app);
+			this.saveData();
+			this.ready = false;
+		},
+		markValidation: 'deferred',
+		currentDifficulty() {
+			return DAILY_DIFFICULTIES.find(({ key }) => key === this.difficultyKey) ?? DAILY_DIFFICULTIES[0];
+		},
+		showBoard() {
+			return this.ready || this.preparing;
+		},
+		open(app, route) {
+			this.refreshDate(app);
+			this.openDifficulty(app, route.difficultyKey ?? this.difficultyKey, false);
+			if (route.difficultyKey === undefined) {
+				window.history.replaceState(null, '', createRouteUrl(window.location.href, `/daily/${this.difficultyKey}`));
+				app.activeRouteUrl = window.location.href;
+			}
+		},
+		inputHelp(app) {
+			if (app.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
+			return `Tap or left-click to mark ${app.tapActionLabel}. Long-press or right-click to mark ${app.holdActionLabel}.`;
+		},
+		applyCellInput(app, x, y, flag) {
+			this.applyInput(app, x, y, flag);
+		},
+		async share(app) {
+			if (this.shareDisabled() || !this.showBoard()) return;
+			let difficulty = this.currentDifficulty().label;
+			let url = createRouteUrl(window.location.href, `/daily/${this.difficultyKey}`);
+			let shareData = {
+				title: 'Minesight Daily',
+				text: `Play today's Minesight ${difficulty} daily puzzle!`,
+				url: url.href,
+			};
+			await app.shareLink(shareData, 'Daily puzzle shared', 'Daily puzzle link copied');
+		},
+		shareButtonLabel() {
+			return `Share today's ${this.currentDifficulty().label} daily puzzle`;
+		},
+		shareDisabled() {
+			return this.preparing || !this.ready;
+		},
+		showPuzzleStatus: true,
+		hintDisabled: () => true,
+		toggleHint() {},
+		statusTitle() {
+			if (this.result === 'playing' && this.checkMessage) return 'Solution checked';
+			return this.result === 'playing' ? 'What can you prove?' : this.resultTitle();
+		},
+		statusMessage() {
+			if (this.result === 'playing') {
+				return this.checkMessage || 'Mark the squares, then check your solution when you are ready.';
+			}
+			return this.resultMessage();
+		},
+		resultTitle() {
+			return this.result === 'cleared' ? 'Daily solved' : 'Incorrect move';
+		},
+		resultMessage() {
+			if (this.result !== 'cleared') return "The clues don't support that mark.";
+			return this.allSolved
+				? 'Today\'s set is complete. Come back tomorrow.'
+				: `${this.solvedCount} of ${this.total} complete today.`;
+		},
+		beforeMove() {
+			this.checkMessage = '';
+		},
+		handleIncorrect: () => false,
+		handleCleared() {
+			this.result = 'cleared';
+			return false;
+		},
+		saveMove(app) {
+			this.snapshotState(app);
+			this.saveData();
+		},
+		get solvedCount() {
+			return DAILY_DIFFICULTIES.filter(({ key }) => this.states[key]?.completed).length;
+		},
+		get total() {
+			return DAILY_DIFFICULTIES.length;
+		},
+		get allSolved() {
+			return this.solvedCount === this.total;
+		},
+		refreshDate(app) {
+			let today = localDateKey();
+			if (today === this.date) return false;
+			this.date = today;
+			this.states = Object.fromEntries(DAILY_DIFFICULTIES.map(({ key }) => [key, undefined]));
+			this.difficultyKey = DAILY_DIFFICULTIES[0].key;
+			this.ready = false;
+			this.checkMessage = '';
+			this.cancelPreparation(app);
+			this.saveData();
+			if (app.page === this) this.openDifficulty(app, this.difficultyKey, true);
+			return true;
+		},
+		/** @param {any} app @param {string} key @param {boolean} [navigate] */
+		openDifficulty(app, key, navigate = true) {
+			if (!DAILY_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
+			if (this.ready) this.snapshotState(app);
+			this.cancelPreparation(app);
+			this.difficultyKey = key;
+			this.checkMessage = '';
+			if (navigate) {
+				window.history.pushState(null, '', createRouteUrl(window.location.href, `/daily/${key}`));
+				app.activeRouteUrl = window.location.href;
+			}
+			if (!this.restoreState(app)) void this.prepareBoard(app);
+			this.saveData();
+		},
+		snapshotState(app) {
+			if (!this.ready) return;
+			let completed = Boolean(this.states[this.difficultyKey]?.completed || this.result === 'cleared');
+			this.states[this.difficultyKey] = {
+				field: this.field,
+				seed: app.boardSeed,
+				result: this.result,
+				completed,
+				ready: true,
+			};
+		},
+		restoreState(app) {
+			let state = this.states[this.difficultyKey];
+			if (!state?.ready) {
+				this.ready = false;
+				return false;
+			}
+			app.clearIncorrectFeedback();
+			this.field = state.field;
+			app.boardSeed = state.seed;
+			this.result = state.result;
+			this.ready = true;
+			app.engineError = '';
+			app.boardNumber += 1;
+			app.revision += 1;
+			return true;
+		},
+		saveData() {
+			let difficulties = Object.fromEntries(DAILY_DIFFICULTIES.flatMap(({ key }) => {
+				let state = this.states[key];
+				if (!state?.ready) return [];
+				return [[key, {
+					difficultyKey: key,
+					cells: Array.from(state.field.state),
+					seed: String(state.seed),
+					result: state.result,
+					completed: state.completed,
+				}]];
+			}));
+			saveMinesightData('daily', { lastSeenDate: this.date, difficultyKey: this.difficultyKey, difficulties });
+		},
+		async prepareBoard(app) {
+			let preparationId = this.preparationId + 1;
+			this.preparationId = preparationId;
+			this.ready = false;
+			this.preparing = true;
+			app.boardPreparing = true;
+			this.result = 'playing';
+			app.engineError = '';
+			let difficultyKey = this.difficultyKey;
+			let difficulty = this.currentDifficulty();
+			try {
+				let puzzle = await generateSeededField(
+					difficulty,
+					dailyPuzzleSeed(this.date),
+					() => app.page === this && this.difficultyKey === difficultyKey && preparationId === this.preparationId,
+				);
+				if (!puzzle || app.page !== this || this.difficultyKey !== difficultyKey || preparationId !== this.preparationId) return;
+				this.field = puzzle.field;
+				app.boardSeed = puzzle.seed;
+				this.ready = true;
+				app.boardNumber += 1;
+				app.revision += 1;
+				this.snapshotState(app);
+				this.saveData();
+			}
+			catch (error) {
+				if (preparationId === this.preparationId) app.engineError = error instanceof Error ? error.message : String(error);
+			}
+			finally {
+				if (preparationId === this.preparationId) {
+					this.preparing = false;
+					app.boardPreparing = false;
+				}
+			}
+		},
+		clearBoard(app) {
+			if (app.page !== this || !this.ready || this.preparing) return;
+			let changed = this.field.clearPuzzleMarks();
+			app.clearIncorrectFeedback();
+			this.checkMessage = '';
+			this.result = 'playing';
+			app.boardNumber += 1;
+			app.revision += 1;
+			this.snapshotState(app);
+			this.saveData();
+			if (changed) gameSounds.play('unmark');
+		},
+		checkSolution(app) {
+			if (app.page !== this || !this.ready || this.result !== 'playing') return;
+			let contradictionIndex = this.field.puzzleContradictionIndex();
+			if (contradictionIndex >= 0) {
+				this.checkMessage = 'There is a contradiction: the marked mines and safe squares cannot satisfy a clue.';
+				gameSounds.play('incorrect');
+				feedbackEffects.failure({ cellIndex: contradictionIndex, terminal: false });
+				app.revision += 1;
+				return;
+			}
+			if (!this.field.isPuzzleSolved()) {
+				this.checkMessage = 'Not complete yet. Keep going.';
+				app.revision += 1;
+				return;
+			}
+			this.checkMessage = '';
+			this.result = 'cleared';
+			this.snapshotState(app);
+			this.saveData();
+			gameSounds.play('success');
+			feedbackEffects.success({ grand: this.allSolved });
+			if (this.allSolved) feedbackEffects.fireworks();
+			app.revision += 1;
+		},
+		cancelPreparation(app) {
+			this.preparationId += 1;
+			this.preparing = false;
+			if (app) app.boardPreparing = false;
+		},
+		/** @param {any} app @param {number} x @param {number} y @param {boolean} flag */
+		applyInput(app, x, y, flag) {
+			if (this.result !== 'playing') return;
+			let validate = this.markValidation === 'immediate';
+			if (this.field.isRevealed(x, y)) {
+				let chord = this.field.actionChordMarks(x, y, { validate });
+				if (chord.marks.length === 0 && chord.rejectedIndex < 0) return;
+				let [first, ...additionalMarks] = chord.marks;
+				app.afterMove({
+					removing: false,
+					cellIndex: first?.index ?? chord.rejectedIndex,
+					markMine: first?.mine ?? false,
+					additionalMarks,
+					rejectedIndex: chord.rejectedIndex,
+				});
+				return;
+			}
+			if (!this.field.isActive(x, y)) return;
+			let cellIndex = this.field.getIndex(x, y);
+			let action = flag
+				? this.field.actionMarkMine(x, y, { validate })
+				: this.field.actionMarkSafe(x, y, { validate });
+			if (action.change === 'ignored') return;
+			app.afterMove({
+				removing: action.change === 'removed',
+				cellIndex,
+				markMine: flag,
+				rejectedIndex: action.change === 'rejected' ? cellIndex : -1,
+			});
+		},
+	};
+}
+
+function createChallengePage() {
+	let storedModeKey = loadMinesightData().challengeModeKey ?? 'expert';
+	let modeKey = CHALLENGE_MODES.some(({ key }) => key === storedModeKey) ? storedModeKey : CHALLENGE_MODES[0].key;
+	return {
+		kind: 'challenge',
+		title: 'Challenge',
+		field: new MineField(BOARD_SIZE, BOARD_SIZE),
+		result: 'playing',
+		markValidation: 'immediate',
+		hints: false,
+		traditionalRules: false,
+		tutorialRules: false,
+		requiresReadyBoard: false,
+		modes: CHALLENGE_MODES,
+		modeKey,
+		seed: randomChallengeSeed(),
+		received: false,
+		/** @type {number | undefined} */
+		targetMs: undefined,
+		index: 0,
+		started: false,
+		preparing: false,
+		preparationId: 0,
+		/** @type {Array<{ field: MineField, seed: bigint, attempts: number }>} */
+		puzzles: [],
+		/** @type {ChallengeResult[]} */
+		results: [],
+		elapsedMs: 0,
+		/** @type {number | undefined} */
+		timerId: undefined,
+		/** @type {number | undefined} */
+		timerLastTick: undefined,
+		/** @type {number | undefined} */
+		giveUpTimerId: undefined,
+		giveUpHolding: false,
+		giveUpHoldDuration: GIVE_UP_HOLD_MS,
+		showSolution() {
+			return this.result === 'gave-up';
+		},
+		open(app, route) {
+			this.modeKey = route.modeKey;
+			this.received = route.received;
+			this.targetMs = route.time;
+			this.seed = route.seed ?? randomChallengeSeed();
+			void this.prepare(app);
+		},
+		close() {
+			this.cancelPreparation();
+			this.cancelGiveUpGesture();
+			this.stopTimer();
+		},
+		currentDifficulty() {
+			return this.groups.find(({ start, puzzleCount }) => (
+				this.index >= start && this.index < start + puzzleCount
+			))?.difficulty ?? this.groups[0].difficulty;
+		},
+		showBoard() {
+			return this.started && this.result !== 'complete';
+		},
+		inputHelp(app) {
+			if (app.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
+			return `Tap or left-click to mark ${app.tapActionLabel}. Long-press or right-click to mark ${app.holdActionLabel}.`;
+		},
+		async share(app) {
+			let completedTime = Math.floor(this.elapsedMs / 10) * 10;
+			let targetTime = this.result === 'complete' ? completedTime : this.targetMs;
+			let url = createChallengeShareUrl(window.location.href, this.modeKey, this.seed, targetTime);
+			let text = this.result === 'complete'
+				? `I completed Minesight ${this.mode.label} in ${this.formattedTime}. Can you beat my time?`
+				: `You have been challenged to Minesight ${this.mode.label}!`;
+			await app.shareLink({ title: 'Minesight Challenge', text, url: url.href }, 'Challenge shared', 'Challenge link copied');
+		},
+		shareButtonLabel() {
+			return 'Share this challenge';
+		},
+		shareDisabled: () => false,
+		showPuzzleStatus: false,
+		statusTitle() {
+			return this.result === 'playing' ? 'What can you prove?' : this.resultTitle();
+		},
+		statusMessage() {
+			return this.result === 'playing'
+				? 'Mark every covered square that must be safe or mined.'
+				: this.resultMessage();
+		},
+		applyCellInput(app, x, y, flag) {
+			if (this.started) this.applyInput(app, x, y, flag);
+		},
+		resultTitle() {
+			if (this.result === 'cleared') {
+				return this.results[this.index] === 'failed' ? 'Puzzle completed' : 'Puzzle solved';
+			}
+			if (this.result === 'complete') return 'Challenge complete';
+			return this.result === 'gave-up' ? 'Run ended' : 'Incorrect move';
+		},
+		resultMessage() {
+			if (this.result === 'cleared') {
+				return this.results[this.index] === 'failed'
+					? 'You finished it, but this puzzle counts as failed. Ready for the next one?'
+					: 'Good solve. Ready for the next one?';
+			}
+			if (this.result === 'complete') return `${this.clearedCount} completed cleanly and ${this.failedCount} failed in ${this.formattedTime}.`;
+			if (this.result === 'gave-up') return `You gave up on puzzle ${this.index + 1} of ${this.total}.`;
+			return "The clues don't support that mark.";
+		},
+		hintDisabled: () => true,
+		toggleHint() {},
+		beforeMove() {},
+		handleIncorrect(app, cellIndex) {
+			this.markFailed(app, cellIndex);
+			return true;
+		},
+		handleCleared() {
+			this.stopTimer();
+			if (this.results[this.index] !== 'failed') {
+				this.results[this.index] = 'cleared';
+			}
+			let complete = this.index === this.total - 1;
+			this.result = complete ? 'complete' : 'cleared';
+			if (complete) {
+				this.playFanfare();
+				if (this.timeBeaten) feedbackEffects.fireworks();
+			}
+			return complete;
+		},
+		saveMove() {},
+		get showIntro() {
+			return !this.started;
+		},
+		get startLabel() {
+			if (this.preparing) return `Building puzzles ${this.puzzles.length} / ${this.total}…`;
+			return this.ready ? 'Start challenge' : 'Try again';
+		},
+		get invitationDifficulties() {
+			return this.mode.route.map(({ difficulty, puzzleCount }) => ({
+				key: difficulty.key,
+				label: difficulty.label,
+				puzzleCount,
+			}));
+		},
+		get showFinish() {
+			return this.result === 'complete';
+		},
+		get completeMessage() {
+			if (this.failedCount === 0) return `You cleared all ${this.total} challenges.`;
+			return `${this.clearedCount} completed · ${this.failedCount} failed`;
+		},
+		get finishTitle() {
+			return this.failedCount === 0 ? 'Perfect run' : 'Run complete';
+		},
+		get targetTime() {
+			return this.targetMs === undefined ? '' : formatElapsedTime(this.targetMs);
+		},
+		get timeDifference() {
+			if (this.targetMs === undefined) return undefined;
+			return Math.floor(this.elapsedMs / 10) * 10 - this.targetMs;
+		},
+		get timeBeaten() {
+			return this.timeDifference !== undefined && this.timeDifference < 0;
+		},
+		get timeResultMessage() {
+			let difference = this.timeDifference;
+			if (difference === undefined) return '';
+			if (difference === 0) return 'A perfect tie!';
+			let ratio = Math.abs(difference) / this.targetMs;
+			if (difference < 0) {
+				if (ratio >= .15) return 'Left them in the dust!';
+				if (ratio >= .05) return 'A commanding win!';
+				return 'You beat their time!';
+			}
+			if (ratio <= .01) return 'So close!';
+			if (ratio <= .05) return 'Right on their heels!';
+			if (ratio <= .15) return 'A spirited chase.';
+			return 'Better luck next time!';
+		},
+		get showPath() {
+			return this.started && this.result !== 'complete';
+		},
+		get resultActionDisabled() {
+			return this.result === 'playing';
+		},
+		get resultActionLabel() {
+			return this.result === 'gave-up' ? 'Restart run' : 'Next challenge';
+		},
+		get showControls() {
+			return this.showPath;
+		},
+		get giveUpButtonClass() {
+			return this.giveUpHolding ? 'is-holding' : '';
+		},
+		get giveUpButtonStyle() {
+			return `--give-up-duration: ${this.giveUpHoldDuration}ms`;
+		},
+		get giveUpButtonLabel() {
+			return this.giveUpHolding ? 'Giving up. Release to cancel.' : 'Hold to give up';
+		},
+		get total() {
+			return this.modeTotal(this.mode);
+		},
+		get mode() {
+			return CHALLENGE_MODES.find(({ key }) => key === this.modeKey) ?? CHALLENGE_MODES[0];
+		},
+		/** @param {{ route: Array<{ puzzleCount: number }> }} mode */
+		modeTotal(mode) {
+			return mode.route.reduce((total, { puzzleCount }) => total + puzzleCount, 0);
+		},
+		/** @param {{ route: Array<{ difficulty: { label: string }, puzzleCount: number }> }} mode */
+		modeRouteLabel(mode) {
+			return mode.route.map(({ difficulty, puzzleCount }) => `${puzzleCount} ${difficulty.label}`).join(' · ');
+		},
+		get ready() {
+			return !this.preparing && this.puzzles.length === this.total;
+		},
+		get runActive() {
+			return this.started && !['gave-up', 'complete'].includes(this.result);
+		},
+		get clearedCount() {
+			return this.results.filter((result) => result === 'cleared').length;
+		},
+		get failedCount() {
+			return this.results.filter((result) => result === 'failed').length;
+		},
+		get formattedTime() {
+			return formatElapsedTime(this.elapsedMs);
+		},
+		get timerTime() {
+			return this.formattedTime.replace(/\.\d{2}$/, '');
+		},
+		get groups() {
+			let start = 0;
+			return this.mode.route.map(({ difficulty, puzzleCount }) => {
+				let group = {
+					key: difficulty.key,
+					label: difficulty.label,
+					difficulty,
+					puzzleCount,
+					start,
+					steps: Array.from({ length: puzzleCount }, (_, index) => start + index),
+				};
+				start += puzzleCount;
+				return group;
+			});
+		},
+		protectNavigation(event) {
+			if (!this.runActive) return;
+			event.preventDefault();
+			event.returnValue = '';
+		},
+		/** @param {number} failedCount */
+		showTestEnd(failedCount) {
+			if (!isLocalDevelopment()) return false;
+			let failures = Math.min(this.total, Math.max(0, Math.trunc(Number(failedCount) || 0)));
+			this.cancelGiveUpGesture();
+			this.stopTimer();
+			this.cancelPreparation();
+			this.started = true;
+			this.index = this.total - 1;
+			this.results = Array.from(
+				{ length: this.total },
+				(_, index) => index < this.total - failures ? 'cleared' : 'failed',
+			);
+			this.result = 'complete';
+			this.playFanfare();
+			if (this.timeBeaten) feedbackEffects.fireworks();
+			return true;
+		},
+		playFanfare() {
+			gameSounds.play(this.failedCount === 0 ? 'perfectComplete' : 'failedComplete');
+		},
+		activateStart(app) {
+			if (this.ready) this.start(app);
+			else if (!this.preparing) void this.prepare(app);
+		},
+		/** @param {any} app @param {string} modeKey */
+		selectMode(app, modeKey) {
+			if (this.started || modeKey === this.modeKey) return;
+			if (!CHALLENGE_MODES.some(({ key }) => key === modeKey)) return;
+			this.targetMs = undefined;
+			this.modeKey = modeKey;
+			this.seed = randomChallengeSeed();
+			saveMinesightData('challengeModeKey', modeKey);
+			window.history.pushState(null, '', createRouteUrl(window.location.href, `/challenge/${modeKey}`));
+			app.activeRouteUrl = window.location.href;
+			void this.prepare(app);
+		},
+		activateResultAction(app) {
+			if (this.result === 'cleared') this.advance(app);
+			else if (this.result === 'gave-up') void this.restart(app);
+		},
+		async prepare(app) {
+			this.stopTimer();
+			app.clearIncorrectFeedback();
+			let preparationId = this.preparationId + 1;
+			this.preparationId = preparationId;
+			this.started = false;
+			this.preparing = true;
+			this.puzzles = [];
+			this.results = [];
+			this.index = 0;
+			this.elapsedMs = 0;
+			this.result = 'playing';
+			app.engineError = '';
+
+			try {
+				// Paint the initial 0 / total state, then give each completed puzzle its
+				// own frame so progress remains visible and mode changes stay responsive.
+				await yieldToBrowser();
+				let nextSeed = this.seed;
+				for (let { difficulty, puzzleCount } of this.mode.route) {
+					for (let index = 0; index < puzzleCount; index += 1) {
+						if (app.page !== this || preparationId !== this.preparationId) return;
+						let puzzle = await generateSeededField(difficulty, nextSeed, () => (
+							app.page === this && preparationId === this.preparationId
+						));
+						if (!puzzle) return;
+						this.puzzles.push(puzzle);
+						nextSeed = puzzle.seed === MAX_CHALLENGE_SEED ? 0n : puzzle.seed + 1n;
+						await yieldToBrowser();
+					}
+				}
+				sortChallengeTiers(this.puzzles, this.mode.route);
+			}
+			catch (error) {
+				if (preparationId !== this.preparationId) return;
+				this.puzzles = [];
+				app.engineError = error instanceof Error ? error.message : String(error);
+			}
+			finally {
+				if (preparationId === this.preparationId) this.preparing = false;
+			}
+		},
+		cancelPreparation() {
+			this.preparationId += 1;
+			this.preparing = false;
+		},
+		start(app) {
+			if (!this.ready) return;
+			this.received = false;
+			window.history.replaceState(null, '', createRouteUrl(window.location.href, `/challenge/${this.modeKey}`));
+			app.activeRouteUrl = window.location.href;
+			this.stopTimer();
+			this.started = true;
+			this.index = 0;
+			this.results = [];
+			this.elapsedMs = 0;
+			this.result = 'playing';
+			if (!this.loadField(app)) return;
+			gameSounds.play('start');
+			this.startTimer();
+		},
+		async restart(app) {
+			this.targetMs = undefined;
+			this.seed = randomChallengeSeed();
+			await this.prepare(app);
+		},
+		beginGiveUpGesture(app) {
+			if (!this.runActive || this.giveUpTimerId !== undefined) return;
+			this.giveUpHolding = true;
+			this.giveUpTimerId = window.setTimeout(() => {
+				this.giveUpTimerId = undefined;
+				this.giveUpHolding = false;
+				this.giveUp(app);
+			}, GIVE_UP_HOLD_MS);
+		},
+		cancelGiveUpGesture() {
+			if (this.giveUpTimerId !== undefined) window.clearTimeout(this.giveUpTimerId);
+			this.giveUpTimerId = undefined;
+			this.giveUpHolding = false;
+		},
+		giveUp(app) {
+			if (!this.runActive) return;
+			this.cancelGiveUpGesture();
+			this.stopTimer();
+			this.result = 'gave-up';
+			gameSounds.play('failure');
+			feedbackEffects.failure({ terminal: true });
+			app.revision += 1;
+		},
+		/** @param {any} app @param {number} cellIndex */
+		markFailed(app, cellIndex) {
+			if (!this.runActive || this.result !== 'playing') return;
+			this.results[this.index] = 'failed';
+			let incorrectIndex = this.field.consumeIncorrect();
+			app.showIncorrectFeedback(incorrectIndex >= 0 ? incorrectIndex : cellIndex);
+			gameSounds.play('incorrect');
+			feedbackEffects.failure({ cellIndex, terminal: false });
+			app.revision += 1;
+		},
+		advance(app) {
+			if (this.result !== 'cleared') return;
+			this.index += 1;
+			this.result = 'playing';
+			if (this.loadField(app)) this.startTimer();
+		},
+		loadField(app) {
+			app.clearIncorrectFeedback();
+			let puzzle = this.puzzles[this.index];
+			if (!puzzle) {
+				this.started = false;
+				app.engineError = `challenge ${this.index + 1} was not prepared`;
+				return false;
+			}
+			this.field = puzzle.field;
+			app.boardSeed = puzzle.seed;
+			app.engineError = '';
+			app.boardNumber += 1;
+			app.revision += 1;
+			return true;
+		},
+		stopTimer() {
+			if (this.timerId !== undefined) {
+				this.updateTimer();
+				window.clearInterval(this.timerId);
+			}
+			this.timerId = undefined;
+			this.timerLastTick = undefined;
+		},
+		startTimer() {
+			this.stopTimer();
+			this.timerLastTick = window.performance.now();
+			this.timerId = window.setInterval(() => this.updateTimer(), 10);
+		},
+		updateTimer() {
+			if (this.timerLastTick === undefined) return;
+			let now = window.performance.now();
+			this.elapsedMs += Math.max(0, now - this.timerLastTick);
+			this.timerLastTick = now;
+		},
+		/** @param {number} step */
+		stepClass(step) {
+			let outcome = this.results[step];
+			if (outcome === 'cleared') return 'complete';
+			if (outcome === 'failed') return 'failed';
+			if (step === this.index && this.result !== 'complete') return 'current';
+			return '';
+		},
+		/** @param {number} step */
+		stepLabel(step) {
+			let group = this.groups.find(({ start, puzzleCount }) => step >= start && step < start + puzzleCount)
+				?? this.groups[0];
+			let state = this.stepClass(step) || 'upcoming';
+			return `${group.label} challenge ${step - group.start + 1}, ${state}`;
+		},
+		/** @param {any} app @param {number} x @param {number} y @param {boolean} flag */
+		applyInput(app, x, y, flag) {
+			if (this.result !== 'playing') return;
+			let validate = this.markValidation === 'immediate';
+			if (this.field.isRevealed(x, y)) {
+				let chord = this.field.actionChordMarks(x, y, { validate });
+				if (chord.marks.length === 0 && chord.rejectedIndex < 0) return;
+				let [first, ...additionalMarks] = chord.marks;
+				app.afterMove({
+					removing: false,
+					cellIndex: first?.index ?? chord.rejectedIndex,
+					markMine: first?.mine ?? false,
+					additionalMarks,
+					rejectedIndex: chord.rejectedIndex,
+				});
+				return;
+			}
+			if (!this.field.isActive(x, y)) return;
+			let cellIndex = this.field.getIndex(x, y);
+			let action = flag
+				? this.field.actionMarkMine(x, y, { validate })
+				: this.field.actionMarkSafe(x, y, { validate });
+			if (action.change === 'ignored') return;
+			app.afterMove({
+				removing: action.change === 'removed',
+				cellIndex,
+				markMine: flag,
+				rejectedIndex: action.change === 'rejected' ? cellIndex : -1,
+			});
+		},
+	};
+}
+
+function createPuzzlePage() {
+	/** @type {any} */
+	let appContext;
+	let page = {
+		kind: 'puzzle',
+		title: 'Puzzle',
+		result: 'playing',
+		markValidation: 'immediate',
+		hints: true,
+		hintUsed: false,
+		error: '',
+		traditionalRules: false,
+		tutorialRules: false,
+		requiresReadyBoard: false,
+		showSolution: () => false,
+		currentDifficulty: () => STUDY_DIFFICULTIES[0],
+		open(app, route) {
+			appContext = app;
+			this.result = 'playing';
+			this.hintUsed = false;
+			this.error = '';
+			try {
+				this.minefield.field = MineField.decode(route.payload);
+				this.minefield.result = this.result;
+				this.minefield.hintsVisible = false;
+				this.minefield.solutionVisible = false;
+				this.minefield.ready = true;
+				this.minefield.busy = false;
+				this.minefield.actionsInverted = app.actionsInverted;
+				this.minefield.incorrectCellIndex = -1;
+				this.minefield.boardNumber += 1;
+				this.minefield.revision += 1;
+				app.engineError = '';
+				app.boardNumber += 1;
+				app.revision += 1;
+				this.minefield.reset();
+			}
+			catch {
+				this.error = 'This puzzle link is invalid.';
+			}
+		},
+		close() {},
+		showBoard() {
+			return !this.error;
+		},
+		get inputHelp() {
+			if (this.minefield.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
+			return `Tap or left-click to mark ${this.minefield.tapActionLabel}. Long-press or right-click to mark ${this.minefield.holdActionLabel}.`;
+		},
+		applyCellInput(app, x, y, flag) {
+			this.applyInput(app, x, y, flag);
+		},
+		async share(app) {
+			if (this.shareDisabled() || !this.showBoard()) return;
+			let url = createRouteUrl(window.location.href, `/puzzle/${this.minefield.field.encode()}`);
+			let shareData = {
+				title: 'Minesight Puzzle',
+				text: 'Can you solve this Minesight puzzle?',
+				url: url.href,
+			};
+			await app.shareLink(shareData, 'Puzzle shared', 'Share link copied');
+		},
+		shareButtonLabel: () => 'Share this puzzle',
+		shareDisabled: () => false,
+		showPuzzleStatus: true,
+		statusTitle() {
+			return this.result === 'playing' ? 'What can you prove?' : this.resultTitle();
+		},
+		statusMessage() {
+			return this.result === 'playing'
+				? 'Mark every covered square that must be safe or mined.'
+				: this.resultMessage();
+		},
+		resultTitle() {
+			return this.result === 'cleared' ? 'Puzzle solved' : 'Incorrect move';
+		},
+		hintDisabled() {
+			return this.result !== 'playing';
+		},
+		toggleHint(app) {
+			if (this.result !== 'playing') return;
+			this.hintUsed = !this.hintUsed;
+			this.minefield.hintsVisible = this.hints && this.hintUsed;
+			this.minefield.revision += 1;
+			app.revision += 1;
+		},
+		resultMessage() {
+			if (this.result === 'cleared') return 'Nice solve. Open the link again for a fresh board.';
+			return "The clues don't support that mark.";
+		},
+		beforeMove() {},
+		handleIncorrect: () => false,
+		handleCleared() {
+			this.result = 'cleared';
+			this.minefield.result = this.result;
+			return false;
+		},
+		saveMove() {},
+		/** @param {any} app @param {number} x @param {number} y @param {boolean} flag */
+		applyInput(app, x, y, flag) {
+			if (this.result !== 'playing') return;
+			let field = this.minefield.field;
+			let validate = this.markValidation === 'immediate';
+			if (field.isRevealed(x, y)) {
+				let chord = field.actionChordMarks(x, y, { validate });
+				if (chord.marks.length === 0 && chord.rejectedIndex < 0) return;
+				let [first, ...additionalMarks] = chord.marks;
+				app.afterMove({
+					removing: false,
+					cellIndex: first?.index ?? chord.rejectedIndex,
+					markMine: first?.mine ?? false,
+					additionalMarks,
+					rejectedIndex: chord.rejectedIndex,
+				});
+				return;
+			}
+			if (!field.isActive(x, y)) return;
+			let cellIndex = field.getIndex(x, y);
+			let action = flag
+				? field.actionMarkMine(x, y, { validate })
+				: field.actionMarkSafe(x, y, { validate });
+			if (action.change === 'ignored') return;
+			app.afterMove({
+				removing: action.change === 'removed',
+				cellIndex,
+				markMine: flag,
+				rejectedIndex: action.change === 'rejected' ? cellIndex : -1,
+			});
+		},
+	};
+	page.minefield = createMineField(new MineField(BOARD_SIZE, BOARD_SIZE));
+	page.minefield.traditionalRules = page.traditionalRules;
+	page.minefield.tutorialRules = page.tutorialRules;
+	page.minefield.ready = !page.requiresReadyBoard;
+	return page;
+}
+
+function createEditorPage() {
+	return {
+		kind: 'editor',
+		title: 'Board lab',
+		field: new MineField(BOARD_SIZE, BOARD_SIZE),
+		result: 'playing',
+		markValidation: 'immediate',
+		hints: false,
+		traditionalRules: false,
+		tutorialRules: false,
+		requiresReadyBoard: false,
+		showSolution: () => false,
+		currentDifficulty: () => STUDY_DIFFICULTIES[0],
+		showBoard: () => false,
+		open() {},
+		close() {},
+		inputHelp: () => '',
+		applyCellInput() {},
+		share() {},
+		shareButtonLabel: () => '',
+		shareDisabled: () => true,
+		showPuzzleStatus: false,
+		statusTitle: () => '',
+		statusMessage: () => '',
+		resultTitle: () => '',
+		resultMessage: () => '',
+		hintDisabled: () => true,
+		toggleHint() {},
+		beforeMove() {},
+		handleIncorrect: () => false,
+		handleCleared: () => false,
+		saveMove() {},
+		tool: '1',
+		board: Array(BOARD_SIZE * BOARD_SIZE).fill('covered'),
+		revision: 0,
+		focusIndex: 0,
+		hoverIndex: -1,
+		painting: false,
+		pointerId: undefined,
+		history: [],
+		analysis: undefined,
+		showEditorSolution: false,
+		get tools() {
+			return [
+				{ value: 'covered', text: '□', label: 'Covered' },
+				{ value: 'masked', text: '×', label: 'Masked' },
+				{ value: 'flag', text: '⚑', label: 'Flag' },
+				...Array.from({ length: 9 }, (_, clue) => ({ value: String(clue), text: String(clue), label: `Clue ${clue}` })),
+			];
+		},
+		get editorCells() {
+			this.revision;
+			let forcedMine = new Set(this.analysis?.forcedMine ?? []);
+			let forcedSafe = new Set(this.analysis?.forcedSafe ?? []);
+			return this.board.map((state, index) => {
+				let x = index % BOARD_SIZE;
+				let y = Math.floor(index / BOARD_SIZE);
+				let clue = /^\d$/.test(state);
+				let classes = ['editor-cell'];
+				let text = clue ? state : state === 'flag' ? '⚑' : '';
+				let description = clue ? `clue ${state}` : state === 'flag' ? 'flagged mine' : 'covered';
+				if (clue) classes.push('revealed', `clue-${state}`);
+				if (state === 'masked') {
+					classes.push('inactive', 'editor-masked');
+					description = 'masked, outside the puzzle';
+				}
+				if (state === 'flag') classes.push('flagged');
+				if (forcedMine.has(index)) {
+					classes.push('marked-mine', 'editor-forced');
+					text = '⚑';
+					description += ', forced mine';
+				}
+				else if (forcedSafe.has(index)) {
+					classes.push('marked-safe', 'editor-forced');
+					text = '✓';
+					description += ', forced safe';
+				}
+				else if (this.showEditorSolution && state === 'covered' && this.analysis && !this.analysis.contradiction) {
+					let mine = this.analysis.solution[index] === 1;
+					classes.push(mine ? 'editor-solution-mine' : 'editor-solution-safe');
+					text = mine ? '✹' : '·';
+					description += mine ? ', mine in shown solution' : ', safe in shown solution';
+				}
+				return {
+					index, x, y, text,
+					className: classes.join(' '),
+					label: `Row ${y + 1}, column ${x + 1}, ${description}`,
+					tabIndex: index === this.focusIndex ? 0 : -1,
+				};
+			});
+		},
+		get editorStatusTitle() {
+			if (!this.analysis) return 'Ready to analyze';
+			if (this.analysis.contradiction) return 'Contradiction';
+			if (this.analysis.coveredCount === 0) return 'Nothing to solve';
+			if (this.analysis.unique) return 'Unique solution';
+			let count = this.analysis.forcedMine.length + this.analysis.forcedSafe.length;
+			return count > 0 ? `${count} forced ${count === 1 ? 'cell' : 'cells'}` : 'No forced cells';
+		},
+		get editorStatusMessage() {
+			if (!this.analysis) return 'Add clues or flags, then check the board.';
+			if (this.analysis.contradiction) return 'No mine layout can satisfy every clue and flag.';
+			if (this.analysis.coveredCount === 0) return 'Add at least one covered cell to create a puzzle.';
+			let mines = this.analysis.forcedMine.length;
+			let safe = this.analysis.forcedSafe.length;
+			if (this.analysis.unique) return `Every covered cell is determined: ${mines} mined and ${safe} safe.`;
+			if (mines + safe > 0) return `${mines} must be mined and ${safe} must be safe. Other covered cells remain ambiguous.`;
+			return 'The clues are consistent, but no covered cell is forced. Add more information before sharing.';
+		},
+		get canShare() {
+			return this.analysis !== undefined
+				&& !this.analysis.contradiction
+				&& this.analysis.forcedMine.length + this.analysis.forcedSafe.length > 0;
+		},
+		get primaryActionLabel() {
+			return this.canShare ? 'Share puzzle' : 'Analyze board';
+		},
+		/** @param {string} tool */
+		selectTool(tool) {
+			if (this.tools.some(({ value }) => value === tool)) this.tool = tool;
+		},
+		/** @param {number} index @param {string} [state] */
+		setCell(index, state = this.tool) {
+			if (index < 0 || index >= this.board.length || this.board[index] === state) return;
+			this.history.push(this.board.slice());
+			if (this.history.length > 100) this.history.shift();
+			this.board[index] = state;
+			this.analysis = undefined;
+			this.showEditorSolution = false;
+			this.revision += 1;
+		},
+		/** @param {PointerEvent} event @param {number} index */
+		beginPaint(event, index) {
+			if (event.button !== 0) return;
+			this.painting = true;
+			this.pointerId = event.pointerId;
+			this.setCell(index);
+		},
+		/** @param {PointerEvent} event */
+		movePaint(event) {
+			let element = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.editor-cell');
+			let index = Number(element?.getAttribute('data-editor-index'));
+			if (event.pointerType === 'mouse') this.hoverIndex = Number.isInteger(index) ? index : -1;
+			if (!this.painting || event.pointerId !== this.pointerId) return;
+			if (Number.isInteger(index)) this.setCell(index);
+		},
+		/** @param {PointerEvent} event */
+		leaveBoard(event) {
+			if (event.pointerType === 'mouse') this.hoverIndex = -1;
+		},
+		/** @param {PointerEvent} event */
+		endPaint(event) {
+			if (event.pointerId !== this.pointerId) return;
+			this.painting = false;
+			this.pointerId = undefined;
+		},
+		/** @param {unknown} app @param {KeyboardEvent} event @param {number} index */
+		keydownCell(app, event, index) {
+			let direction = CELL_FOCUS_DIRECTIONS[event.key];
+			if (direction) {
+				event.preventDefault();
+				let x = index % BOARD_SIZE;
+				let y = Math.floor(index / BOARD_SIZE);
+				let nextX = Math.max(0, Math.min(BOARD_SIZE - 1, x + direction[0]));
+				let nextY = Math.max(0, Math.min(BOARD_SIZE - 1, y + direction[1]));
+				this.focusIndex = nextY * BOARD_SIZE + nextX;
+				this.revision += 1;
+				app.$nextTick(() => document.querySelector(`[data-editor-index="${this.focusIndex}"]`)?.focus());
+				return;
+			}
+			let state;
+			if (/^[0-8]$/.test(event.key)) state = event.key;
+			else if (event.key.toLowerCase() === 'f') state = 'flag';
+			else if (event.key.toLowerCase() === 'm') state = 'masked';
+			else if (['u', 'Delete', 'Backspace'].includes(event.key)) state = 'covered';
+			else if (event.key === ' ' || event.key === 'Enter') state = this.tool;
+			if (state !== undefined) {
+				event.preventDefault();
+				this.setCell(index, state);
+			}
+		},
+		/** @param {KeyboardEvent} event */
+		keydownAtPointer(event) {
+			if (event.defaultPrevented || !/^[0-8]$/.test(event.key) || this.hoverIndex < 0) return;
+			event.preventDefault();
+			this.setCell(this.hoverIndex, event.key);
+		},
+		analyze() {
+			this.analysis = analyzeEditorBoard(this.board, BOARD_SIZE, BOARD_SIZE);
+			this.showEditorSolution = false;
+			this.revision += 1;
+		},
+		/** @param {unknown} app */
+		async activatePrimaryAction(app) {
+			if (!this.canShare) {
+				this.analyze();
+				return;
+			}
+			let puzzle = createEditorPuzzle(this.board, this.analysis, BOARD_SIZE, BOARD_SIZE);
+			let url = createRouteUrl(window.location.href, `/puzzle/${puzzle.encode()}`);
+			let shareData = {
+				title: 'Minesight puzzle',
+				text: 'Can you solve this Minesight puzzle?',
+				url: url.href,
+			};
+			await app.shareLink(shareData, 'Puzzle shared', 'Share link copied');
+		},
+		undo() {
+			let previous = this.history.pop();
+			if (!previous) return;
+			this.board = previous;
+			this.analysis = undefined;
+			this.showEditorSolution = false;
+			this.revision += 1;
+		},
+		clear() {
+			if (this.board.every((cell) => cell === 'covered')) return;
+			this.history.push(this.board.slice());
+			this.board = Array(BOARD_SIZE * BOARD_SIZE).fill('covered');
+			this.analysis = undefined;
+			this.showEditorSolution = false;
+			this.revision += 1;
+		},
+	};
+}
+
+function createTraditionalPage() {
+	let stored = loadMinesightData().traditional;
+	let field = new MineField(BOARD_SIZE, BOARD_SIZE);
+	let seed = randomChallengeSeed();
 	/** @type {GameResult} */
-	let traditionalResult = 'playing';
+	let result = 'playing';
 	try {
-		if (
-			stored.traditional?.rulesVersion === TRADITIONAL_RULES_VERSION &&
-			Array.isArray(stored.traditional.cells) &&
-			stored.traditional.cells.length === BOARD_SIZE * BOARD_SIZE
-		) {
-			traditionalField = new MineField(BOARD_SIZE, BOARD_SIZE, Uint8Array.from(stored.traditional.cells));
-			traditionalSeed = BigInt(stored.traditional.seed);
-			if (['playing', 'cleared', 'failed'].includes(stored.traditional.result)) traditionalResult = stored.traditional.result;
+		if (stored?.rulesVersion === TRADITIONAL_RULES_VERSION
+			&& Array.isArray(stored.cells)
+			&& stored.cells.length === BOARD_SIZE * BOARD_SIZE) {
+			field = new MineField(BOARD_SIZE, BOARD_SIZE, Uint8Array.from(stored.cells));
+			seed = BigInt(stored.seed);
+			if (['playing', 'cleared', 'failed'].includes(stored.result)) result = stored.result;
 		}
 	}
 	catch {}
-	if (stored?.daily?.lastSeenDate !== today) saveMinesightData('daily', storedDaily);
 	return {
-		mode: parseGameMode(urlGame.mode),
+		kind: 'traditional',
+		title: 'Traditional',
+		field,
+		result,
+		seed,
+		busy: false,
+		moveId: 0,
+		markValidation: 'immediate',
+		hints: false,
+		traditionalRules: true,
+		tutorialRules: false,
+		requiresReadyBoard: false,
+		showSolution: () => false,
+		currentDifficulty: () => STUDY_DIFFICULTIES[0],
+		close(app) {
+			this.moveId += 1;
+			this.busy = false;
+			this.save();
+		},
+		open(app) {
+			app.engineError = '';
+			app.boardNumber += 1;
+			app.revision += 1;
+		},
+		showBoard: () => true,
+		inputHelp(app) {
+			if (app.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
+			return 'Tap or left-click to reveal. Long-press or right-click to flag. Select a revealed clue to reveal safe neighbours or flag mines.';
+		},
+		applyCellInput(app, x, y, flag) {
+			this.applyInput(app, x, y, flag);
+		},
+		share(app) {
+			return app.sharePuzzle();
+		},
+		shareButtonLabel: () => 'Share this puzzle',
+		shareDisabled: () => true,
+		showPuzzleStatus: true,
+		statusTitle(app) {
+			return app.page.result === 'playing' ? 'Traditional Minesweeper' : app.resultTitle;
+		},
+		statusMessage(app) {
+			if (app.page.result === 'playing') {
+				return 'Reveal safe squares, flag mines, and use the numbered clues. You never need to guess.';
+			}
+			return app.resultMessage;
+		},
+		resultTitle(app) {
+			return app.page.result === 'cleared' ? 'Field cleared' : 'Game over';
+		},
+		resultMessage(app) {
+			if (app.page.result === 'cleared') return 'You cleared the minefield without guessing.';
+			return 'That move was not logically safe. The provably safe choices are highlighted.';
+		},
+		hintDisabled: () => true,
+		toggleHint() {},
+		beforeMove() {},
+		handleIncorrect: () => false,
+		handleCleared(app) {
+			app.page.result = 'cleared';
+			return false;
+		},
+		saveMove() {},
+		save() {
+			saveMinesightData('traditional', {
+				rulesVersion: TRADITIONAL_RULES_VERSION,
+				cells: Array.from(this.field.state),
+				seed: String(this.seed),
+				result: this.result,
+			});
+		},
+		/** @param {any} app */
+		newGame(app) {
+			if (this.result === 'playing' && !window.confirm('Start a new game?\n\nYour current game is not finished.')) return;
+			this.moveId += 1;
+			this.busy = false;
+			app.clearIncorrectFeedback();
+			this.field = new MineField(BOARD_SIZE, BOARD_SIZE);
+			this.seed = randomChallengeSeed();
+			this.result = 'playing';
+			app.engineError = '';
+			app.boardNumber += 1;
+			app.revision += 1;
+			this.save();
+		},
+		/** @param {any} app @param {number} x @param {number} y @param {boolean} flag */
+		applyInput(app, x, y, flag) {
+			if (this.result !== 'playing' || this.busy) return;
+			if (flag) {
+				if (this.field.isRevealed(x, y)) {
+					void this.revealCell(app, x, y);
+					return;
+				}
+				this.field.actionFlag(x, y);
+				let flagged = this.field.isFlagged(x, y);
+				gameSounds.play(flagged ? 'mark' : 'unmark');
+				if (flagged) feedbackEffects.mark({ cellIndex: this.field.getIndex(x, y), mine: true });
+				app.revision += 1;
+				this.save();
+			}
+			else void this.revealCell(app, x, y);
+		},
+		/** @param {any} app @param {number} x @param {number} y */
+		async revealCell(app, x, y) {
+			if (app.page !== this || this.result !== 'playing' || this.busy || this.field.isFlagged(x, y)) return;
+			let chord = this.field.isRevealed(x, y);
+			if (chord) {
+				let flags = 0;
+				/** @type {number[]} */
+				let covered = [];
+				for (let neighbourY = Math.max(0, y - 1); neighbourY <= Math.min(BOARD_SIZE - 1, y + 1); neighbourY += 1) {
+					for (let neighbourX = Math.max(0, x - 1); neighbourX <= Math.min(BOARD_SIZE - 1, x + 1); neighbourX += 1) {
+						if (neighbourX === x && neighbourY === y) continue;
+						if (this.field.isFlagged(neighbourX, neighbourY)) flags += 1;
+						else if (!this.field.isRevealed(neighbourX, neighbourY)) covered.push(this.field.getIndex(neighbourX, neighbourY));
+					}
+				}
+				let clue = this.field.getClue(x, y);
+				if (covered.length === 0) return;
+				if (flags !== clue) {
+					if (flags + covered.length !== clue) return;
+					for (let cellIndex of covered) {
+						this.field.actionFlag(cellIndex % BOARD_SIZE, Math.floor(cellIndex / BOARD_SIZE));
+						feedbackEffects.mark({ cellIndex, mine: true });
+					}
+					gameSounds.play('mark');
+					app.revision += 1;
+					this.save();
+					return;
+				}
+			}
+			let moveId = this.moveId + 1;
+			this.moveId = moveId;
+			this.busy = true;
+			app.engineError = '';
+			try {
+				let previousState = this.field.state.slice();
+				let move = await resolveTraditionalMove(this.field, this.field.getIndex(x, y), this.seed);
+				if (app.page !== this || moveId !== this.moveId) return;
+				this.seed = nextTraditionalSeed(this.seed);
+				this.field = fieldWithMineLayout(this.field, move.mines);
+				if (chord) this.field.actionChord(x, y);
+				else this.field.actionReveal(x, y);
+				let gameOver = this.field.gameOverReason();
+				this.result = gameOver === MineField.GAME_OVER_CLEARED ? 'cleared'
+					: gameOver === MineField.GAME_OVER_DETONATION ? 'failed' : 'playing';
+				if (this.result === 'failed') {
+					for (let index = 0; index < this.field.state.length; index += 1) {
+						if ((move.forcedSafe & (1n << BigInt(index))) !== 0n) this.field.state[index] |= MineField.FORCED_SAFE;
+					}
+					let failedIndex = this.field.state.findIndex(cell => (cell & (MineField.MINE | MineField.REVEALED)) === (MineField.MINE | MineField.REVEALED));
+					gameSounds.play('failure');
+					feedbackEffects.failure({ cellIndex: failedIndex, terminal: true });
+				}
+				else if (this.result === 'cleared') {
+					gameSounds.play('success');
+					feedbackEffects.success({ grand: true });
+				}
+				else {
+					gameSounds.play('mark');
+					for (let [cellIndex, cell] of this.field.state.entries()) {
+						if ((previousState[cellIndex] & MineField.REVEALED) === 0 && (cell & MineField.REVEALED) !== 0) {
+							feedbackEffects.mark({ cellIndex, mine: false });
+						}
+					}
+				}
+				app.revision += 1;
+				this.save();
+			}
+			catch (error) {
+				if (moveId === this.moveId) app.engineError = error instanceof Error ? error.message : String(error);
+			}
+			finally {
+				if (moveId === this.moveId) this.busy = false;
+			}
+		},
+	};
+}
+
+const PAGE_FACTORIES = {
+	home: createHomePage,
+	tutorial: createTutorialPage,
+	study: createStudyPage,
+	daily: createDailyPage,
+	challenge: createChallengePage,
+	puzzle: createPuzzlePage,
+	editor: createEditorPage,
+	traditional: createTraditionalPage,
+};
+
+/** @param {GameMode} kind */
+function createPage(kind) {
+	return PAGE_FACTORIES[kind]();
+}
+
+function createMinesight() {
+	let stored = loadMinesightData();
+	let colorScheme = ['system', 'light', 'dark'].includes(stored.colorScheme) ? stored.colorScheme : 'system';
+	applyColorScheme(colorScheme);
+	/** @type {ResizeObserver | undefined} */
+	let scratchResizeObserver;
+	/** @type {BeforeInstallPromptEvent | undefined} */
+	let installPrompt;
+	let initialUrl = redirectLegacyUrl(new URL(window.location.href));
+	if (initialUrl.hash === '') {
+		initialUrl.hash = '/';
+		window.history.replaceState(null, '', initialUrl);
+	}
+	let urlGame = resolveUrlGame(initialUrl);
+	gameSounds.setEnabled(stored.soundEnabled !== false);
+	return {
+		page: createPage(parseGameMode(urlGame.mode)),
 		soundEnabled: gameSounds.enabled,
 		settingsOpen: false,
 		appInstalled: isAppInstalled(),
@@ -939,47 +2996,13 @@ function createMinesight() {
 		storageMessage: '',
 		wipeStorageBusy: false,
 		actionsInverted: false,
-		/** @type {GameResult} */
-		result: 'playing',
-		traditionalSeed,
-		traditionalBusy: false,
-		traditionalMoveId: 0,
-		traditionalField,
-		traditionalResult,
-		studyDifficultyKey,
-		dailyDate: today,
-		dailyDifficultyKey,
-		dailyCheckMessage: '',
-		dailyBoardReady: false,
-		dailyPreparationId: 0,
-		/** @type {Record<string, DailyState | undefined>} */
-		dailyStates,
-		studyDifficulties: STUDY_DIFFICULTIES,
-		dailyDifficulties: DAILY_DIFFICULTIES,
-		challengeModes: CHALLENGE_MODES,
-		challengeModeKey,
-		challengeSeed,
-		challengeReceived: urlGame.mode === 'challenge' && urlGame.received,
-		challengeTargetMs: urlGame.mode === 'challenge' ? urlGame.time : undefined,
-		challengeIndex: 0,
-		challengeStarted: false,
-		challengePreparing: false,
-		challengePreparationId: 0,
-		studyPreparationId: 0,
 		boardPreparing: false,
-		studySearchingVisible: false,
-		studyBoardReady: false,
-		/** @type {Record<string, StudyState | undefined>} */
-		studyStates,
-		/** @type {Array<{ field: MineField, seed: bigint, attempts: number }>} */
-		challengePuzzles: [],
-		/** @type {ChallengeResult[]} */
-		challengeResults: [],
-		elapsedMs: 0,
-		studyStreaks,
-		studyStreak: studyStreaks[studyDifficultyKey],
-		hintUsed: false,
-		tutorialStep: 0,
+		get hintUsed() {
+			return Boolean(this.page.hintUsed);
+		},
+		set hintUsed(value) {
+			this.page.hintUsed = Boolean(value);
+		},
 		keyboardFocusIndex: -1,
 		boardNumber: 0,
 		boardSeed: 0n,
@@ -987,18 +3010,9 @@ function createMinesight() {
 		incorrectCellIndex: -1,
 		incorrectFeedbackMessage: '',
 		shareFeedback: '',
-		puzzleError,
 		engineError: '',
-		/** @type {MineField} */
-		field: new MineField(BOARD_SIZE, BOARD_SIZE),
-		/** @type {number | undefined} */
-		timerId: undefined,
-		/** @type {number | undefined} */
-		timerLastTick: undefined,
 		/** @type {number | undefined} */
 		incorrectFeedbackTimerId: undefined,
-		/** @type {number | undefined} */
-		studySearchingTimerId: undefined,
 		/** @type {number | undefined} */
 		shareFeedbackTimerId: undefined,
 		/** @type {number | undefined} */
@@ -1010,10 +3024,6 @@ function createMinesight() {
 		lastCellHoldX: -1,
 		lastCellHoldY: -1,
 		lastCellHoldTime: 0,
-		/** @type {number | undefined} */
-		giveUpTimerId: undefined,
-		giveUpHolding: false,
-		giveUpHoldDuration: GIVE_UP_HOLD_MS,
 		activeRouteUrl: window.location.href,
 		/** @type {(() => void) | undefined} */
 		routeListener: undefined,
@@ -1028,16 +3038,6 @@ function createMinesight() {
 		scratchActive: false,
 		scratchTool: 'pencil',
 		scratchColor: 'graphite',
-		editorTool: '1',
-		editorBoard: Array(BOARD_SIZE * BOARD_SIZE).fill('covered'),
-		editorRevision: 0,
-		editorFocusIndex: 0,
-		editorHoverIndex: -1,
-		editorPainting: false,
-		editorPointerId: undefined,
-		editorHistory: [],
-		editorAnalysis: undefined,
-		editorShowSolution: false,
 		scratchColors: [
 			{ key: 'graphite', label: 'Graphite' },
 			{ key: 'blue', label: 'Blue' },
@@ -1049,13 +3049,19 @@ function createMinesight() {
 		scratchStroke: undefined,
 		/** @type {{ x: number, y: number } | undefined} */
 		scratchEraserPoint: undefined,
+		/** @param {GameMode} kind */
+		openPage(kind) {
+			this.page = createPage(kind);
+		},
 		init() {
 			if (isLocalDevelopment()) {
 				Object.assign(window, {
-					minesightTestChallengeEnd: (failedCount = 0) => this.showChallengeTestEnd(failedCount),
+					minesightTestChallengeEnd: (failedCount = 0) => (
+						this.page.kind === 'challenge' && this.page.showTestEnd(failedCount)
+					),
 				});
 			}
-			this.$watch('boardNumber', () => this.resetScratchPad());
+			this.$watch('boardNumber', () => this.minefieldView.resetScratchPad());
 			this.themeMediaListener = () => {
 				if (this.colorScheme === 'system') applyColorScheme('system');
 			};
@@ -1072,58 +3078,28 @@ function createMinesight() {
 			};
 			window.addEventListener('beforeinstallprompt', this.installPromptListener);
 			window.addEventListener('appinstalled', this.appInstalledListener);
-			this.dailyDateListener = () => this.refreshDailyDate();
+			this.dailyDateListener = () => {
+				if (this.page.kind === 'daily') this.page.refreshDate(this);
+				else if (this.page.kind === 'home') this.page.refreshDailyProgress();
+			};
 			window.addEventListener('focus', this.dailyDateListener);
 			document.addEventListener('visibilitychange', this.dailyDateListener);
-			this.$nextTick(() => this.setupScratchPad());
+			this.$nextTick(() => this.minefieldView.setupScratchPad(this.$refs.scratchCanvas));
 			this.routeListener = () => {
 				if (this.activeRouteUrl === window.location.href) return;
 				this.applyCurrentRoute();
 			};
 			window.addEventListener('popstate', this.routeListener);
 			window.addEventListener('hashchange', this.routeListener);
-			if (puzzleError) return;
-			if (puzzle) {
-				this.field = puzzle;
-				this.engineError = '';
-				this.boardNumber += 1;
-				this.revision += 1;
-				return;
-			}
-			if (this.mode === 'tutorial') {
-				this.startTutorial();
-				return;
-			}
-			if (this.mode === 'challenge') {
-				void this.prepareChallenge();
-				return;
-			}
-			if (this.mode === 'daily') {
-				this.openDailyDifficulty(this.dailyDifficultyKey, false);
-				return;
-			}
-			if (this.mode === 'traditional') {
-				this.field = traditionalField;
-				this.result = traditionalResult;
-				this.boardNumber += 1;
-				this.revision += 1;
-				return;
-			}
-			if (this.mode === 'home' || this.mode === 'editor') return;
-			if (!this.restoreStudyState() && !this.engineError) this.newStudyBoard();
+			this.page.open(this, urlGame);
 		},
 
 		destroy() {
-			this.challengePreparationId += 1;
-			this.studyPreparationId += 1;
-			this.dailyPreparationId += 1;
-			this.boardPreparing = false;
-			this.stopTimer();
 			this.clearIncorrectFeedback();
-			this.clearStudySearchingDelay();
+			this.page.close(this);
 			if (this.shareFeedbackTimerId !== undefined) window.clearTimeout(this.shareFeedbackTimerId);
+			this.page.minefield?.destroy();
 			this.cancelCellGesture();
-			this.cancelGiveUpGesture();
 			scratchResizeObserver?.disconnect();
 			if (this.routeListener) window.removeEventListener('popstate', this.routeListener);
 			if (this.routeListener) window.removeEventListener('hashchange', this.routeListener);
@@ -1136,28 +3112,17 @@ function createMinesight() {
 		},
 
 		get currentDifficulty() {
-			if (this.mode === 'challenge') {
-				return this.challengeGroups.find(({ start, puzzleCount }) => (
-					this.challengeIndex >= start && this.challengeIndex < start + puzzleCount
-				))?.difficulty ?? this.challengeGroups[0].difficulty;
-			}
-			if (this.mode === 'daily') {
-				return DAILY_DIFFICULTIES.find(({ key }) => key === this.dailyDifficultyKey) ?? DAILY_DIFFICULTIES[0];
-			}
-			return STUDY_DIFFICULTIES.find((difficulty) => difficulty.key === this.studyDifficultyKey) ?? STUDY_DIFFICULTIES[0];
+			return this.page.currentDifficulty(this);
 		},
 
-		get headerModeTitle() {
-			if (this.mode === 'home') return '';
-			if (this.mode === 'tutorial') return 'How to play';
-			if (this.mode === 'puzzle') return 'Puzzle';
-			if (this.mode === 'editor') return 'Board lab';
-			if (this.mode === 'traditional') return 'Traditional';
-			return this.mode[0].toUpperCase() + this.mode.slice(1);
+		// Pages are migrated to owning this view model one at a time. Until the
+		// remaining pages move, the root object is their compatibility view.
+		get minefieldView() {
+			return this.page.minefield ?? this;
 		},
 
-		get pageTitle() {
-			return this.headerModeTitle ? `Minesight / ${this.headerModeTitle}` : 'Minesight';
+		get currentField() {
+			return this.page.minefield?.field ?? this.page.field;
 		},
 
 		get canInstallApp() {
@@ -1186,289 +3151,55 @@ function createMinesight() {
 			return 'Ask the browser to keep progress and offline files when storage runs low.';
 		},
 
-		get showChallengeTimer() {
-			return this.showChallengePath;
-		},
-
-		get tutorialComplete() {
-			return this.tutorialStep >= TUTORIAL_STEPS.length;
-		},
-
-		get tutorialProgress() {
-			return this.tutorialComplete ? 'Introduction complete' : `Step ${this.tutorialStep + 1} of ${TUTORIAL_STEPS.length}`;
-		},
-
-		get tutorialTitle() {
-			return this.tutorialComplete ? 'That is Minesight' : TUTORIAL_STEPS[this.tutorialStep].title;
-		},
-
-		get tutorialMessage() {
-			if (this.tutorialComplete) {
-				return 'Mark only squares the clues prove safe or mined. If a square is ambiguous, leave it alone.';
-			}
-			return TUTORIAL_STEPS[this.tutorialStep].message;
-		},
-
-		get tutorialBubbleClass() {
-			if (this.tutorialComplete) return '';
-			return `tutorial-bubble-${TUTORIAL_STEPS[this.tutorialStep].bubble}`;
-		},
-
-		get tutorialBubbleStyle() {
-			if (this.tutorialComplete) return '';
-			let { x, y } = TUTORIAL_STEPS[this.tutorialStep];
-			let rightEdge = (x + 1) / this.field.width * 100;
-			let top = y / this.field.height * 100;
-			let spaceRight = (this.field.width - x) / this.field.width * 100;
-			let spaceBelow = (this.field.height - y - 1) / this.field.height * 100;
-			let bottomEdge = (y + 1) / this.field.height * 100;
-			let targetCenter = (x + .5) / this.field.width * 100;
-			return `--tutorial-right-edge: ${rightEdge}%; --tutorial-top: ${top}%; --tutorial-space-right: ${spaceRight}%; --tutorial-space-below: ${spaceBelow}%; --tutorial-bottom-edge: ${bottomEdge}%; --tutorial-target-center: ${targetCenter}%`;
-		},
-
 		get engineErrorMessage() {
 			return `Puzzle generator error: ${this.engineError}`;
 		},
 
-		get studyStreakLabel() {
-			return `${this.currentDifficulty.label} study streak: ${this.studyStreak}`;
-		},
-
-		get showChallengeIntro() {
-			return this.mode === 'challenge' && !this.challengeStarted;
-		},
-
-		get challengeStartLabel() {
-			if (this.challengePreparing) return `Building puzzles ${this.challengePuzzles.length} / ${this.challengeTotal}…`;
-			return this.challengeReady ? 'Start challenge' : 'Try again';
-		},
-
-		get challengeInvitationDifficulties() {
-			return this.challengeMode.route.map(({ difficulty, puzzleCount }) => ({
-				key: difficulty.key,
-				label: difficulty.label,
-				puzzleCount,
-			}));
-		},
-
-		get challengeShareDisabled() {
-			return false;
-		},
-
 		get shareButtonLabel() {
-			if (this.mode === 'challenge') return 'Share this challenge';
-			if (this.mode === 'daily') return `Share today's ${this.currentDifficulty.label} daily puzzle`;
-			return 'Share this puzzle';
+			return this.page.shareButtonLabel(this);
 		},
 
-		get showChallengeFinish() {
-			return this.mode === 'challenge' && this.result === 'complete';
-		},
-
-		get challengeCompleteMessage() {
-			if (this.challengeFailedCount === 0) return `You cleared all ${this.challengeTotal} challenges.`;
-			return `${this.challengeClearedCount} completed · ${this.challengeFailedCount} failed`;
-		},
-
-		get challengeFinishTitle() {
-			return this.challengeFailedCount === 0 ? 'Perfect run' : 'Run complete';
-		},
-
-		get challengeTargetTime() {
-			return this.challengeTargetMs === undefined ? '' : formatElapsedTime(this.challengeTargetMs);
-		},
-
-		get challengeTimeDifference() {
-			if (this.challengeTargetMs === undefined) return undefined;
-			return Math.floor(this.elapsedMs / 10) * 10 - this.challengeTargetMs;
-		},
-
-		get challengeTimeBeaten() {
-			return this.challengeTimeDifference !== undefined && this.challengeTimeDifference < 0;
-		},
-
-		get challengeTimeResultMessage() {
-			let difference = this.challengeTimeDifference;
-			if (difference === undefined) return '';
-			if (difference === 0) return 'A perfect tie!';
-			let ratio = Math.abs(difference) / this.challengeTargetMs;
-			if (difference < 0) {
-				if (ratio >= .15) return 'Left them in the dust!';
-				if (ratio >= .05) return 'A commanding win!';
-				return 'You beat their time!';
-			}
-			if (ratio <= .01) return 'So close!';
-			if (ratio <= .05) return 'Right on their heels!';
-			if (ratio <= .15) return 'A spirited chase.';
-			return 'Better luck next time!';
-		},
-
-		get showChallengePath() {
-			return this.mode === 'challenge' && this.challengeStarted && this.result !== 'complete';
-		},
 
 		get showBoard() {
-			if (this.mode === 'home' || this.mode === 'editor') return false;
-			if (this.mode === 'puzzle' && this.puzzleError) return false;
-			if (this.mode === 'study') return this.studyBoardReady || this.boardPreparing;
-			if (this.mode === 'daily') return this.dailyBoardReady || this.boardPreparing;
-			return this.mode !== 'challenge' || (this.challengeStarted && this.result !== 'complete');
+			return this.page.showBoard(this);
 		},
 
 		get boardResultClass() {
-			return `result-${this.result}`;
-		},
-
-		get boardAriaLabel() {
-			if (this.mode === 'tutorial') return 'Introduction minefield';
-			if (this.mode === 'traditional') return 'Traditional 8 by 8 minefield';
-			return this.mode === 'puzzle' ? 'Puzzle minefield' : `${this.currentDifficulty.label} minefield`;
+			return `result-${this.page.result}`;
 		},
 
 		get minefieldStyle() {
-			return `--columns: ${this.field.width}`;
+			return `--columns: ${this.currentField.width}`;
 		},
 
 		get sharePuzzleDisabled() {
-			if (this.mode === 'traditional') return true;
-			if (this.mode === 'challenge') return this.challengeShareDisabled;
-			return this.boardPreparing || (this.mode === 'study' && !this.studyBoardReady) || (this.mode === 'daily' && !this.dailyBoardReady);
+			return this.page.shareDisabled(this);
 		},
 
 		get showPuzzleStatus() {
-			return this.mode === 'study' || this.mode === 'puzzle' || this.mode === 'daily' || this.mode === 'traditional';
+			return this.page.showPuzzleStatus;
 		},
 
 		get statusTitle() {
-			if (this.mode === 'traditional' && this.result === 'playing') return 'Traditional Minesweeper';
-			if (this.mode === 'daily' && this.result === 'playing' && this.dailyCheckMessage) return 'Solution checked';
-			return this.result === 'playing' ? 'What can you prove?' : this.resultTitle;
+			return this.page.statusTitle(this);
 		},
 
 		get statusMessage() {
-			if (this.mode === 'traditional' && this.result === 'playing') {
-				return 'Reveal safe squares, flag mines, and use the numbered clues. You never need to guess.';
-			}
-			if (this.mode === 'daily' && this.result === 'playing') {
-				return this.dailyCheckMessage || 'Mark the squares, then check your solution when you are ready.';
-			}
-			return this.result === 'playing'
-				? 'Mark every covered square that must be safe or mined.'
-				: this.resultMessage;
-		},
-
-		get challengeResultActionDisabled() {
-			return this.result === 'playing';
-		},
-
-		get challengeResultActionLabel() {
-			if (this.result === 'gave-up') return 'Restart run';
-			return 'Next challenge';
+			return this.page.statusMessage(this);
 		},
 
 		get hintButtonClass() {
-			return this.hintUsed ? 'active' : '';
+			return this.page.hintUsed ? 'active' : '';
 		},
 
 		get hintButtonDisabled() {
-			return this.boardPreparing || this.result !== 'playing' || (
-				this.mode === 'study' && !this.studyBoardReady
-			);
-		},
-
-		get dailySolvedCount() {
-			return DAILY_DIFFICULTIES.filter(({ key }) => this.dailyStates[key]?.completed).length;
-		},
-
-		get dailyTotal() {
-			return DAILY_DIFFICULTIES.length;
-		},
-
-		get dailyHomeProgress() {
-			return `${this.dailySolvedCount}/${this.dailyTotal} complete today`;
-		},
-
-		get dailyAllSolved() {
-			return this.dailySolvedCount === this.dailyTotal;
+			return this.page.hintDisabled(this);
 		},
 
 		get markValidation() {
-			return this.mode === 'daily' ? 'deferred' : 'immediate';
+			return this.page.markValidation;
 		},
 
-		get studyActionsClass() {
-			return this.studySearchingVisible ? 'is-searching' : '';
-		},
-
-		get studyBoardActionClass() {
-			return this.result === 'playing' && this.studyBoardReady ? 'skip' : 'primary';
-		},
-
-		get studyBoardActionLabel() {
-			if (this.studySearchingVisible) return 'Searching…';
-			if (this.boardPreparing) return 'Building…';
-			if (!this.studyBoardReady) return 'Try again';
-			return this.result === 'playing' ? 'Skip' : 'Next';
-		},
-
-		get showChallengeControls() {
-			return this.showChallengePath;
-		},
-
-		get giveUpButtonClass() {
-			return this.giveUpHolding ? 'is-holding' : '';
-		},
-
-		get giveUpButtonStyle() {
-			return `--give-up-duration: ${this.giveUpHoldDuration}ms`;
-		},
-
-		get giveUpButtonLabel() {
-			return this.giveUpHolding ? 'Giving up. Release to cancel.' : 'Hold to give up';
-		},
-
-		get challengeTotal() {
-			return this.challengeModeTotal(this.challengeMode);
-		},
-
-		get challengeMode() {
-			return CHALLENGE_MODES.find(({ key }) => key === this.challengeModeKey) ?? CHALLENGE_MODES[0];
-		},
-
-		/** @param {{ route: Array<{ puzzleCount: number }> }} challengeMode */
-		challengeModeTotal(challengeMode) {
-			return challengeMode.route.reduce((total, { puzzleCount }) => total + puzzleCount, 0);
-		},
-
-		/** @param {{ route: Array<{ difficulty: { label: string }, puzzleCount: number }> }} challengeMode */
-		challengeModeRouteLabel(challengeMode) {
-			return challengeMode.route.map(({ difficulty, puzzleCount }) => (
-				`${puzzleCount} ${difficulty.label}`
-			)).join(' · ');
-		},
-
-		get challengeReady() {
-			return !this.challengePreparing && this.challengePuzzles.length === this.challengeTotal;
-		},
-
-		get challengeRunActive() {
-			return this.mode === 'challenge' && this.challengeStarted && !['gave-up', 'complete'].includes(this.result);
-		},
-
-		/** @param {BeforeUnloadEvent} event */
-		protectChallengeNavigation(event) {
-			if (!this.challengeRunActive) return;
-			event.preventDefault();
-			event.returnValue = '';
-		},
-
-		get challengeClearedCount() {
-			return this.challengeResults.filter((result) => result === 'cleared').length;
-		},
-
-		get challengeFailedCount() {
-			return this.challengeResults.filter((result) => result === 'failed').length;
-		},
 
 		get tapActionLabel() {
 			return this.actionsInverted ? 'Mine' : 'Safe';
@@ -1479,237 +3210,7 @@ function createMinesight() {
 		},
 
 		get inputHelp() {
-			if (this.scratchActive) return 'Draw freely over the board. Select Done to mark squares again.';
-			if (this.mode === 'traditional') return 'Tap or left-click to reveal. Long-press or right-click to flag. Select a revealed clue to reveal safe neighbours or flag mines.';
-			return `Tap or left-click to mark ${this.tapActionLabel}. Long-press or right-click to mark ${this.holdActionLabel}.`;
-		},
-
-		get editorTools() {
-			return [
-				{ value: 'covered', text: '□', label: 'Covered' },
-				{ value: 'masked', text: '×', label: 'Masked' },
-				{ value: 'flag', text: '⚑', label: 'Flag' },
-				...Array.from({ length: 9 }, (_, clue) => ({ value: String(clue), text: String(clue), label: `Clue ${clue}` })),
-			];
-		},
-
-		get editorCells() {
-			this.editorRevision;
-			let forcedMine = new Set(this.editorAnalysis?.forcedMine ?? []);
-			let forcedSafe = new Set(this.editorAnalysis?.forcedSafe ?? []);
-			return this.editorBoard.map((state, index) => {
-				let x = index % BOARD_SIZE;
-				let y = Math.floor(index / BOARD_SIZE);
-				let clue = /^\d$/.test(state);
-				let classes = ['editor-cell'];
-				let text = clue ? state : state === 'flag' ? '⚑' : '';
-				let description = clue ? `clue ${state}` : state === 'flag' ? 'flagged mine' : 'covered';
-				if (clue) classes.push('revealed', `clue-${state}`);
-				if (state === 'masked') {
-					classes.push('inactive', 'editor-masked');
-					description = 'masked, outside the puzzle';
-				}
-				if (state === 'flag') classes.push('flagged');
-				if (forcedMine.has(index)) {
-					classes.push('marked-mine', 'editor-forced');
-					text = '⚑';
-					description += ', forced mine';
-				}
-				else if (forcedSafe.has(index)) {
-					classes.push('marked-safe', 'editor-forced');
-					text = '✓';
-					description += ', forced safe';
-				}
-				else if (this.editorShowSolution && state === 'covered' && this.editorAnalysis && !this.editorAnalysis.contradiction) {
-					let mine = this.editorAnalysis.solution[index] === 1;
-					classes.push(mine ? 'editor-solution-mine' : 'editor-solution-safe');
-					text = mine ? '✹' : '·';
-					description += mine ? ', mine in shown solution' : ', safe in shown solution';
-				}
-				return {
-					index, x, y, text,
-					className: classes.join(' '),
-					label: `Row ${y + 1}, column ${x + 1}, ${description}`,
-					tabIndex: index === this.editorFocusIndex ? 0 : -1,
-				};
-			});
-		},
-
-		get editorStatusTitle() {
-			if (!this.editorAnalysis) return 'Ready to analyze';
-			if (this.editorAnalysis.contradiction) return 'Contradiction';
-			if (this.editorAnalysis.coveredCount === 0) return 'Nothing to solve';
-			if (this.editorAnalysis.unique) return 'Unique solution';
-			let count = this.editorAnalysis.forcedMine.length + this.editorAnalysis.forcedSafe.length;
-			return count > 0 ? `${count} forced ${count === 1 ? 'cell' : 'cells'}` : 'No forced cells';
-		},
-
-		get editorStatusMessage() {
-			if (!this.editorAnalysis) return 'Add clues or flags, then check the board.';
-			if (this.editorAnalysis.contradiction) return 'No mine layout can satisfy every clue and flag.';
-			if (this.editorAnalysis.coveredCount === 0) return 'Add at least one covered cell to create a puzzle.';
-			let mines = this.editorAnalysis.forcedMine.length;
-			let safe = this.editorAnalysis.forcedSafe.length;
-			if (this.editorAnalysis.unique) return `Every covered cell is determined: ${mines} mined and ${safe} safe.`;
-			if (mines + safe > 0) return `${mines} must be mined and ${safe} must be safe. Other covered cells remain ambiguous.`;
-			return 'The clues are consistent, but no covered cell is forced. Add more information before sharing.';
-		},
-
-		get editorCanShare() {
-			return this.editorAnalysis !== undefined
-				&& !this.editorAnalysis.contradiction
-				&& this.editorAnalysis.forcedMine.length + this.editorAnalysis.forcedSafe.length > 0;
-		},
-
-		get editorPrimaryActionLabel() {
-			return this.editorCanShare ? 'Share puzzle' : 'Analyze board';
-		},
-
-		/** @param {string} tool */
-		selectEditorTool(tool) {
-			if (this.editorTools.some(({ value }) => value === tool)) this.editorTool = tool;
-		},
-
-		/** @param {number} index @param {string} [state] */
-		setEditorCell(index, state = this.editorTool) {
-			if (this.mode !== 'editor' || index < 0 || index >= this.editorBoard.length) return;
-			if (this.editorBoard[index] === state) return;
-			this.editorHistory.push(this.editorBoard.slice());
-			if (this.editorHistory.length > 100) this.editorHistory.shift();
-			this.editorBoard[index] = state;
-			this.editorAnalysis = undefined;
-			this.editorShowSolution = false;
-			this.editorRevision += 1;
-		},
-
-		/** @param {PointerEvent} event @param {number} index */
-		beginEditorPaint(event, index) {
-			if (event.button !== 0) return;
-			this.editorPainting = true;
-			this.editorPointerId = event.pointerId;
-			this.setEditorCell(index);
-		},
-
-		/** @param {PointerEvent} event */
-		moveEditorPaint(event) {
-			let element = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.editor-cell');
-			let index = Number(element?.getAttribute('data-editor-index'));
-			if (event.pointerType === 'mouse') {
-				this.editorHoverIndex = Number.isInteger(index) ? index : -1;
-			}
-			if (!this.editorPainting || event.pointerId !== this.editorPointerId) return;
-			if (Number.isInteger(index)) this.setEditorCell(index);
-		},
-
-		/** @param {PointerEvent} event */
-		leaveEditorBoard(event) {
-			if (event.pointerType === 'mouse') this.editorHoverIndex = -1;
-		},
-
-		/** @param {PointerEvent} event */
-		endEditorPaint(event) {
-			if (event.pointerId !== this.editorPointerId) return;
-			this.editorPainting = false;
-			this.editorPointerId = undefined;
-		},
-
-		/** @param {KeyboardEvent} event @param {number} index */
-		keydownEditorCell(event, index) {
-			let direction = CELL_FOCUS_DIRECTIONS[event.key];
-			if (direction) {
-				event.preventDefault();
-				let x = index % BOARD_SIZE;
-				let y = Math.floor(index / BOARD_SIZE);
-				let nextX = Math.max(0, Math.min(BOARD_SIZE - 1, x + direction[0]));
-				let nextY = Math.max(0, Math.min(BOARD_SIZE - 1, y + direction[1]));
-				this.editorFocusIndex = nextY * BOARD_SIZE + nextX;
-				this.editorRevision += 1;
-				this.$nextTick(() => document.querySelector(`[data-editor-index="${this.editorFocusIndex}"]`)?.focus());
-				return;
-			}
-			let state;
-			if (/^[0-8]$/.test(event.key)) state = event.key;
-			else if (event.key.toLowerCase() === 'f') state = 'flag';
-			else if (event.key.toLowerCase() === 'm') state = 'masked';
-			else if (['u', 'Delete', 'Backspace'].includes(event.key)) state = 'covered';
-			else if (event.key === ' ' || event.key === 'Enter') state = this.editorTool;
-			if (state !== undefined) {
-				event.preventDefault();
-				this.setEditorCell(index, state);
-			}
-		},
-
-		/** @param {KeyboardEvent} event */
-		keydownEditorAtPointer(event) {
-			if (this.mode !== 'editor' || event.defaultPrevented || !/^[0-8]$/.test(event.key)) return;
-			if (this.editorHoverIndex < 0) return;
-			event.preventDefault();
-			this.setEditorCell(this.editorHoverIndex, event.key);
-		},
-
-		analyzeEditor() {
-			this.editorAnalysis = analyzeEditorBoard(this.editorBoard, BOARD_SIZE, BOARD_SIZE);
-			this.editorShowSolution = false;
-			this.editorRevision += 1;
-		},
-
-		async activateEditorPrimaryAction() {
-			if (!this.editorCanShare) {
-				this.analyzeEditor();
-				return;
-			}
-			let puzzle = createEditorPuzzle(this.editorBoard, this.editorAnalysis, BOARD_SIZE, BOARD_SIZE);
-			let url = createRouteUrl(window.location.href, `/puzzle/${puzzle.encode()}`);
-			let shareData = {
-				title: 'Minesight puzzle',
-				text: 'Can you solve this Minesight puzzle?',
-				url: url.href,
-			};
-			await this.shareLink(shareData, 'Puzzle shared', 'Share link copied');
-		},
-
-		undoEditor() {
-			let previous = this.editorHistory.pop();
-			if (!previous) return;
-			this.editorBoard = previous;
-			this.editorAnalysis = undefined;
-			this.editorShowSolution = false;
-			this.editorRevision += 1;
-		},
-
-		clearEditor() {
-			if (this.editorBoard.every((cell) => cell === 'covered')) return;
-			this.editorHistory.push(this.editorBoard.slice());
-			this.editorBoard = Array(BOARD_SIZE * BOARD_SIZE).fill('covered');
-			this.editorAnalysis = undefined;
-			this.editorShowSolution = false;
-			this.editorRevision += 1;
-		},
-
-		/** @param {number} failedCount */
-		showChallengeTestEnd(failedCount) {
-			if (!isLocalDevelopment() || this.mode !== 'challenge') return false;
-			let failures = Math.min(this.challengeTotal, Math.max(0, Math.trunc(Number(failedCount) || 0)));
-			this.cancelGiveUpGesture();
-			this.stopTimer();
-			this.challengePreparationId += 1;
-			this.challengePreparing = false;
-			this.challengeStarted = true;
-			this.challengeIndex = this.challengeTotal - 1;
-			this.challengeResults = Array.from(
-				{ length: this.challengeTotal },
-				(_, index) => index < this.challengeTotal - failures ? 'cleared' : 'failed',
-			);
-			this.result = 'complete';
-			this.playChallengeFanfare();
-			if (this.challengeTimeBeaten) feedbackEffects.fireworks();
-			this.revision += 1;
-			return true;
-		},
-
-		playChallengeFanfare() {
-			if (this.challengeFailedCount === 0) gameSounds.play('perfectComplete');
-			else gameSounds.play('failedComplete');
+			return this.page.inputHelp(this);
 		},
 
 		toggleScratchPad() {
@@ -1810,42 +3311,35 @@ function createMinesight() {
 
 		/**
 		 * @param {{ x: number, y: number }} point
-		 * @param {boolean} invert
+		 * @param {boolean} flag
 		 */
-		drawScratchMark(point, invert) {
-			let markMine = invert !== this.actionsInverted;
+		drawScratchMark(point, flag) {
 			let jitter = () => (Math.random() - .5) * SCRATCH_MARK_SIZE * .12;
 			let rotate = (x, y, angle) => ({
 				x: point.x + x * Math.cos(angle) - y * Math.sin(angle) + jitter(),
 				y: point.y + x * Math.sin(angle) + y * Math.cos(angle) + jitter(),
 			});
 			let angle = (Math.random() - .5) * .14;
-			let paths = markMine
-				? [
-					[[-.32, .9], [-.32, -.9]],
-					[[-.3, -.82], [.72, -.48], [-.3, -.08]],
-				]
-				: [[[-.8, -.02], [-.22, .62], [.86, -.72]]];
-			let strokes = paths.map((path) => ({
-					color: this.scratchColor,
-					points: path.map(([x, y]) => rotate(x * SCRATCH_MARK_SIZE, y * SCRATCH_MARK_SIZE, angle)),
-					drawProgress: 0,
-				}));
-			this.scratchStrokes.push(...strokes);
-			this.animateScratchMark(strokes);
+			let path = flag
+				? [[-.32, .9], [-.32, -.9], [-.3, -.82], [.72, -.48], [-.3, -.08]]
+				: [[-.8, -.02], [-.22, .62], [.86, -.72]];
+			let stroke = {
+				color: this.scratchColor,
+				points: path.map(([x, y]) => rotate(x * SCRATCH_MARK_SIZE, y * SCRATCH_MARK_SIZE, angle)),
+				drawProgress: 0,
+			};
+			this.scratchStrokes.push(stroke);
+			this.animateScratchMark(stroke);
 		},
 
-		/** @param {Array<{ drawProgress: number }>} strokes */
-		animateScratchMark(strokes) {
+		/** @param {{ drawProgress: number }} stroke */
+		animateScratchMark(stroke) {
 			let startTime;
 			let drawFrame = (time) => {
 				startTime ??= time;
-				let progress = Math.min(1, (time - startTime) / SCRATCH_MARK_ANIMATION_MS);
-				for (let [index, stroke] of strokes.entries()) {
-					stroke.drawProgress = Math.max(0, Math.min(1, progress * strokes.length - index));
-				}
+				stroke.drawProgress = Math.min(1, (time - startTime) / SCRATCH_MARK_ANIMATION_MS);
 				this.renderScratchPad();
-				if (progress < 1) requestAnimationFrame(drawFrame);
+				if (stroke.drawProgress < 1) requestAnimationFrame(drawFrame);
 			};
 			requestAnimationFrame(drawFrame);
 		},
@@ -1935,7 +3429,7 @@ function createMinesight() {
 			let point = this.scratchPoint(event);
 			if (!this.isScratchTap(stroke, point)) return;
 			this.removeScratchStroke(stroke);
-			this.drawScratchMark(point, false);
+			this.drawScratchMark(point, this.flagForInput(false));
 			this.renderScratchPad();
 		},
 
@@ -1952,7 +3446,7 @@ function createMinesight() {
 				this.removeScratchStroke(this.scratchStroke);
 				this.scratchStroke = undefined;
 			}
-			this.drawScratchMark(point, true);
+			this.drawScratchMark(point, this.flagForInput(true));
 			this.renderScratchPad();
 		},
 
@@ -1996,68 +3490,45 @@ function createMinesight() {
 			this.$nextTick(() => this.resizeScratchPad());
 		},
 
-		get formattedTime() {
-			return formatElapsedTime(this.elapsedMs);
-		},
-
-		get challengeTimerTime() {
-			return this.formattedTime.replace(/\.\d{2}$/, '');
-		},
-
-		get challengeGroups() {
-			let start = 0;
-			return this.challengeMode.route.map(({ difficulty, puzzleCount }) => {
-				let group = {
-					key: difficulty.key,
-					label: difficulty.label,
-					difficulty,
-					puzzleCount,
-					start,
-					steps: Array.from({ length: puzzleCount }, (_, index) => start + index),
-				};
-				start += puzzleCount;
-				return group;
-			});
-		},
-
 		get cells() {
 			this.revision;
 			let cells = [];
-			let showHints = ['study', 'puzzle'].includes(this.mode) && this.hintUsed && this.result === 'playing';
-			let showSolution = this.mode === 'challenge' && this.result === 'gave-up';
-			for (let y = 0; y < this.field.height; y += 1) {
-				for (let x = 0; x < this.field.width; x += 1) {
-					let index = this.field.getIndex(x, y);
-					let mine = this.field.isMine(x, y);
-					let revealed = this.field.isRevealed(x, y);
-					let flagged = this.field.isFlagged(x, y);
-					let markedMine = this.field.isMarkedMine(x, y);
-					let markedSafe = this.field.isMarkedSafe(x, y);
-					let active = this.mode === 'traditional' ? !revealed : this.field.isActive(x, y);
-					let incorrect = this.field.isIncorrect(x, y) || index === this.incorrectCellIndex
-						|| (this.mode === 'traditional' && this.result === 'failed' && mine && revealed);
-					let solutionMine = showSolution && this.field.isForcedMine(x, y);
-					let solutionSafe = (showSolution || (this.mode === 'traditional' && this.result === 'failed'))
-						&& this.field.isForcedSafe(x, y);
-					let clue = this.field.getClue(x, y);
-					let showMine = this.mode !== 'traditional' && !this.field.isPuzzle && mine
-						&& (revealed || this.result === 'failed');
+			let showHints = this.page.hints && this.page.hintUsed && this.page.result === 'playing';
+			let showSolution = this.page.showSolution(this);
+			let field = this.currentField;
+			for (let y = 0; y < field.height; y += 1) {
+				for (let x = 0; x < field.width; x += 1) {
+					let index = field.getIndex(x, y);
+					let mine = field.isMine(x, y);
+					let revealed = field.isRevealed(x, y);
+					let flagged = field.isFlagged(x, y);
+					let markedMine = field.isMarkedMine(x, y);
+					let markedSafe = field.isMarkedSafe(x, y);
+					let active = this.page.traditionalRules ? !revealed : field.isActive(x, y);
+					let incorrect = field.isIncorrect(x, y) || index === this.incorrectCellIndex
+						|| (this.page.traditionalRules && this.page.result === 'failed' && mine && revealed);
+					let solutionMine = showSolution && field.isForcedMine(x, y);
+					let solutionSafe = (showSolution || (this.page.traditionalRules && this.page.result === 'failed'))
+						&& field.isForcedSafe(x, y);
+					let clue = field.getClue(x, y);
+					let showMine = !this.page.traditionalRules && !field.isPuzzle && mine
+						&& (revealed || this.page.result === 'failed');
 					let hinted = showHints && (
-						(this.field.isForcedSafe(x, y) && !markedSafe) ||
-						(this.field.isForcedMine(x, y) && !markedMine)
+						(field.isForcedSafe(x, y) && !markedSafe) ||
+						(field.isForcedMine(x, y) && !markedMine)
 					);
 					let classNames = [];
 					if (revealed) classNames.push('revealed');
 					if (flagged) classNames.push('flagged');
-					if (markedMine || solutionMine || (this.mode === 'traditional' && flagged)) classNames.push('marked-mine');
+					if (markedMine || solutionMine || (this.page.traditionalRules && flagged)) classNames.push('marked-mine');
 					if (markedSafe || solutionSafe) classNames.push('marked-safe');
 					if (!active && !revealed && !flagged) classNames.push('inactive');
 					if (hinted) classNames.push('hinted');
 					if (showMine) classNames.push('mine');
 					if (incorrect) classNames.push('incorrect-guess');
 					let tutorialTarget = false;
-					if (this.mode === 'tutorial' && !this.tutorialComplete) {
-						let step = TUTORIAL_STEPS[this.tutorialStep];
+					if (this.page.tutorialRules && !this.page.tutorialComplete) {
+						let step = TUTORIAL_STEPS[this.page.tutorialStep];
 						tutorialTarget = x === step.x && y === step.y;
 						if (tutorialTarget) classNames.push('tutorial-target');
 					}
@@ -2087,11 +3558,11 @@ function createMinesight() {
 					else label += ', outside this puzzle';
 					if (tutorialTarget) label += ', current tutorial target';
 
-					let studyBoardUnavailable = this.mode === 'study' && !this.studyBoardReady;
-					let chordable = this.mode !== 'tutorial' && revealed && !mine;
-					let disabled = this.boardPreparing || this.traditionalBusy || studyBoardUnavailable ||
-						this.result !== 'playing' || (!active && !chordable) ||
-						(this.mode === 'tutorial' && this.tutorialComplete);
+					let pageBoardUnavailable = this.page.requiresReadyBoard && !this.page.ready;
+					let chordable = !this.page.tutorialRules && revealed && !mine;
+					let disabled = this.boardPreparing || Boolean(this.page.busy) || pageBoardUnavailable ||
+						this.page.result !== 'playing' || (!active && !chordable) ||
+						(this.page.tutorialRules && this.page.tutorialComplete);
 					let key = `${this.boardNumber}-${index}`;
 					cells.push({ key, index, x, y, text, label, className: classNames.join(' '), disabled, tabIndex: -1 });
 				}
@@ -2103,37 +3574,11 @@ function createMinesight() {
 		},
 
 		get resultTitle() {
-			if (this.result === 'cleared') {
-				if (this.mode === 'traditional') return 'Field cleared';
-				if (this.mode === 'daily') return 'Daily solved';
-				if (this.mode === 'puzzle') return 'Puzzle solved';
-				if (this.mode === 'challenge' && this.challengeResults[this.challengeIndex] === 'failed') {
-					return 'Puzzle completed';
-				}
-				return 'Puzzle solved';
-			}
-			if (this.result === 'complete') return 'Challenge complete';
-			if (this.mode === 'traditional') return 'Game over';
-			return this.result === 'gave-up' ? 'Run ended' : 'Incorrect move';
+			return this.page.resultTitle(this);
 		},
 
 		get resultMessage() {
-			if (this.mode === 'traditional' && this.result === 'cleared') return 'You cleared the minefield without guessing.';
-			if (this.mode === 'traditional' && this.result === 'failed') return 'That move was not logically safe. The provably safe choices are highlighted.';
-			if (this.result === 'cleared' && this.mode === 'daily') {
-				return this.dailyAllSolved ? 'Today\'s set is complete. Come back tomorrow.' : `${this.dailySolvedCount} of ${this.dailyTotal} complete today.`;
-			}
-			if (this.result === 'cleared' && this.mode === 'challenge') {
-				if (this.challengeResults[this.challengeIndex] === 'failed') {
-					return 'You finished it, but this puzzle counts as failed. Ready for the next one?';
-				}
-				return 'Good solve. Ready for the next one?';
-			}
-			if (this.result === 'cleared' && this.mode === 'puzzle') return 'Nice solve. Open the link again for a fresh board.';
-			if (this.result === 'cleared') return 'Good solve. Keep the streak going.';
-			if (this.result === 'complete') return `${this.challengeClearedCount} completed cleanly and ${this.challengeFailedCount} failed in ${this.formattedTime}.`;
-			if (this.result === 'gave-up') return `You gave up on puzzle ${this.challengeIndex + 1} of ${this.challengeTotal}.`;
-			return "The clues don't support that mark.";
+			return this.page.resultMessage(this);
 		},
 
 		toggleSound() {
@@ -2232,165 +3677,6 @@ function createMinesight() {
 			}
 		},
 
-		activateChallengeStart() {
-			if (this.challengeReady) this.startChallenge();
-			else if (!this.challengePreparing) void this.prepareChallenge();
-		},
-
-		/** @param {string} modeKey */
-		selectChallengeMode(modeKey) {
-			if (this.challengeStarted || modeKey === this.challengeModeKey) return;
-			if (!CHALLENGE_MODES.some(({ key }) => key === modeKey)) return;
-			this.challengeTargetMs = undefined;
-			this.challengeModeKey = modeKey;
-			this.challengeSeed = randomChallengeSeed();
-			saveMinesightData('challengeModeKey', modeKey);
-			window.history.pushState(null, '', createRouteUrl(window.location.href, `/challenge/${modeKey}`));
-			this.activeRouteUrl = window.location.href;
-			void this.prepareChallenge();
-		},
-
-		activateChallengeResultAction() {
-			if (this.result === 'cleared') this.advanceChallenge();
-			else if (this.result === 'gave-up') void this.restartChallenge();
-		},
-
-		activateStudyBoardAction() {
-			if (this.boardPreparing) return;
-			if (this.result === 'playing' && this.studyBoardReady) this.skipStudyBoard();
-			else void this.newStudyBoard();
-		},
-
-		snapshotTraditionalState() {
-			if (this.mode !== 'traditional') return;
-			this.traditionalField = this.field;
-			this.traditionalResult = this.result;
-		},
-
-		saveTraditionalData() {
-			saveMinesightData('traditional', {
-				rulesVersion: TRADITIONAL_RULES_VERSION,
-				cells: Array.from(this.traditionalField.state),
-				seed: String(this.traditionalSeed),
-				result: this.traditionalResult,
-			});
-		},
-
-		newTraditionalGame() {
-			if (this.result === 'playing' && !window.confirm('Start a new game?\n\nYour current game is not finished.')) return;
-			this.traditionalMoveId += 1;
-			this.traditionalBusy = false;
-			this.clearIncorrectFeedback();
-			this.field = new MineField(BOARD_SIZE, BOARD_SIZE);
-			this.traditionalSeed = randomChallengeSeed();
-			this.result = 'playing';
-			this.engineError = '';
-			this.boardNumber += 1;
-			this.revision += 1;
-			this.snapshotTraditionalState();
-			this.saveTraditionalData();
-		},
-
-		/** @param {number} x @param {number} y */
-		async revealTraditionalCell(x, y) {
-			if (this.mode !== 'traditional' || this.result !== 'playing' || this.traditionalBusy) return;
-			if (this.field.isFlagged(x, y)) return;
-			let chord = this.field.isRevealed(x, y);
-			if (chord) {
-				let flags = 0;
-				/** @type {number[]} */
-				let covered = [];
-				for (let neighbourY = Math.max(0, y - 1); neighbourY <= Math.min(BOARD_SIZE - 1, y + 1); neighbourY += 1) {
-					for (let neighbourX = Math.max(0, x - 1); neighbourX <= Math.min(BOARD_SIZE - 1, x + 1); neighbourX += 1) {
-						if (neighbourX === x && neighbourY === y) continue;
-						if (this.field.isFlagged(neighbourX, neighbourY)) flags += 1;
-						else if (!this.field.isRevealed(neighbourX, neighbourY)) covered.push(this.field.getIndex(neighbourX, neighbourY));
-					}
-				}
-				let clue = this.field.getClue(x, y);
-				if (covered.length === 0) return;
-				if (flags !== clue) {
-					if (flags + covered.length !== clue) return;
-					for (let cellIndex of covered) {
-						this.field.actionFlag(cellIndex % BOARD_SIZE, Math.floor(cellIndex / BOARD_SIZE));
-						feedbackEffects.mark({ cellIndex, mine: true });
-					}
-					gameSounds.play('mark');
-					this.revision += 1;
-					this.snapshotTraditionalState();
-					this.saveTraditionalData();
-					return;
-				}
-			}
-			let moveId = this.traditionalMoveId + 1;
-			this.traditionalMoveId = moveId;
-			this.traditionalBusy = true;
-			this.engineError = '';
-			try {
-				let previousState = this.field.state.slice();
-				let move = await resolveTraditionalMove(this.field, this.field.getIndex(x, y), this.traditionalSeed);
-				if (this.mode !== 'traditional' || moveId !== this.traditionalMoveId) return;
-				this.traditionalSeed = nextTraditionalSeed(this.traditionalSeed);
-				this.field = fieldWithMineLayout(this.field, move.mines);
-				if (chord) this.field.actionChord(x, y);
-				else this.field.actionReveal(x, y);
-				let gameOver = this.field.gameOverReason();
-				this.result = gameOver === MineField.GAME_OVER_CLEARED ? 'cleared'
-					: gameOver === MineField.GAME_OVER_DETONATION ? 'failed' : 'playing';
-				if (this.result === 'failed') {
-					for (let index = 0; index < this.field.state.length; index += 1) {
-						if ((move.forcedSafe & (1n << BigInt(index))) !== 0n) this.field.state[index] |= MineField.FORCED_SAFE;
-					}
-					let failedIndex = this.field.state.findIndex(cell => (cell & (MineField.MINE | MineField.REVEALED)) === (MineField.MINE | MineField.REVEALED));
-					gameSounds.play('failure');
-					feedbackEffects.failure({ cellIndex: failedIndex, terminal: true });
-				}
-				else if (this.result === 'cleared') {
-					gameSounds.play('success');
-					feedbackEffects.success({ grand: true });
-				}
-				else {
-					gameSounds.play('mark');
-					for (let [cellIndex, cell] of this.field.state.entries()) {
-						if ((previousState[cellIndex] & MineField.REVEALED) === 0 && (cell & MineField.REVEALED) !== 0) {
-							feedbackEffects.mark({ cellIndex, mine: false });
-						}
-					}
-				}
-				this.revision += 1;
-				this.snapshotTraditionalState();
-				this.saveTraditionalData();
-			}
-			catch (error) {
-				if (moveId === this.traditionalMoveId) this.engineError = error instanceof Error ? error.message : String(error);
-			}
-			finally {
-				if (moveId === this.traditionalMoveId) this.traditionalBusy = false;
-			}
-		},
-
-		startTutorial() {
-			this.clearIncorrectFeedback();
-			this.mode = 'tutorial';
-			this.tutorialStep = 0;
-			this.result = 'playing';
-			this.engineError = '';
-			this.field = createTutorialField();
-			this.boardNumber += 1;
-			this.revision += 1;
-		},
-
-		finishTutorial() {
-			if (this.mode !== 'tutorial') return;
-			this.studyDifficultyKey = BEGINNER_DIFFICULTY.key;
-			this.switchMode('study');
-		},
-
-		skipTutorial() {
-			if (this.mode !== 'tutorial') return;
-			this.switchMode('home');
-		},
-
 		/** @param {string} route */
 		navigate(route) {
 			let url = createRouteUrl(window.location.href, route);
@@ -2402,150 +3688,48 @@ function createMinesight() {
 		applyCurrentRoute() {
 			this.activeRouteUrl = window.location.href;
 			let route = resolveUrlGame(new URL(window.location.href));
-			if (this.mode === 'study') {
-				this.snapshotStudyState();
-				this.saveStudyData();
-			}
-			if (this.mode === 'daily') {
-				this.snapshotDailyState();
-				this.saveDailyData();
-				this.dailyBoardReady = false;
-			}
-			if (this.mode === 'traditional') {
-				this.snapshotTraditionalState();
-				this.saveTraditionalData();
-			}
-			this.challengePreparationId += 1;
-			this.studyPreparationId += 1;
-			this.dailyPreparationId += 1;
-			this.traditionalMoveId += 1;
-			this.traditionalBusy = false;
-			this.challengePreparing = false;
+			this.page.minefield?.destroy();
+			this.page.close(this);
 			this.boardPreparing = false;
-			this.clearStudySearchingDelay();
-			this.challengeStarted = false;
-			this.challengePuzzles = [];
-			this.challengeResults = [];
-			this.stopTimer();
-			this.puzzleError = '';
-			this.challengeReceived = false;
 
-			if (route.mode === 'home') {
-				this.mode = 'home';
-				return;
-			}
-			if (route.mode === 'tutorial') {
-				this.startTutorial();
-				return;
-			}
-			if (route.mode === 'editor') {
-				this.mode = 'editor';
-				return;
-			}
-			if (route.mode === 'traditional') {
-				this.mode = 'traditional';
-				this.field = this.traditionalField;
-				this.result = this.traditionalResult;
-				this.engineError = '';
-				this.boardNumber += 1;
-				this.revision += 1;
-				return;
-			}
-			if (route.mode === 'puzzle') {
-				this.mode = 'puzzle';
-				this.result = 'playing';
-				try {
-					this.field = MineField.decode(route.payload);
-					this.engineError = '';
-					this.boardNumber += 1;
-					this.revision += 1;
-				}
-				catch {
-					this.puzzleError = 'This puzzle link is invalid.';
-				}
-				return;
-			}
-			if (route.mode === 'challenge') {
-				this.mode = 'challenge';
-				this.challengeModeKey = route.modeKey;
-				this.challengeReceived = route.received;
-				this.challengeTargetMs = route.time;
-				this.challengeSeed = route.seed ?? randomChallengeSeed();
-				void this.prepareChallenge();
-				return;
-			}
-			if (route.mode === 'daily') {
-				this.mode = 'daily';
-				this.refreshDailyDate();
-				this.openDailyDifficulty(route.difficultyKey ?? this.dailyDifficultyKey, false);
-				return;
-			}
-
-			this.mode = 'study';
-			if (route.difficultyKey !== undefined) this.studyDifficultyKey = route.difficultyKey;
-			if (!this.restoreStudyState()) void this.newStudyBoard();
+			this.openPage(route.mode);
+			this.page.open(this, route);
+			this.$nextTick(() => this.minefieldView.setupScratchPad(this.$refs.scratchCanvas));
 		},
 
 		/** @param {GameMode} nextMode */
 		switchMode(nextMode) {
 			if (nextMode === 'home') this.navigate('/');
 			else if (nextMode === 'tutorial') this.navigate('/tutorial');
-			else if (nextMode === 'study') this.navigate(`/study/${this.studyDifficultyKey}`);
-			else if (nextMode === 'daily') this.navigate(`/daily/${this.dailyDifficultyKey}`);
-			else if (nextMode === 'challenge') this.navigate(`/challenge/${this.challengeModeKey}`);
+			else if (nextMode === 'study') this.navigate(this.page.kind === 'study' ? `/study/${this.page.difficultyKey}` : '/study');
+			else if (nextMode === 'daily') this.navigate(this.page.kind === 'daily' ? `/daily/${this.page.difficultyKey}` : '/daily');
+			else if (nextMode === 'challenge') {
+				let storedModeKey = loadMinesightData().challengeModeKey ?? 'expert';
+				let modeKey = CHALLENGE_MODES.some(({ key }) => key === storedModeKey) ? storedModeKey : CHALLENGE_MODES[0].key;
+				this.navigate(`/challenge/${modeKey}`);
+			}
 			else if (nextMode === 'editor') this.navigate('/editor');
 			else if (nextMode === 'traditional') this.navigate('/traditional');
 		},
 
 		goHome() {
-			if (this.challengeRunActive) return;
+			if (this.page.kind === 'challenge' && this.page.runActive) return;
 			this.switchMode('home');
 		},
 
 		async share() {
-			if (this.mode === 'challenge') await this.shareChallenge();
-			else if (this.mode === 'daily') await this.shareDaily();
-			else await this.sharePuzzle();
+			await this.page.share(this);
 		},
 
 		async sharePuzzle() {
 			if (this.sharePuzzleDisabled || !this.showBoard) return;
-			let url = createRouteUrl(window.location.href, `/puzzle/${this.field.encode()}`);
+			let url = createRouteUrl(window.location.href, `/puzzle/${this.currentField.encode()}`);
 			let shareData = {
 				title: 'Minesight Puzzle',
 				text: 'Can you solve this Minesight puzzle?',
 				url: url.href,
 			};
 			await this.shareLink(shareData, 'Puzzle shared', 'Share link copied');
-		},
-
-		async shareDaily() {
-			if (this.sharePuzzleDisabled || !this.showBoard) return;
-			let difficulty = this.currentDifficulty.label;
-			let url = createRouteUrl(window.location.href, `/daily/${this.dailyDifficultyKey}`);
-			let text = `Play today's Minesight ${difficulty} daily puzzle!`;
-			let shareData = {
-				title: `Minesight Daily`,
-				text: text,
-				url: url.href,
-			};
-			await this.shareLink(shareData, 'Daily puzzle shared', 'Daily puzzle link copied');
-		},
-
-		async shareChallenge() {
-			if (this.challengeShareDisabled) return;
-			let completedTime = Math.floor(this.elapsedMs / 10) * 10;
-			let targetTime = this.result === 'complete' ? completedTime : this.challengeTargetMs;
-			let url = createChallengeShareUrl(window.location.href, this.challengeModeKey, this.challengeSeed, targetTime);
-			let text = this.result === 'complete'
-				? `I completed Minesight ${this.challengeMode.label} in ${this.formattedTime}. Can you beat my time?`
-				: `You have been challenged to Minesight ${this.challengeMode.label}!`;
-			let shareData = {
-				title: 'Minesight Challenge',
-				text: text,
-				url: url.href,
-			};
-			await this.shareLink(shareData, 'Challenge shared', 'Challenge link copied');
 		},
 
 		/**
@@ -2602,463 +3786,13 @@ function createMinesight() {
 			}, 2200);
 		},
 
-		refreshDailyDate() {
-			let today = localDateKey();
-			if (today === this.dailyDate) return false;
-			this.dailyDate = today;
-			this.dailyStates = Object.fromEntries(DAILY_DIFFICULTIES.map(({ key }) => [key, undefined]));
-			this.dailyDifficultyKey = DAILY_DIFFICULTIES[0].key;
-			this.dailyBoardReady = false;
-			this.dailyCheckMessage = '';
-			this.dailyPreparationId += 1;
-			this.boardPreparing = false;
-			this.saveDailyData();
-			if (this.mode === 'daily') this.openDailyDifficulty(this.dailyDifficultyKey, true);
-			return true;
-		},
-
-		/** @param {string} key @param {boolean} [navigate] */
-		openDailyDifficulty(key, navigate = true) {
-			if (!DAILY_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
-			if (this.mode === 'daily' && this.dailyBoardReady) this.snapshotDailyState();
-			this.dailyPreparationId += 1;
-			this.boardPreparing = false;
-			this.dailyDifficultyKey = key;
-			this.dailyCheckMessage = '';
-			if (navigate) {
-				window.history.pushState(null, '', createRouteUrl(window.location.href, `/daily/${key}`));
-				this.activeRouteUrl = window.location.href;
-			}
-			if (!this.restoreDailyState()) void this.prepareDailyBoard();
-			this.saveDailyData();
-		},
-
-		snapshotDailyState() {
-			if (!this.dailyBoardReady) return;
-			let completed = Boolean(this.dailyStates[this.dailyDifficultyKey]?.completed || this.result === 'cleared');
-			this.dailyStates[this.dailyDifficultyKey] = {
-				field: this.field,
-				seed: this.boardSeed,
-				result: this.result,
-				completed,
-				ready: true,
-			};
-		},
-
-		restoreDailyState() {
-			let state = this.dailyStates[this.dailyDifficultyKey];
-			if (!state?.ready) {
-				this.dailyBoardReady = false;
-				return false;
-			}
-			this.clearIncorrectFeedback();
-			this.field = state.field;
-			this.boardSeed = state.seed;
-			this.result = state.result;
-			this.hintUsed = false;
-			this.dailyBoardReady = true;
-			this.engineError = '';
-			this.boardNumber += 1;
-			this.revision += 1;
-			return true;
-		},
-
-		saveDailyData() {
-			let difficulties = Object.fromEntries(DAILY_DIFFICULTIES.flatMap(({ key }) => {
-				let state = this.dailyStates[key];
-				if (!state?.ready) return [];
-				return [[key, {
-					difficultyKey: key,
-					cells: Array.from(state.field.state),
-					seed: String(state.seed),
-					result: state.result,
-					completed: state.completed,
-				}]];
-			}));
-			saveMinesightData('daily', {
-				lastSeenDate: this.dailyDate,
-				difficultyKey: this.dailyDifficultyKey,
-				difficulties,
-			});
-		},
-
-		async prepareDailyBoard() {
-			let preparationId = this.dailyPreparationId + 1;
-			this.dailyPreparationId = preparationId;
-			this.dailyBoardReady = false;
-			this.boardPreparing = true;
-			this.result = 'playing';
-			this.engineError = '';
-			let difficultyKey = this.dailyDifficultyKey;
-			let difficulty = DAILY_DIFFICULTIES.find(({ key }) => key === difficultyKey) ?? DAILY_DIFFICULTIES[0];
-			try {
-				let puzzle = await generateSeededField(
-					difficulty,
-					dailyPuzzleSeed(this.dailyDate),
-					() => this.mode === 'daily' && this.dailyDifficultyKey === difficultyKey && preparationId === this.dailyPreparationId,
-				);
-				if (!puzzle || this.mode !== 'daily' || this.dailyDifficultyKey !== difficultyKey || preparationId !== this.dailyPreparationId) return;
-				this.field = puzzle.field;
-				this.boardSeed = puzzle.seed;
-				this.dailyBoardReady = true;
-				this.boardNumber += 1;
-				this.revision += 1;
-				this.snapshotDailyState();
-				this.saveDailyData();
-			}
-			catch (error) {
-				if (preparationId === this.dailyPreparationId) this.engineError = error instanceof Error ? error.message : String(error);
-			}
-			finally {
-				if (preparationId === this.dailyPreparationId) this.boardPreparing = false;
-			}
-		},
-
-		clearDailyBoard() {
-			if (this.mode !== 'daily' || !this.dailyBoardReady || this.boardPreparing) return;
-			let changed = this.field.clearPuzzleMarks();
-			this.clearIncorrectFeedback();
-			this.dailyCheckMessage = '';
-			this.result = 'playing';
-			this.boardNumber += 1;
-			this.revision += 1;
-			this.snapshotDailyState();
-			this.saveDailyData();
-			if (changed) gameSounds.play('unmark');
-		},
-
-		checkDailySolution() {
-			if (this.mode !== 'daily' || !this.dailyBoardReady || this.result !== 'playing') return;
-			let contradictionIndex = this.field.puzzleContradictionIndex();
-			if (contradictionIndex >= 0) {
-				this.dailyCheckMessage = 'There is a contradiction: the marked mines and safe squares cannot satisfy a clue.';
-				gameSounds.play('incorrect');
-				feedbackEffects.failure({ cellIndex: contradictionIndex, terminal: false });
-				this.revision += 1;
-				return;
-			}
-			if (!this.field.isPuzzleSolved()) {
-				this.dailyCheckMessage = 'Not complete yet. Keep going.';
-				this.revision += 1;
-				return;
-			}
-			this.dailyCheckMessage = '';
-			this.result = 'cleared';
-			this.snapshotDailyState();
-			this.saveDailyData();
-			gameSounds.play('success');
-			let allSolved = this.dailyAllSolved;
-			feedbackEffects.success({ grand: allSolved });
-			if (allSolved) feedbackEffects.fireworks();
-			this.revision += 1;
-		},
-
-		/** @param {string} key */
-		selectDifficulty(key) {
-			if (this.studyDifficultyKey === key) return;
-			if (!STUDY_DIFFICULTIES.some((difficulty) => difficulty.key === key)) return;
-			this.snapshotStudyState();
-			this.studyPreparationId += 1;
-			this.boardPreparing = false;
-			this.clearStudySearchingDelay();
-			this.studyDifficultyKey = key;
-			window.history.pushState(null, '', createRouteUrl(window.location.href, `/study/${key}`));
-			this.activeRouteUrl = window.location.href;
-			let restored = this.restoreStudyState();
-			this.saveStudyData();
-			if (!restored) void this.newStudyBoard();
-		},
-
-		snapshotStudyState() {
-			this.studyStates[this.studyDifficultyKey] = {
-				field: this.field,
-				seed: this.boardSeed,
-				result: this.result,
-				hintUsed: this.hintUsed,
-				streak: this.studyStreak,
-				ready: this.studyBoardReady,
-			};
-		},
-
-		restoreStudyState() {
-			let difficultyKey = this.studyDifficultyKey;
-			let state = this.studyStates[difficultyKey];
-			if (!state) {
-				this.studyStreak = this.studyStreaks[difficultyKey];
-				this.studyBoardReady = false;
-				return false;
-			}
-			this.studyStreak = state.streak;
-			if (!state.ready) {
-				this.studyBoardReady = false;
-				return false;
-			}
-			this.clearIncorrectFeedback();
-			this.field = state.field;
-			this.boardSeed = state.seed;
-			this.result = state.result;
-			this.hintUsed = state.hintUsed;
-			this.studyBoardReady = true;
-			this.engineError = '';
-			this.boardNumber += 1;
-			this.revision += 1;
-			return true;
-		},
-
-		/** @param {number} streak */
-		setStudyStreak(streak) {
-			this.studyStreak = streak;
-			this.studyStreaks[this.studyDifficultyKey] = streak;
-		},
-
-		saveStudyData() {
-			let difficulties = Object.fromEntries(STUDY_DIFFICULTIES.map(({ key }) => {
-				let state = this.studyStates[key];
-				/** @type {{ streak: number, board?: { difficultyKey: string, cells: number[], seed: string, result: GameResult, hintUsed: boolean } }} */
-				let saved = { streak: this.studyStreaks[key] };
-				if (state?.ready) saved.board = {
-					difficultyKey: key,
-					cells: Array.from(state.field.state),
-					seed: String(state.seed),
-					result: state.result,
-					hintUsed: state.hintUsed,
-				};
-				return [key, saved];
-			}));
-			saveMinesightData('study', {
-				difficultyKey: this.studyDifficultyKey,
-				difficulties,
-			});
-		},
-
-		async newStudyBoard() {
-			this.result = 'playing';
-			this.hintUsed = false;
-			this.studyBoardReady = false;
-			this.snapshotStudyState();
-			this.saveStudyData();
-			await this.replaceField();
-		},
-
-		skipStudyBoard() {
-			if (this.mode !== 'study' || this.result !== 'playing') return;
-			void this.newStudyBoard();
-		},
-
-		async prepareChallenge() {
-			this.stopTimer();
-			this.clearIncorrectFeedback();
-			let preparationId = this.challengePreparationId + 1;
-			this.challengePreparationId = preparationId;
-			this.challengeStarted = false;
-			this.challengePreparing = true;
-			this.challengePuzzles = [];
-			this.challengeResults = [];
-			this.challengeIndex = 0;
-			this.elapsedMs = 0;
-			this.result = 'playing';
-			this.hintUsed = false;
-			this.engineError = '';
-
-			try {
-				// Paint the initial 0 / total state, then give each completed puzzle its
-				// own frame so progress remains visible and mode changes stay responsive.
-				await yieldToBrowser();
-				let nextSeed = this.challengeSeed;
-				for (let { difficulty, puzzleCount } of this.challengeMode.route) {
-					for (let index = 0; index < puzzleCount; index += 1) {
-						if (this.mode !== 'challenge' || preparationId !== this.challengePreparationId) return;
-						let puzzle = await generateSeededField(difficulty, nextSeed, () => (
-							this.mode === 'challenge' && preparationId === this.challengePreparationId
-						));
-						if (!puzzle) return;
-						this.challengePuzzles.push(puzzle);
-						nextSeed = puzzle.seed === MAX_CHALLENGE_SEED ? 0n : puzzle.seed + 1n;
-						await yieldToBrowser();
-					}
-				}
-				sortChallengeTiers(this.challengePuzzles, this.challengeMode.route);
-			}
-			catch (error) {
-				if (preparationId !== this.challengePreparationId) return;
-				this.challengePuzzles = [];
-				this.engineError = error instanceof Error ? error.message : String(error);
-			}
-			finally {
-				if (preparationId === this.challengePreparationId) this.challengePreparing = false;
-			}
-		},
-
-		startChallenge() {
-			if (!this.challengeReady) return;
-			this.challengeReceived = false;
-			window.history.replaceState(null, '', createRouteUrl(window.location.href, `/challenge/${this.challengeModeKey}`));
-			this.activeRouteUrl = window.location.href;
-			this.stopTimer();
-			this.challengeStarted = true;
-			this.challengeIndex = 0;
-			this.challengeResults = [];
-			this.elapsedMs = 0;
-			this.result = 'playing';
-			this.hintUsed = false;
-			if (!this.loadChallengeField()) return;
-			gameSounds.play('start');
-			this.startTimer();
-		},
-
-		async restartChallenge() {
-			this.challengeTargetMs = undefined;
-			this.challengeSeed = randomChallengeSeed();
-			await this.prepareChallenge();
-		},
-
-		beginGiveUpGesture() {
-			if (!this.challengeRunActive || this.giveUpTimerId !== undefined) return;
-			this.giveUpHolding = true;
-			this.giveUpTimerId = window.setTimeout(() => {
-				this.giveUpTimerId = undefined;
-				this.giveUpHolding = false;
-				this.giveUpChallenge();
-			}, GIVE_UP_HOLD_MS);
-		},
-
-		cancelGiveUpGesture() {
-			if (this.giveUpTimerId !== undefined) window.clearTimeout(this.giveUpTimerId);
-			this.giveUpTimerId = undefined;
-			this.giveUpHolding = false;
-		},
-
-		giveUpChallenge() {
-			if (!this.challengeRunActive) return;
-			this.cancelGiveUpGesture();
-			this.stopTimer();
-			this.result = 'gave-up';
-			gameSounds.play('failure');
-			feedbackEffects.failure({ terminal: true });
-			this.revision += 1;
-		},
-
-		/** @param {number} cellIndex */
-		markChallengeFailed(cellIndex) {
-			if (!this.challengeRunActive || this.result !== 'playing') return;
-			this.challengeResults[this.challengeIndex] = 'failed';
-			let incorrectIndex = this.field.consumeIncorrect();
-			this.showIncorrectFeedback(incorrectIndex >= 0 ? incorrectIndex : cellIndex);
-			gameSounds.play('incorrect');
-			feedbackEffects.failure({ cellIndex, terminal: false });
-			this.revision += 1;
-		},
-
-		advanceChallenge() {
-			if (this.result !== 'cleared') return;
-			this.challengeIndex += 1;
-			this.result = 'playing';
-			if (this.loadChallengeField()) this.startTimer();
-		},
-
-		loadChallengeField() {
-			this.clearIncorrectFeedback();
-			let puzzle = this.challengePuzzles[this.challengeIndex];
-			if (!puzzle) {
-				this.challengeStarted = false;
-				this.engineError = `challenge ${this.challengeIndex + 1} was not prepared`;
-				return false;
-			}
-			this.field = puzzle.field;
-			this.boardSeed = puzzle.seed;
-			this.engineError = '';
-			this.boardNumber += 1;
-			this.revision += 1;
-			return true;
-		},
-
-		async replaceField() {
-			this.clearIncorrectFeedback();
-			let preparationId = this.studyPreparationId + 1;
-			this.studyPreparationId = preparationId;
-			this.boardPreparing = true;
-			this.clearStudySearchingDelay();
-			this.studySearchingTimerId = window.setTimeout(() => {
-				if (
-					this.mode === 'study' &&
-					this.boardPreparing &&
-					preparationId === this.studyPreparationId
-				) this.studySearchingVisible = true;
-			}, 200);
-			this.engineError = '';
-			try {
-				let difficulty = this.currentDifficulty;
-				let difficultyKey = this.studyDifficultyKey;
-				let puzzle = await generateField(difficulty, () => (
-					this.mode === 'study' &&
-					difficultyKey === this.studyDifficultyKey &&
-					preparationId === this.studyPreparationId
-				));
-				if (
-					!puzzle ||
-					this.mode !== 'study' ||
-					difficultyKey !== this.studyDifficultyKey ||
-					preparationId !== this.studyPreparationId
-				) return;
-				this.field = puzzle.field;
-				this.boardSeed = puzzle.seed;
-				this.studyBoardReady = true;
-				this.engineError = '';
-				this.boardNumber += 1;
-				this.revision += 1;
-				this.snapshotStudyState();
-				this.saveStudyData();
-			}
-			catch (error) {
-				if (preparationId !== this.studyPreparationId) return;
-				this.engineError = error instanceof Error ? error.message : String(error);
-			}
-			finally {
-				if (preparationId === this.studyPreparationId) {
-					this.boardPreparing = false;
-					this.clearStudySearchingDelay();
-				}
-			}
-		},
-
-		clearStudySearchingDelay() {
-			if (this.studySearchingTimerId !== undefined) {
-				window.clearTimeout(this.studySearchingTimerId);
-			}
-			this.studySearchingTimerId = undefined;
-			this.studySearchingVisible = false;
-		},
-
-		stopTimer() {
-			if (this.timerId !== undefined) {
-				this.updateTimer();
-				window.clearInterval(this.timerId);
-			}
-			this.timerId = undefined;
-			this.timerLastTick = undefined;
-		},
-
-		startTimer() {
-			this.stopTimer();
-			this.timerLastTick = window.performance.now();
-			this.timerId = window.setInterval(() => {
-				this.updateTimer();
-			}, 10);
-		},
-
-		updateTimer() {
-			if (this.timerLastTick === undefined) return;
-			let now = window.performance.now();
-			this.elapsedMs += Math.max(0, now - this.timerLastTick);
-			this.timerLastTick = now;
-		},
-
 		clearIncorrectFeedback() {
 			if (this.incorrectFeedbackTimerId !== undefined) {
 				window.clearTimeout(this.incorrectFeedbackTimerId);
 			}
 			this.incorrectFeedbackTimerId = undefined;
 			this.incorrectCellIndex = -1;
+			if (this.page.minefield) this.page.minefield.incorrectCellIndex = -1;
 			this.incorrectFeedbackMessage = '';
 		},
 
@@ -3066,23 +3800,26 @@ function createMinesight() {
 		showIncorrectFeedback(index, message = "The clues don't support that mark. Try again.") {
 			this.clearIncorrectFeedback();
 			this.incorrectCellIndex = index;
+			if (this.page.minefield) this.page.minefield.incorrectCellIndex = index;
 			this.incorrectFeedbackMessage = message;
 			this.incorrectFeedbackTimerId = window.setTimeout(() => {
 				this.incorrectCellIndex = -1;
+				if (this.page.minefield) this.page.minefield.incorrectCellIndex = -1;
 				this.incorrectFeedbackMessage = '';
 				this.incorrectFeedbackTimerId = undefined;
 			}, 650);
 		},
 
 		useHint() {
-			if (!['study', 'puzzle'].includes(this.mode) || this.result !== 'playing') return;
-			if (this.mode === 'study' && !this.studyBoardReady) return;
-			this.hintUsed = !this.hintUsed;
-			this.revision += 1;
-			if (this.mode === 'study') {
-				this.snapshotStudyState();
-				this.saveStudyData();
-			}
+			this.page.toggleHint(this);
+		},
+
+		/**
+		 * Resolves the physical primary/secondary input into its game action.
+		 * @param {boolean} invert
+		 */
+		flagForInput(invert) {
+			return invert !== this.minefieldView.actionsInverted;
 		},
 
 		/**
@@ -3091,109 +3828,13 @@ function createMinesight() {
 		 * @param {boolean} invert
 		 */
 		applyCellInput(x, y, invert) {
-			if (this.result !== 'playing') return;
-			if (this.mode === 'traditional') {
-				if (this.traditionalBusy) return;
-				if (invert) {
-					if (this.field.isRevealed(x, y)) {
-						void this.revealTraditionalCell(x, y);
-						return;
-					}
-					this.field.actionFlag(x, y);
-					let flagged = this.field.isFlagged(x, y);
-					gameSounds.play(flagged ? 'mark' : 'unmark');
-					if (flagged) feedbackEffects.mark({ cellIndex: this.field.getIndex(x, y), mine: true });
-					this.revision += 1;
-					this.snapshotTraditionalState();
-					this.saveTraditionalData();
-				}
-				else void this.revealTraditionalCell(x, y);
-				return;
-			}
-			if (this.mode === 'tutorial') {
-				this.applyTutorialInput(x, y, invert);
-				return;
-			}
-			if (this.mode === 'challenge' && !this.challengeStarted) return;
-			if (this.field.isRevealed(x, y)) {
-				let validate = this.markValidation === 'immediate';
-				let chord = this.field.actionChordMarks(x, y, { validate });
-				if (chord.marks.length === 0 && chord.rejectedIndex < 0) return;
-				let marks = chord.marks;
-				let [first, ...additionalMarks] = marks;
-				this.afterMove({
-					removing: false,
-					cellIndex: first?.index ?? chord.rejectedIndex,
-					markMine: first?.mine ?? false,
-					additionalMarks,
-					rejectedIndex: chord.rejectedIndex,
-				});
-				return;
-			}
-			if (!this.field.isActive(x, y)) return;
-			let cellIndex = this.field.getIndex(x, y);
-			let markMine = invert !== this.actionsInverted;
-			let validate = this.markValidation === 'immediate';
-			let action = markMine
-				? this.field.actionMarkMine(x, y, { validate })
-				: this.field.actionMarkSafe(x, y, { validate });
-			if (action.change === 'ignored') return;
-			this.afterMove({
-				removing: action.change === 'removed',
-				cellIndex,
-				markMine,
-				rejectedIndex: action.change === 'rejected' ? cellIndex : -1,
-			});
-		},
-
-		/**
-		 * @param {number} x
-		 * @param {number} y
-		 * @param {boolean} invert
-		 */
-		applyTutorialInput(x, y, invert) {
-			if (this.tutorialComplete) return;
-			let step = TUTORIAL_STEPS[this.tutorialStep];
-			let correctCell = x === step.x && y === step.y;
-			let markMine = invert !== this.actionsInverted;
-			let correctGesture = step.action === 'ambiguous' || (step.action === 'mine') === markMine;
-			if (!correctCell || !correctGesture) {
-				this.rejectTutorialInput(x, y);
-				return;
-			}
-
-			if (step.action === 'safe') this.field.actionMarkSafe(x, y);
-			else if (step.action === 'mine') this.field.actionMarkMine(x, y);
-			else {
-				this.field.actionMarkSafe(x, y);
-				this.field.consumeIncorrect();
-				let index = this.field.getIndex(x, y);
-				this.showIncorrectFeedback(index, 'That square is not forced. Minesight rejects guesses.');
-				gameSounds.play('incorrect');
-				feedbackEffects.failure({ cellIndex: index, terminal: false });
-			}
-			if (step.action !== 'ambiguous') {
-				gameSounds.play('mark');
-				feedbackEffects.mark({
-					cellIndex: this.field.getIndex(x, y),
-					mine: step.action === 'mine',
-				});
-			}
-			this.tutorialStep += 1;
-			this.revision += 1;
-		},
-
-		/** @param {number} x @param {number} y */
-		rejectTutorialInput(x, y) {
-			let index = this.field.getIndex(x, y);
-			this.showIncorrectFeedback(index, 'Try the highlighted square using the instructed action.');
-			gameSounds.play('incorrect');
-			feedbackEffects.failure({ cellIndex: index, terminal: false });
+			let flag = this.flagForInput(invert);
+			this.page.applyCellInput(this, x, y, flag);
 		},
 
 		/** @param {number} index */
 		focusCell(index) {
-			this.keyboardFocusIndex = index;
+			this.minefieldView.keyboardFocusIndex = index;
 		},
 
 		/**
@@ -3202,28 +3843,30 @@ function createMinesight() {
 		 * @param {number} y
 		 */
 		beginCellGesture(event, x, y) {
-			if (!event.isPrimary || event.button !== 0 || this.cellGesturePointerId !== undefined) return;
+			let view = this.minefieldView;
+			if (!event.isPrimary || event.button !== 0 || view.cellGesturePointerId !== undefined) return;
 			event.currentTarget.setPointerCapture(event.pointerId);
-			this.cellGesturePointerId = event.pointerId;
-			this.cellGestureStartX = event.clientX;
-			this.cellGestureStartY = event.clientY;
-			this.cellHoldTimerId = window.setTimeout(() => {
-				this.cellHoldTimerId = undefined;
-				if (this.cellGesturePointerId !== event.pointerId) return;
-				this.cellGesturePointerId = undefined;
-				this.lastCellHoldX = x;
-				this.lastCellHoldY = y;
-				this.lastCellHoldTime = performance.now();
+			view.cellGesturePointerId = event.pointerId;
+			view.cellGestureStartX = event.clientX;
+			view.cellGestureStartY = event.clientY;
+			view.cellHoldTimerId = window.setTimeout(() => {
+				view.cellHoldTimerId = undefined;
+				if (view.cellGesturePointerId !== event.pointerId) return;
+				view.cellGesturePointerId = undefined;
+				view.lastCellHoldX = x;
+				view.lastCellHoldY = y;
+				view.lastCellHoldTime = performance.now();
 				this.applyCellInput(x, y, true);
 			}, CELL_HOLD_MS);
 		},
 
 		/** @param {PointerEvent} event */
 		moveCellGesture(event) {
-			if (event.pointerId !== this.cellGesturePointerId) return;
+			let view = this.minefieldView;
+			if (event.pointerId !== view.cellGesturePointerId) return;
 			let distance = Math.hypot(
-				event.clientX - this.cellGestureStartX,
-				event.clientY - this.cellGestureStartY,
+				event.clientX - view.cellGestureStartX,
+				event.clientY - view.cellGestureStartY,
 			);
 			if (distance > CELL_GESTURE_MOVE_TOLERANCE) this.cancelCellGesture(event);
 		},
@@ -3234,7 +3877,7 @@ function createMinesight() {
 		 * @param {number} y
 		 */
 		endCellGesture(event, x, y) {
-			if (event.pointerId !== this.cellGesturePointerId) return;
+			if (event.pointerId !== this.minefieldView.cellGesturePointerId) return;
 			this.cancelCellGesture(event);
 			this.applyCellInput(x, y, false);
 		},
@@ -3252,10 +3895,11 @@ function createMinesight() {
 
 		/** @param {PointerEvent} [event] */
 		cancelCellGesture(event) {
-			if (event && event.pointerId !== this.cellGesturePointerId) return;
-			if (this.cellHoldTimerId !== undefined) window.clearTimeout(this.cellHoldTimerId);
-			this.cellHoldTimerId = undefined;
-			this.cellGesturePointerId = undefined;
+			let view = this.minefieldView;
+			if (event && event.pointerId !== view.cellGesturePointerId) return;
+			if (view.cellHoldTimerId !== undefined) window.clearTimeout(view.cellHoldTimerId);
+			view.cellHoldTimerId = undefined;
+			view.cellGesturePointerId = undefined;
 		},
 
 		/**
@@ -3281,8 +3925,9 @@ function createMinesight() {
 		 * @param {number} deltaX
 		 * @param {number} deltaY
 		 */
-		moveCellFocus(x, y, deltaX, deltaY) {
-			let candidates = this.cells
+		async moveCellFocus(x, y, deltaX, deltaY) {
+			let view = this.minefieldView;
+			let candidates = view.cells
 				.filter((cell) => {
 					if (cell.disabled) return false;
 					return (cell.x - x) * deltaX + (cell.y - y) * deltaY > 0;
@@ -3305,10 +3950,9 @@ function createMinesight() {
 					|| left.cell.index - right.cell.index);
 			let index = candidates[0]?.cell.index;
 			if (index === undefined) return;
-			this.keyboardFocusIndex = index;
-			this.$nextTick(() => {
-				document.querySelector(`.minefield .cell[data-cell-index="${index}"]`)?.focus();
-			});
+			view.keyboardFocusIndex = index;
+			await nextAlpineRender();
+			document.querySelector(`.board-card .minefield .cell[data-cell-index="${index}"]`)?.focus();
 		},
 
 		/**
@@ -3319,8 +3963,9 @@ function createMinesight() {
 		 * @param {number} y
 		 */
 		contextMenuCell(event, x, y) {
-			let repeatsTimedHold = x === this.lastCellHoldX && y === this.lastCellHoldY
-				&& performance.now() - this.lastCellHoldTime < CELL_CONTEXT_MENU_DEDUP_MS;
+			let view = this.minefieldView;
+			let repeatsTimedHold = x === view.lastCellHoldX && y === view.lastCellHoldY
+				&& performance.now() - view.lastCellHoldTime < CELL_CONTEXT_MENU_DEDUP_MS;
 			if (repeatsTimedHold) return;
 			let pointerType = 'pointerType' in event ? event.pointerType : '';
 			if (pointerType === 'mouse') {
@@ -3328,9 +3973,9 @@ function createMinesight() {
 				return;
 			}
 			this.cancelCellGesture();
-			this.lastCellHoldX = x;
-			this.lastCellHoldY = y;
-			this.lastCellHoldTime = performance.now();
+			view.lastCellHoldX = x;
+			view.lastCellHoldY = y;
+			view.lastCellHoldTime = performance.now();
 			this.applyCellInput(x, y, true);
 		},
 
@@ -3342,24 +3987,17 @@ function createMinesight() {
 					feedbackEffects.mark({ cellIndex: mark.index, mine: mark.mine });
 				}
 			};
-			if (this.mode === 'daily') this.dailyCheckMessage = '';
+			this.page.beforeMove(this);
 			let rejectedIndex = move.rejectedIndex ?? -1;
 			let gameOver = this.markValidation === 'deferred'
 				? MineField.GAME_OVER_FALSE
-				: rejectedIndex >= 0 ? MineField.GAME_OVER_DETONATION : this.field.gameOverReason();
+				: rejectedIndex >= 0 ? MineField.GAME_OVER_DETONATION : this.currentField.gameOverReason();
 			if (gameOver === MineField.GAME_OVER_DETONATION) {
-				let feedbackCellIndex = rejectedIndex >= 0 ? rejectedIndex : this.field.incorrectIndex;
-				if (this.mode === 'challenge') {
-					this.markChallengeFailed(feedbackCellIndex);
-					return;
-				}
-				if (this.mode === 'study') {
-					feedbackEffects.streakLost(this.studyStreak);
-					this.setStudyStreak(0);
-				}
-				let incorrectIndex = this.field.consumeIncorrect();
+				let feedbackCellIndex = rejectedIndex >= 0 ? rejectedIndex : this.currentField.incorrectIndex;
+				if (this.page.handleIncorrect(this, feedbackCellIndex)) return;
+				let incorrectIndex = this.currentField.consumeIncorrect();
 				if (incorrectIndex >= 0) this.showIncorrectFeedback(incorrectIndex);
-				else this.result = 'failed';
+				else this.page.result = 'failed';
 				gameSounds.play('incorrect');
 				feedbackEffects.failure({
 					cellIndex: feedbackCellIndex,
@@ -3368,23 +4006,8 @@ function createMinesight() {
 			}
 			else if (gameOver === MineField.GAME_OVER_CLEARED) {
 				this.clearIncorrectFeedback();
-				let challengeComplete = this.mode === 'challenge' && this.challengeIndex === this.challengeTotal - 1;
-				if (this.mode === 'challenge') {
-					this.stopTimer();
-					if (this.challengeResults[this.challengeIndex] !== 'failed') {
-						this.challengeResults[this.challengeIndex] = 'cleared';
-					}
-				}
-				if (challengeComplete) {
-					this.result = 'complete';
-					this.playChallengeFanfare();
-					if (this.challengeTimeBeaten) feedbackEffects.fireworks();
-				}
-				else {
-					this.result = 'cleared';
-					if (this.mode === 'study') this.setStudyStreak(this.studyStreak + 1);
-					gameSounds.play('success');
-				}
+				let challengeComplete = this.page.handleCleared(this);
+				if (!challengeComplete) gameSounds.play('success');
 				feedbackEffects.success({ grand: challengeComplete });
 				showMarkEffects();
 			}
@@ -3396,33 +4019,13 @@ function createMinesight() {
 				showMarkEffects();
 			}
 			this.revision += 1;
-			if (this.mode === 'study') {
-				this.snapshotStudyState();
-				this.saveStudyData();
+			if (this.page.minefield) {
+				this.page.minefield.result = this.page.result;
+				this.page.minefield.revision += 1;
 			}
-			else if (this.mode === 'daily') {
-				this.snapshotDailyState();
-				this.saveDailyData();
-			}
+			this.page.saveMove(this);
 		},
 
-		/** @param {number} step */
-		challengeStepClass(step) {
-			let outcome = this.challengeResults[step];
-			if (outcome === 'cleared') return 'complete';
-			if (outcome === 'failed') return 'failed';
-			if (step === this.challengeIndex && this.result !== 'complete') return 'current';
-			return '';
-		},
-
-		/** @param {number} step */
-		challengeStepLabel(step) {
-			let group = this.challengeGroups.find(({ start, puzzleCount }) => (
-				step >= start && step < start + puzzleCount
-			)) ?? this.challengeGroups[0];
-			let state = this.challengeStepClass(step) || 'upcoming';
-			return `${group.label} challenge ${step - group.start + 1}, ${state}`;
-		},
 	};
 }
 
