@@ -3,6 +3,7 @@
 import { MineField, analyzeEditorBoard, createEditorPuzzle } from './mines.js';
 import { feedbackEffects } from './feedback.js';
 import { gameSounds } from './sounds.js';
+import loadMinetacs from './minetacs.js';
 
 const BOARD_SIZE = 8;
 const TRADITIONAL_RULES_VERSION = 2;
@@ -32,6 +33,8 @@ const CELL_FOCUS_DIRECTIONS = {
 	ArrowLeft: [-1, 0],
 	ArrowRight: [1, 0],
 };
+
+/** @typedef {'beginner' | 'easy' | 'medium' | 'hard' | 'expert' | 'mit'} PuzzleDifficulty */
 
 /** @typedef {Event & { prompt: () => Promise<void>, userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }} BeforeInstallPromptEvent */
 
@@ -173,37 +176,31 @@ function createTutorialField() {
 const BEGINNER_DIFFICULTY = {
 	key: 'beginner',
 	label: 'Beginner',
-	generator: 'randomBeginnerPuzzle',
 	description: 'Use one clue at a time to find squares that are immediately safe or mined.',
 };
 const EASY_DIFFICULTY = {
 	key: 'easy',
 	label: 'Easy',
-	generator: 'randomEasyPuzzle',
 	description: 'Recognize familiar patterns on a mostly open board.',
 };
 const MEDIUM_DIFFICULTY = {
 	key: 'medium',
 	label: 'Medium',
-	generator: 'randomMediumPuzzle',
 	description: 'Recognize familiar patterns on a dense board.',
 };
 const HARD_DIFFICULTY = {
 	key: 'hard',
 	label: 'Hard',
-	generator: 'randomHardPuzzle',
 	description: 'Follow deeper chains of logic before a square is certain.',
 };
 const EXPERT_DIFFICULTY = {
 	key: 'expert',
 	label: 'Expert',
-	generator: 'randomExpertPuzzle',
 	description: 'Common patterns have been removed. Use contradiction to rule out possible mine layouts and find the forced squares.',
 };
 const MIT_DIFFICULTY = {
 	key: 'mit',
 	label: 'MIT-style',
-	generator: 'randomMitPuzzle',
 	description: 'Solve the whole board from a minimal set of clues. Each puzzle has a unique mine layout.',
 };
 const DAILY_DIFFICULTIES = [
@@ -461,79 +458,15 @@ function isLocalDevelopment() {
 	return ['', 'localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
 }
 
-/** @type {WebAssembly.Exports | undefined} */
-let wasm;
-/** @type {{ cells: Uint8Array, seed: bigint, attempts: number } | undefined} */
-let generatedPuzzle;
-/** @type {{ x: number, y: number, mine: boolean }[] | undefined} */
-let solveResult;
-/** @type {{ mines: bigint, forcedSafe: bigint } | undefined} */
-let traditionalMoveResult;
-/** @type {Error | undefined} */
-let wasmError;
-/** @type {Promise<void> | undefined} */
-let generatorLoadPromise;
+/** @type {ReturnType<typeof loadMinetacs> | undefined} */
+let minetacsPromise;
 
-async function loadPuzzleGenerator() {
-	const imports = {
-		env: {
-			/** @param {number} pointer @param {number} length */
-			resultError(pointer, length) {
-				if (!wasm || !(wasm.memory instanceof WebAssembly.Memory)) {
-					throw new Error('wasm returned an error before exposing its memory');
-				}
-				let bytes = new Uint8Array(wasm.memory.buffer, pointer, length);
-				wasmError = new Error(new TextDecoder().decode(bytes));
-			},
-			/** @param {number} pointer @param {number} length */
-			resultSolve(pointer, length) {
-				if (!wasm || !(wasm.memory instanceof WebAssembly.Memory)) {
-					throw new Error('wasm returned solver results before exposing its memory');
-				}
-				let entries = new Uint8Array(wasm.memory.buffer, pointer, length * 3);
-				solveResult = Array.from({ length }, (_, index) => ({
-					x: entries[index * 3],
-					y: entries[index * 3 + 1],
-					mine: entries[index * 3 + 2] !== 0,
-				}));
-			},
-			/** @param {number} minesLow @param {number} minesHigh @param {number} forcedSafeLow @param {number} forcedSafeHigh */
-			resultTraditionalMove(minesLow, minesHigh, forcedSafeLow, forcedSafeHigh) {
-				/** @param {number} low @param {number} high */
-				let mask = (low, high) => BigInt(low >>> 0) | BigInt(high >>> 0) << 32n;
-				traditionalMoveResult = {
-					mines: mask(minesLow, minesHigh),
-					forcedSafe: mask(forcedSafeLow, forcedSafeHigh),
-				};
-			},
-			/**
-			 * @param {number} seedLow
-			 * @param {number} seedHigh
-			 * @param {number} attempts
-			 * @param {number} pointer
-			 * @param {number} length
-			 */
-			resultPuzzle(seedLow, seedHigh, attempts, pointer, length) {
-				if (!wasm || !(wasm.memory instanceof WebAssembly.Memory)) {
-					throw new Error('wasm returned a puzzle before exposing its memory');
-				}
-				let cells = new Uint8Array(wasm.memory.buffer, pointer, length).slice();
-				let seed = BigInt(seedLow >>> 0) | BigInt(seedHigh >>> 0) << 32n;
-				generatedPuzzle = { cells, seed, attempts };
-			},
-		},
-	};
-
-	let response = await fetch('./minetacs.wasm');
-	if (!response.ok) throw new Error(`wasm request failed (${response.status})`);
-	let result;
-	try {
-		result = await WebAssembly.instantiateStreaming(response.clone(), imports);
-	}
-	catch {
-		result = await WebAssembly.instantiate(await response.arrayBuffer(), imports);
-	}
-	wasm = result.instance.exports;
+function minetacs() {
+	if (!minetacsPromise) minetacsPromise = loadMinetacs().catch(error => {
+		minetacsPromise = undefined;
+		throw error;
+	});
+	return minetacsPromise;
 }
 
 /**
@@ -547,49 +480,7 @@ async function loadPuzzleGenerator() {
  * @returns {Promise<{ x: number, y: number, mine: boolean }[]>}
  */
 export async function solveBoard(width, height, cells) {
-	if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0 || width > 8 || height > 8) {
-		throw new Error('board width and height must be integers from 0 through 8');
-	}
-	if (cells.length !== width * height) {
-		throw new Error(`board has ${cells.length} cells instead of ${width * height}`);
-	}
-	for (let index = 0; index < cells.length; index += 1) {
-		if (!Number.isInteger(cells[index]) || cells[index] < 0 || cells[index] > 11) {
-			throw new Error(`board cell ${index} has invalid value ${cells[index]}`);
-		}
-	}
-
-	await ensurePuzzleGenerator();
-	let allocate = wasm?.allocate;
-	let free = wasm?.free;
-	let solve = wasm?.solve;
-	if (typeof allocate !== 'function' || typeof free !== 'function' || typeof solve !== 'function' || !(wasm?.memory instanceof WebAssembly.Memory)) {
-		throw new Error('the Rust SAT solver is not loaded');
-	}
-
-	wasmError = undefined;
-	solveResult = undefined;
-	let allocationSize = 2 + cells.length;
-	let allocationAlign = 1;
-	let pointer = Number(allocate(allocationSize, allocationAlign));
-	if (wasmError) throw wasmError;
-	if (pointer === 0) throw new Error('wasm failed to allocate a solver board');
-
-	let solved;
-	try {
-		let board = new Uint8Array(wasm.memory.buffer, pointer, allocationSize);
-		board[0] = width;
-		board[1] = height;
-		board.set(cells, 2);
-		solved = Boolean(solve(pointer));
-	}
-	finally {
-		free(pointer, allocationSize, allocationAlign);
-	}
-	if (wasmError) throw wasmError;
-	if (!solved) throw new Error('wasm SAT solver failed without returning an error');
-	if (!solveResult) throw new Error('wasm SAT solver returned without a result');
-	return solveResult;
+	return (await minetacs()).solveBoard(width, height, cells);
 }
 
 /**
@@ -602,110 +493,38 @@ export async function solveBoard(width, height, cells) {
  */
 export async function resolveTraditionalMove(field, clickedIndex, seed) {
 	if (field.width !== BOARD_SIZE || field.height !== BOARD_SIZE) throw new Error('traditional mode requires an 8 by 8 board');
-	if (!Number.isInteger(clickedIndex) || clickedIndex < 0 || clickedIndex >= BOARD_SIZE * BOARD_SIZE) {
-		throw new Error('clicked cell is outside the traditional board');
-	}
-	if (seed < 0n || seed > MAX_CHALLENGE_SEED) throw new Error('traditional seed must be an unsigned 64-bit integer');
-
-	await ensurePuzzleGenerator();
-	let allocate = wasm?.allocate;
-	let free = wasm?.free;
-	let traditionalMove = wasm?.traditionalMove;
-	if (typeof allocate !== 'function' || typeof free !== 'function' || typeof traditionalMove !== 'function' || !(wasm?.memory instanceof WebAssembly.Memory)) {
-		throw new Error('the Rust traditional solver is not loaded');
-	}
-
-	let cells = field.state;
-	wasmError = undefined;
-	traditionalMoveResult = undefined;
-	let pointer = Number(allocate(cells.length, 1));
-	if (wasmError) throw wasmError;
-	if (pointer === 0) throw new Error('wasm failed to allocate a traditional board');
-	let resolved;
-	try {
-		new Uint8Array(wasm.memory.buffer, pointer, cells.length).set(cells);
-		resolved = Boolean(traditionalMove(
-			pointer,
-			clickedIndex,
-			Number(seed & 0xffff_ffffn),
-			Number(seed >> 32n),
-		));
-	}
-	finally {
-		free(pointer, cells.length, 1);
-	}
-	if (wasmError) throw wasmError;
-	if (!resolved || traditionalMoveResult === undefined) throw new Error('Rust could not reshape this board');
-	return traditionalMoveResult;
-}
-
-async function ensurePuzzleGenerator() {
-	if (wasm) return;
-	if (!generatorLoadPromise) {
-		generatorLoadPromise = loadPuzzleGenerator().finally(() => {
-			generatorLoadPromise = undefined;
-		});
-	}
-	await generatorLoadPromise;
-}
-
-function takeGeneratedPuzzle() {
-	let puzzle = generatedPuzzle;
-	generatedPuzzle = undefined;
-	return puzzle;
+	return (await minetacs()).resolveTraditionalMove(field.state, clickedIndex, seed);
 }
 
 /**
- * Invokes the raw WASM search ABI once for a complete jump-separated attempt series.
- * The imported result callback must make the generated result available through
- * `takeResult` before the exported function returns.
- *
- * @template T
- * @param {(seedLow: number, seedHigh: number, attempts: number) => unknown} search
+ * @param {Awaited<ReturnType<typeof loadMinetacs>>} api
+ * @param {PuzzleDifficulty} difficulty
  * @param {bigint} seed
  * @param {number} attempts
- * @param {() => T | undefined} takeResult
- * @returns {T | undefined}
  */
-export function invokePuzzleSearch(search, seed, attempts, takeResult) {
-	if (seed < 0n || seed > 0xffff_ffff_ffff_ffffn) {
-		throw new Error('puzzle seed must be an unsigned 64-bit integer');
-	}
-	if (!Number.isInteger(attempts) || attempts < 0 || attempts > 0xffff_ffff) {
-		throw new Error('attempts must be an unsigned 32-bit integer');
-	}
-
-	let found = Boolean(search(
-		Number(seed & 0xffff_ffffn),
-		Number(seed >> 32n),
-		attempts,
-	));
-	let result = takeResult();
-	if (found && !result) throw new Error('wasm reported success without returning a puzzle');
-	if (!found && result) throw new Error('wasm returned a puzzle while reporting failure');
-	return result;
+function generatePuzzle(api, difficulty, seed, attempts) {
+	if (difficulty === 'beginner') return api.generateBeginnerPuzzle(seed, attempts);
+	if (difficulty === 'easy') return api.generateEasyPuzzle(seed, attempts);
+	if (difficulty === 'medium') return api.generateMediumPuzzle(seed, attempts);
+	if (difficulty === 'hard') return api.generateHardPuzzle(seed, attempts);
+	if (difficulty === 'expert') return api.generateExpertPuzzle(seed, attempts);
+	return api.generateMitPuzzle(seed, attempts);
 }
 
 /**
- * @param {{ generator: string }} difficulty
+ * @param {{ key: PuzzleDifficulty }} difficulty
  * @param {() => boolean} shouldContinue
  */
 async function generateField(difficulty, shouldContinue) {
-	await ensurePuzzleGenerator();
+	let api = await minetacs();
 	if (!shouldContinue()) return undefined;
-	let generatePuzzle = wasm?.[difficulty.generator];
-	if (typeof generatePuzzle !== 'function') {
-		throw new Error('the Rust puzzle generator is not loaded');
-	}
-	let search = /** @type {(seedLow: number, seedHigh: number, attempts: number) => unknown} */ (generatePuzzle);
 
 	while (shouldContinue()) {
 		let entropy = new Uint32Array(2);
 		crypto.getRandomValues(entropy);
 		let seed = BigInt(entropy[0]) | BigInt(entropy[1]) << 32n;
 
-		generatedPuzzle = undefined;
-		let puzzle = invokePuzzleSearch(search, seed, PUZZLE_ATTEMPTS, takeGeneratedPuzzle);
+		let puzzle = generatePuzzle(api, difficulty.key, seed, PUZZLE_ATTEMPTS);
 		if (puzzle) {
 			if (puzzle.cells.length !== BOARD_SIZE * BOARD_SIZE) {
 				throw new Error(`wasm returned ${puzzle.cells.length} cells instead of 64`);
@@ -748,23 +567,17 @@ function fieldWithMineLayout(field, mines) {
 /**
  * Generates a puzzle from a deterministic sequence beginning at `seed`.
  *
- * @param {{ generator: string }} difficulty
+ * @param {{ key: PuzzleDifficulty }} difficulty
  * @param {bigint} seed
  * @param {() => boolean} shouldContinue
  */
 async function generateSeededField(difficulty, seed, shouldContinue) {
-	await ensurePuzzleGenerator();
+	let api = await minetacs();
 	if (!shouldContinue()) return undefined;
-	let generatePuzzle = wasm?.[difficulty.generator];
-	if (typeof generatePuzzle !== 'function') {
-		throw new Error('the Rust puzzle generator is not loaded');
-	}
-	let search = /** @type {(seedLow: number, seedHigh: number, attempts: number) => unknown} */ (generatePuzzle);
 	let candidateSeed = seed;
 
 	while (shouldContinue()) {
-		generatedPuzzle = undefined;
-		let puzzle = invokePuzzleSearch(search, candidateSeed, PUZZLE_ATTEMPTS, takeGeneratedPuzzle);
+		let puzzle = generatePuzzle(api, difficulty.key, candidateSeed, PUZZLE_ATTEMPTS);
 		if (puzzle) {
 			if (puzzle.cells.length !== BOARD_SIZE * BOARD_SIZE) {
 				throw new Error(`wasm returned ${puzzle.cells.length} cells instead of 64`);
@@ -4029,9 +3842,9 @@ function createMinesight() {
 	};
 }
 
-// Preload the generator without keeping the home screen, tutorial, or a puzzle behind
+// Preload the game engine without keeping the home screen, tutorial, or a puzzle behind
 // a blank, x-cloaked page. A failed preload is retried when a board is requested.
-void ensurePuzzleGenerator().catch(() => {});
+void minetacs().catch(() => {});
 
 Object.assign(window, { minesight: createMinesight });
 await import('./alpine.min.js');

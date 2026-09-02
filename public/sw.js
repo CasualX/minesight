@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'minesight';
-const CACHE_NAME = `${CACHE_PREFIX}-v20260830traditional7`;
+const CACHE_NAME = `${CACHE_PREFIX}-v20260902wasm-module1`;
 const APP_ROOT_URL = new URL('./', self.registration.scope);
 const APP_SHELL_URL = new URL('./index.html', self.registration.scope).href;
 const APP_ASSETS = [
@@ -11,6 +11,7 @@ const APP_ASSETS = [
 	'./feedback.js',
 	'./sounds.js',
 	'./mines.js',
+	'./minetacs.js',
 	'./minetacs.wasm',
 	'./alpine.min.js',
 	'./header-icon.svg',
