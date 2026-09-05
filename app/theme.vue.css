@@ -1,0 +1,147 @@
+:root {
+	color-scheme: light dark;
+	font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	--background: #fafafa;
+	--paper: #fff;
+	--ink: #111;
+	--muted: #737373;
+	--line: #d1d1d1;
+	--path-pending: #ddd;
+	--path-current: #888;
+	--revealed-line: #a5a8a1;
+	--focus: #2457a6;
+	--covered: #d4d5d0;
+	--covered-hover: #c9cbc5;
+	--covered-raised-light: rgb(255 255 255 / 58%);
+	--covered-raised-shadow: rgb(0 0 0 / 28%);
+	--revealed: #eceee9;
+	--inactive: #aaaca6;
+	--hint: #dfd39f;
+	--hint-hover: #d5c88f;
+	--hint-ink: #5b522b;
+	--hint-line: #9b8c52;
+	--skip: #f3eee5;
+	--skip-hover: #ebe2d4;
+	--skip-ink: #684f31;
+	--skip-line: #a98c68;
+	--danger: #d7574f;
+	--danger-ink: #75251f;
+	--danger-soft: #f8e3e1;
+	--on-danger: #fff;
+	--success: #55713d;
+	--success-effect: #9bad8b;
+	--marked-safe: #dce9de;
+	--marked-safe-hover: #d1e0d4;
+	--marked-safe-ink: #23472c;
+	--marked-safe-line: #879f8c;
+	--marked-mine: #d2a4a0;
+	--marked-mine-hover: #c99590;
+	--marked-mine-ink: #5d2925;
+	--marked-mine-line: #9d6762;
+	--mine: #f3d5d2;
+	--mine-ink: #8f302b;
+	--flag-ink: #8a361f;
+	--incorrect: #c77e78;
+	--incorrect-line: #8f4944;
+	--clue-1: #2055a5;
+	--clue-2: #317441;
+	--clue-3: #a33c32;
+	--clue-4: #6941a5;
+	--clue-5: #7a2828;
+	--scratch-graphite: #282b2a;
+	--scratch-blue: #2766a3;
+	--scratch-red: #b94c43;
+	color: var(--ink);
+	background: var(--background);
+	font-synthesis: none;
+	text-rendering: optimizeLegibility;
+}
+
+:root[data-color-scheme="dark"] {
+	--background: #171817;
+	--paper: #222422;
+	--ink: #d2d2cc;
+	--muted: #aaa9a2;
+	--line: #4b4d49;
+	--path-pending: #3f413e;
+	--path-current: #9a9b96;
+	--revealed-line: #747770;
+	--focus: #8bb7ff;
+	--covered: #343733;
+	--covered-hover: #3e423d;
+	--covered-raised-light: rgb(255 255 255 / 16%);
+	--covered-raised-shadow: rgb(0 0 0 / 45%);
+	--revealed: #4b4e48;
+	--inactive: #1d1f1d;
+	--hint: #655e3b;
+	--hint-hover: #746c43;
+	--hint-ink: #fff1a8;
+	--hint-line: #91834b;
+	--skip: #3d352b;
+	--skip-hover: #4a4033;
+	--skip-ink: #e8c99f;
+	--skip-line: #806b50;
+	--danger: #e16d64;
+	--danger-ink: #ffc2bd;
+	--danger-soft: #472624;
+	--on-danger: #171817;
+	--success: #91b875;
+	--success-effect: #76935f;
+	--marked-safe: #394a3c;
+	--marked-safe-hover: #435647;
+	--marked-safe-ink: #b9e7c0;
+	--marked-safe-line: #557860;
+	--marked-mine: #49302e;
+	--marked-mine-hover: #563936;
+	--marked-mine-ink: #ffc1ba;
+	--marked-mine-line: #8a5651;
+	--mine: #4a2927;
+	--mine-ink: #ffaaa3;
+	--flag-ink: #ff9b82;
+	--incorrect: #934f4a;
+	--incorrect-line: #e18178;
+	--clue-1: #8bb7ff;
+	--clue-2: #8fd49c;
+	--clue-3: #ff9e94;
+	--clue-4: #c4a2ff;
+	--clue-5: #ff8585;
+	--scratch-graphite: #eeeae2;
+	--scratch-blue: #76b5eb;
+	--scratch-red: #f08c82;
+}
+
+/* Shared control affordances and opt-in button interaction feedback. */
+button,
+select {
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+}
+button:disabled {
+	cursor: default;
+}
+button.control-feedback {
+	transition: transform 90ms ease-out, filter 140ms ease-out, background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out;
+}
+@media (hover: hover) {
+	button.control-feedback:hover:not(:disabled) {
+		filter: brightness(.96);
+	}
+}
+button.control-feedback:active:not(:disabled) {
+	transform: translateY(1px) scale(.985);
+	filter: brightness(.9);
+}
+button:focus-visible,
+select:focus-visible,
+a:focus-visible {
+	outline: 2px solid var(--focus);
+	outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+	button.control-feedback {
+		transition: none;
+	}
+	button.control-feedback:active:not(:disabled) {
+		transform: none;
+	}
+}

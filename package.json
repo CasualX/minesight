@@ -1,0 +1,11 @@
+{
+	"name": "minetacs",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "npm run test:mines && npm run test:minefield && npm run test:puzzle",
+		"test:mines": "node public/mines.test.js",
+		"test:minefield": "node public/minefield.test.js",
+		"test:puzzle": "node tests/puzzle.test.js"
+	}
+}

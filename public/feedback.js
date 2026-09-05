@@ -16,10 +16,14 @@ function elementCenter(element) {
 /** @param {number} cellIndex */
 function effectOrigin(cellIndex = -1) {
 	if (cellIndex >= 0) {
-		let cell = document.querySelector(`.board-card .cell[data-cell-index="${cellIndex}"]`);
+		let cell = document.querySelector(`[data-feedback-board] [data-cell-index="${cellIndex}"]`)
+			?? document.querySelector(`.board-card .cell[data-cell-index="${cellIndex}"]`);
 		if (cell) return elementCenter(cell);
 	}
-	return elementCenter(document.querySelector('.board-card .minefield'));
+	return elementCenter(
+		document.querySelector('[data-feedback-board] [data-feedback-minefield]')
+			?? document.querySelector('.board-card .minefield'),
+	);
 }
 
 function feedbackLayer() {
@@ -49,9 +53,13 @@ class FeedbackEffects {
 		this.runId = 0;
 	}
 
+	clear() {
+		document.querySelector('.feedback-layer')?.replaceChildren();
+	}
+
 	/** @param {number} streak */
 	streakLost(streak) {
-		let counter = document.querySelector('.study-streak > strong');
+		let counter = document.querySelector('.study-page__streak > strong, .study-streak > strong');
 		if (!(counter instanceof HTMLElement)) return;
 
 		let bounds = counter.getBoundingClientRect();
@@ -173,7 +181,7 @@ class FeedbackEffects {
 		this.animateBoard('failure', terminal ? 760 : 560);
 	}
 
-	/** @param {'success' | 'failure' | 'mark'} kind @param {{ x: number, y: number }} origin @param {number} lifetime */
+	/** @param {'success' | 'failure' | 'mark' | 'fireworks'} kind @param {{ x: number, y: number }} origin @param {number} lifetime */
 	createSequence(kind, origin, lifetime) {
 		let sequence = document.createElement('div');
 		sequence.className = `feedback-sequence feedback-${kind}`;
@@ -221,7 +229,7 @@ class FeedbackEffects {
 
 	/** @param {'success' | 'failure'} kind @param {number} lifetime */
 	animateBoard(kind, lifetime) {
-		let board = document.querySelector('.board-wrap');
+		let board = document.querySelector('[data-feedback-board]') ?? document.querySelector('.board-wrap');
 		if (!(board instanceof HTMLElement)) return;
 		let runId = String(++this.runId);
 		let className = `feedback-board-${kind}`;

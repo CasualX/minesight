@@ -1,19 +1,17 @@
 const CACHE_PREFIX = 'minesight';
-const CACHE_NAME = `${CACHE_PREFIX}-v20260902wasm-module1`;
+const CACHE_NAME = `${CACHE_PREFIX}-v20260908vue6`;
 const APP_ROOT_URL = new URL('./', self.registration.scope);
 const APP_SHELL_URL = new URL('./index.html', self.registration.scope).href;
 const APP_ASSETS = [
 	'./',
 	'./index.html',
-	'./index.css',
 	'./feedback.css',
-	'./index.js',
 	'./feedback.js',
 	'./sounds.js',
 	'./mines.js',
+	'./minefield.js',
 	'./minetacs.js',
 	'./minetacs.wasm',
-	'./alpine.min.js',
 	'./header-icon.svg',
 	'./favicon.svg',
 	'./manifest.webmanifest',
@@ -22,6 +20,7 @@ const APP_ASSETS = [
 	'./icon/icon-512.png',
 	'./icon/icon-maskable-512.png',
 	'./icon/icon-monochrome-512.png',
+	'https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js',
 ];
 
 self.addEventListener('install', event => {

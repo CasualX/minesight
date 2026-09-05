@@ -32,8 +32,11 @@ jobs:
       - name: Test Rust
         run: cargo test --all-targets
 
-      - name: Test browser model
-        run: node --experimental-default-type=module public/mines.test.js
+      - name: Test browser models
+        run: npm test
+
+      - name: Install Vue-Script
+        run: cargo install --git https://github.com/CasualX/Vue-Script
 
       - name: Build site
         run: ./scripts/build.sh

@@ -1,0 +1,39 @@
+.play-page {
+	display: flex;
+	width: min(26.25rem, calc(100% - 1.25rem));
+	flex: 1;
+	flex-direction: column;
+	gap: .75rem;
+	margin: 0 auto;
+	padding: .625rem 0 calc(1.75rem + env(safe-area-inset-bottom));
+}
+.play-page__heading {
+	display: flex;
+	align-items: start;
+	justify-content: space-between;
+	gap: 1rem;
+}
+.play-page__heading h1 {
+	margin: 0 0 .25rem;
+	font: 700 1.5625rem/1.1 Georgia, "Times New Roman", serif;
+	letter-spacing: -.025em;
+}
+.play-page__heading p {
+	margin: 0;
+	color: var(--muted);
+	font: .75rem/1.45 ui-sans-serif, system-ui, sans-serif;
+}
+.play-page__select {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: .75rem;
+	font: 700 .72rem ui-sans-serif, system-ui, sans-serif;
+}
+.play-page__select select {
+	min-width: 9rem;
+	padding: .4rem;
+	border: 1px solid var(--line);
+	background: var(--paper);
+	color: var(--ink);
+}

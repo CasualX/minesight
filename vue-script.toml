@@ -1,0 +1,12 @@
+[app]
+page = "app/page.html"
+main = "app/main.vue"
+
+[target]
+path = "public/index.html"
+
+[check]
+target = "es2022"
+
+[serve]
+watch = "app/**/*"

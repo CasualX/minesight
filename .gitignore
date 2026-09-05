@@ -1,3 +1,4 @@
 target/
 Cargo.lock
 public/minetacs.wasm
+public/index.html

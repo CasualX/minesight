@@ -1,5 +1,5 @@
 // @ts-check
-// node --experimental-default-type=module public/mines.test.js
+// npm run test:mines
 
 import { MineField, analyzeEditorBoard, createEditorPuzzle } from './mines.js';
 

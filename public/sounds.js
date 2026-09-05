@@ -131,7 +131,9 @@ class GameSounds {
 			let AudioContextClass = window.AudioContext ?? /** @type {typeof AudioContext | undefined} */ (
 				Reflect.get(window, 'webkitAudioContext')
 			);
-			if (!AudioContextClass) return undefined;
+			if (!AudioContextClass) {
+				return undefined;
+			}
 			this.context = new AudioContextClass();
 			this.output = this.context.createGain();
 			this.output.gain.value = .72;
@@ -163,18 +165,26 @@ class GameSounds {
 	 * @param {{ rate?: number, gain?: number, pan?: number }} [options]
 	 */
 	play(name, { rate = 1, gain = 1, pan = 0 } = {}) {
-		if (!this.enabled) return;
+		if (!this.enabled) {
+			return;
+		}
 		let recipe = SOUND_RECIPES[name];
-		if (!recipe) return;
+		if (!recipe) {
+			return;
+		}
 		let context = this.ensureContext();
-		if (!context || !this.output) return;
+		if (!context || !this.output) {
+			return;
+		}
 
 		let bus = context.createGain();
 		/** @type {AudioNode[]} */
 		let disposableNodes = [bus];
 		bus.gain.value = recipe.gain * gain;
 		bus.connect(this.output);
-		if (recipe.echo) disposableNodes.push(...this.connectEcho(context, bus, recipe.echo));
+		if (recipe.echo) {
+			disposableNodes.push(...this.connectEcho(context, bus, recipe.echo));
+		}
 
 		let startTime = context.currentTime + .008;
 		for (let layer of recipe.layers) {
@@ -185,8 +195,12 @@ class GameSounds {
 			envelope.gain.exponentialRampToValueAtTime(MIN_GAIN, layerStart + layer.attack + layer.decay);
 
 			this.connectPan(context, envelope, bus, clampPan(pan + (layer.pan ?? 0)));
-			if (layer.kind === 'tone') this.playTone(context, layer, envelope, layerStart, rate);
-			else this.playNoise(context, layer, envelope, layerStart, rate);
+			if (layer.kind === 'tone') {
+				this.playTone(context, layer, envelope, layerStart, rate);
+			}
+			else {
+				this.playNoise(context, layer, envelope, layerStart, rate);
+			}
 		}
 
 		let soundLength = Math.max(...recipe.layers.map((layer) => (
@@ -214,6 +228,10 @@ class GameSounds {
 
 	/** @param {AudioContext} context @param {GainNode} bus @param {NonNullable<SoundRecipe['echo']>} echo */
 	connectEcho(context, bus, echo) {
+		let output = this.output;
+		if (!output) {
+			return [];
+		}
 		let delay = context.createDelay(1);
 		let lowpass = context.createBiquadFilter();
 		let feedback = context.createGain();
@@ -225,7 +243,7 @@ class GameSounds {
 		wet.gain.value = echo.wet;
 		bus.connect(delay);
 		delay.connect(lowpass).connect(feedback).connect(delay);
-		lowpass.connect(wet).connect(this.output);
+		lowpass.connect(wet).connect(output);
 		return [delay, lowpass, feedback, wet];
 	}
 

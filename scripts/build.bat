@@ -10,6 +10,10 @@ if errorlevel 1 goto :error
 copy /Y "target\wasm32-unknown-unknown\release\minetacs.wasm" "public\minetacs.wasm" >nul
 if errorlevel 1 goto :error
 
+echo Building frontend
+vue-script build
+if errorlevel 1 goto :error
+
 echo Finished %CD%\public\index.html
 popd
 exit /b 0

@@ -14,4 +14,7 @@ cargo build --release --target wasm32-unknown-unknown --lib
 
 cp -- "$wasm_file" "$public_dir/minetacs.wasm"
 
+printf 'Building frontend\n'
+vue-script build
+
 printf 'Finished %s\n' "$public_dir/index.html"
